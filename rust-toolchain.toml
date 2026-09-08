@@ -1,0 +1,4 @@
+# The single source of truth for the toolchain, in CI as well as locally.
+[toolchain]
+channel = "1.97"
+components = ["rustfmt", "clippy"]
