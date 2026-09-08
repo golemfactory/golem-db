@@ -13,7 +13,7 @@ pub enum CellParseError {
     Empty,
     /// The type id names a slot the spec reserves for future use.
     ReservedType(u8),
-    /// A variable-width cell that stops before its length byte.
+    /// A variable-width cell that stops before its 4-byte length prefix.
     MissingLength,
     /// A fixed-width type whose value is not exactly that wide.
     LengthMismatch {
@@ -21,13 +21,13 @@ pub enum CellParseError {
         expected: usize,
         actual: usize,
     },
-    /// The length byte declares more value bytes than the cell carries — the
+    /// The length prefix declares more value bytes than the cell carries — the
     /// cell was cut short.
     Truncated { declared: usize, actual: usize },
     /// Bytes left over after the cell this slice declares. Use
     /// [`CellValue::parse_prefix`] to walk a run of packed cells.
     TrailingBytes { extra: usize },
-    /// A value longer than one length byte can express.
+    /// A value longer than [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN).
     TooLong { max: usize, actual: usize },
     /// A `bool` whose byte is neither 0 nor 1.
     InvalidBool(u8),
@@ -61,7 +61,7 @@ impl fmt::Display for CellParseError {
         match self {
             Self::Empty => write!(f, "cell is missing its metadata byte"),
             Self::ReservedType(id) => write!(f, "type id {id} is reserved"),
-            Self::MissingLength => write!(f, "cell is missing its length byte"),
+            Self::MissingLength => write!(f, "cell is missing its length prefix"),
             Self::LengthMismatch {
                 ty,
                 expected,

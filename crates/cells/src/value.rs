@@ -4,12 +4,13 @@ use crate::error::CellParseError;
 #[cfg(feature = "custom_types")]
 use crate::types::CustomTypeId;
 use crate::types::{CellType, FloatWidth, ValueLayout, Width};
-use crate::{INDEXABLE_BIT, TYPE_ID_MASK};
+use crate::{INDEXABLE_BIT, LENGTH_PREFIX_BYTES, TYPE_ID_MASK};
 
 /// A cell: a type, its value bytes, and whether it is indexable.
 ///
 /// Borrows the value rather than copying it — cells are read straight out of
-/// storage buffers, and a `str` or `bytes` value can be up to 256 bytes.
+/// storage buffers, and a `str` or `bytes` value can be up to
+/// [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN) bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellValue<'a> {
     ty: CellType,
@@ -60,8 +61,11 @@ impl<'a> CellValue<'a> {
                 rest.split_at(n)
             }
             ValueLayout::LengthPrefixed { .. } => {
-                let (&len, rest) = rest.split_first().ok_or(CellParseError::MissingLength)?;
-                let len = len as usize;
+                if rest.len() < LENGTH_PREFIX_BYTES {
+                    return Err(CellParseError::MissingLength);
+                }
+                let (len_bytes, rest) = rest.split_at(LENGTH_PREFIX_BYTES);
+                let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
                 if rest.len() < len {
                     return Err(CellParseError::Truncated {
                         declared: len,
@@ -80,11 +84,11 @@ impl<'a> CellValue<'a> {
     /// [`CellValue::parse`]. Appending several in a row produces a run
     /// [`CellValue::parse_prefix`] can walk back.
     pub fn encode_into(&self, out: &mut Vec<u8>) {
-        out.reserve(2 + self.value.len());
+        out.reserve(1 + LENGTH_PREFIX_BYTES + self.value.len());
         out.push(self.metadata());
-        if self.ty.layout().has_length_byte() {
+        if self.ty.layout().has_length_prefix() {
             // `new`/`parse` cap the value at MAX_VALUE_LEN, so this fits.
-            out.push(self.value.len() as u8);
+            out.extend_from_slice(&(self.value.len() as u32).to_be_bytes());
         }
         out.extend_from_slice(self.value);
     }

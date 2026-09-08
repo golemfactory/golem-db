@@ -2,15 +2,15 @@
 //!
 //! # Wire format
 //!
-//! A cell is one metadata byte, a length byte for the variable-width types
-//! only, then the value bytes:
+//! A cell is one metadata byte, a 4-byte big-endian length for the
+//! variable-width types only, then the value bytes:
 //!
 //! ```text
-//! [ indexable: 1 bit | type id: 7 bits ] [ len ]? [ value bytes … ]
+//! [ indexable: 1 bit | type id: 7 bits ] [ len: u32 BE ]? [ value bytes … ]
 //! ```
 //!
 //! The type id says which of the two shapes a cell has. A fixed-width type
-//! carries its width in its id, so no length byte; `str`, `bytes` and the
+//! carries its width in its id, so no length prefix; `str`, `bytes` and the
 //! custom types carry one.
 //!
 //! That makes every cell **self-delimiting**: its length is knowable from its
@@ -31,12 +31,17 @@ pub use types::CustomTypeId;
 pub use types::{CellType, FloatWidth, ValueLayout, Width};
 pub use value::CellValue;
 
-/// The longest variable-width value a cell may carry — what one length byte can
-/// express.
+/// The longest variable-width value a cell may carry.
 ///
-/// This layer imposes only the format's own bound; a deployment is free to
-/// enforce something tighter on top.
-pub const MAX_VALUE_LEN: usize = u8::MAX as usize;
+/// The wire format's 4-byte length prefix could express up to `u32::MAX`;
+/// this layer pins a tighter cap of 64 KiB instead, so `TooLong` stays cheap
+/// to hit in practice. A deployment is free to enforce something tighter
+/// still on top.
+pub const MAX_VALUE_LEN: usize = u16::MAX as usize;
+
+/// How many bytes the length prefix occupies on the wire, for the
+/// variable-width types.
+pub(crate) const LENGTH_PREFIX_BYTES: usize = 4;
 
 /// The metadata byte's high bit: whether the cell is indexable.
 pub(crate) const INDEXABLE_BIT: u8 = 0b1000_0000;

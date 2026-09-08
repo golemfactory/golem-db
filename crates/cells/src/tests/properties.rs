@@ -89,7 +89,12 @@ proptest! {
     /// agrees with the standard library, not with its own idea of UTF-8.
     #[test]
     fn str_accepts_exactly_utf8(value in prop::collection::vec(any::<u8>(), 0..=MAX_VALUE_LEN)) {
-        let cell = [&[CellType::Str.id(), value.len() as u8][..], &value].concat();
+        let cell = [
+            &[CellType::Str.id()][..],
+            &(value.len() as u32).to_be_bytes(),
+            &value,
+        ]
+        .concat();
         let parsed = CellValue::parse(&cell);
         prop_assert_eq!(parsed.is_ok(), core::str::from_utf8(&value).is_ok());
         if let Ok(cell) = parsed {

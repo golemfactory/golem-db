@@ -118,8 +118,10 @@ fn id_space_matches_the_spec() {
 #[test]
 fn every_metadata_byte_and_length() {
     // 0x01 is a valid `bool`, valid UTF-8, and a valid byte anywhere else,
-    // so length is the only thing under test.
-    let payload = [0x01u8; 40];
+    // so length is the only thing under test. The first four bytes double as
+    // a fixed length prefix declaring 1 (see the `LengthPrefixed` arm below).
+    let mut payload = vec![0x00, 0x00, 0x00, 0x01];
+    payload.extend(std::iter::repeat_n(0x01u8, 36));
     for metadata in 0..=u8::MAX {
         for len in 0..=payload.len() {
             let mut bytes = vec![metadata];
@@ -129,11 +131,10 @@ fn every_metadata_byte_and_length() {
                 Err(_) => false,
                 Ok(ty) => match ty.layout() {
                     ValueLayout::Fixed(n) => len == n,
-                    // The first payload byte is the length byte, and it
-                    // must account for every byte after it.
-                    ValueLayout::LengthPrefixed { .. } => {
-                        len >= 1 && payload[0] as usize == len - 1
-                    }
+                    // The first four payload bytes are the length prefix,
+                    // fixed at 1, and it must account for every byte after
+                    // it.
+                    ValueLayout::LengthPrefixed { .. } => len >= 4 && len - 4 == 1,
                 },
             };
 
@@ -167,9 +168,12 @@ fn accessors_decode_their_rust_equivalents() {
 
     assert_eq!(parse(&[0x01, 1]).as_bool(), Some(true));
     assert_eq!(parse(&[0x01, 0]).as_bool(), Some(false));
-    assert_eq!(parse(&[0x02, 2, b'h', b'i']).as_str(), Some("hi"));
     assert_eq!(
-        parse(&[0x03, 2, 0xDE, 0xAD]).as_bytes(),
+        parse(&[0x02, 0x00, 0x00, 0x00, 2, b'h', b'i']).as_str(),
+        Some("hi")
+    );
+    assert_eq!(
+        parse(&[0x03, 0x00, 0x00, 0x00, 2, 0xDE, 0xAD]).as_bytes(),
         Some(&[0xDE, 0xAD][..])
     );
 
@@ -277,17 +281,17 @@ fn invalid_utf8_message_shows_the_bytes() {
     let msg = |cell: &[u8]| CellValue::parse(cell).unwrap_err().to_string();
 
     assert_eq!(
-        msg(&[0x02, 3, 0xED, 0xA0, 0x80]),
+        msg(&[0x02, 0x00, 0x00, 0x00, 3, 0xED, 0xA0, 0x80]),
         "str is not valid UTF-8 at byte 0 of 3: ed a0 80"
     );
     // The window starts at the failure, not at the value's start.
     assert_eq!(
-        msg(&[0x02, 4, b'h', b'i', 0xC0, 0xAF]),
+        msg(&[0x02, 0x00, 0x00, 0x00, 4, b'h', b'i', 0xC0, 0xAF]),
         "str is not valid UTF-8 at byte 2 of 4: c0 af"
     );
 
     // A value longer than the window is cut, and marked as cut.
-    let mut long = vec![0x02, 40];
+    let mut long = vec![0x02, 0x00, 0x00, 0x00, 40];
     long.extend_from_slice(&[b'a'; 20]);
     long.extend_from_slice(&[0xFF; 20]);
     assert_eq!(
@@ -296,7 +300,7 @@ fn invalid_utf8_message_shows_the_bytes() {
     );
 
     // Exactly the window's worth, with nothing after it, is not marked.
-    let exact = [&[0x02, 8][..], &[0xFF; 8]].concat();
+    let exact = [&[0x02, 0x00, 0x00, 0x00, 8][..], &[0xFF; 8]].concat();
     assert_eq!(
         msg(&exact),
         "str is not valid UTF-8 at byte 0 of 8: ff ff ff ff ff ff ff ff"
@@ -311,15 +315,15 @@ fn bytes_accepts_what_str_rejects() {
         if !matches!(expected, CellParseError::InvalidUtf8 { .. }) {
             continue;
         }
-        // Same length byte and value, only the type id swapped.
+        // Same length prefix and value, only the type id swapped.
         // `parse_prefix`, since one vector carries a deliberate trailing
         // byte that is a framing matter rather than a content one.
         let as_bytes = [&[CellType::Bytes.id()][..], &bytes[1..]].concat();
         let (cell, _) =
             CellValue::parse_prefix(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(cell.cell_type(), CellType::Bytes, "{name}");
-        let declared = bytes[1] as usize;
-        assert_eq!(cell.value(), &bytes[2..2 + declared], "{name}");
+        let declared = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
+        assert_eq!(cell.value(), &bytes[5..5 + declared], "{name}");
     }
 }
 
@@ -341,8 +345,8 @@ fn over_long_values_cannot_be_built() {
     assert!(CellValue::new(CellType::Bytes, &[0u8; MAX_VALUE_LEN], false).is_ok());
 }
 
-/// The point of the length byte: cells pack adjacently and a truncated cell
-/// is rejected rather than read as a shorter valid value.
+/// The point of the length prefix: cells pack adjacently and a truncated
+/// cell is rejected rather than read as a shorter valid value.
 #[test]
 fn packed_cells_walk_and_truncation_is_caught() {
     let seven = 7u64.to_be_bytes();
@@ -388,7 +392,7 @@ fn packed_cells_walk_and_truncation_is_caught() {
 #[test]
 fn typed_accessors() {
     assert_eq!(
-        CellValue::parse(&[0x02, 0x02, b'h', b'i'])
+        CellValue::parse(&[0x02, 0x00, 0x00, 0x00, 0x02, b'h', b'i'])
             .unwrap()
             .as_str(),
         Some("hi")

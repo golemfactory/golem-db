@@ -93,15 +93,15 @@ impl CustomTypeId {
 /// How a type's value bytes are framed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueLayout {
-    /// Exactly this many bytes, no length byte — the width is in the type id.
+    /// Exactly this many bytes, no length prefix — the width is in the type id.
     Fixed(usize),
-    /// A length byte, then that many bytes, up to `max`.
+    /// A 4-byte big-endian length, then that many bytes, up to `max`.
     LengthPrefixed { max: usize },
 }
 
 impl ValueLayout {
-    /// Whether a cell of this layout carries a length byte after its metadata.
-    pub const fn has_length_byte(self) -> bool {
+    /// Whether a cell of this layout carries a length prefix after its metadata.
+    pub const fn has_length_prefix(self) -> bool {
         matches!(self, Self::LengthPrefixed { .. })
     }
 }

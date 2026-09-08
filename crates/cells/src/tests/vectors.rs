@@ -13,22 +13,22 @@ pub(super) type Vector = (&'static str, &'static [u8], bool, CellType, &'static 
 #[rustfmt::skip]
 pub(super) const VECTORS: &[Vector] = &[
     // name              wire bytes                             idx    type                              value
-    ("tombstone",       &[0x00],                               false, CellType::Tombstone,              &[]),
-    ("bool false",      &[0x01, 0x00],                         false, CellType::Bool,                   &[0x00]),
-    ("bool true, idx",  &[0x81, 0x01],                         true,  CellType::Bool,                   &[0x01]),
-    ("str empty",       &[0x02, 0x00],                         false, CellType::Str,                    &[]),
-    ("str ascii",       &[0x02, 0x02, b'h', b'i'],             false, CellType::Str,                    b"hi"),
-    ("str 2-byte utf8", &[0x02, 0x02, 0xC3, 0xA9],             false, CellType::Str,                    &[0xC3, 0xA9]),
-    ("str 4-byte utf8", &[0x82, 0x04, 0xF0, 0x9F, 0xA6, 0x80], true,  CellType::Str,                    &[0xF0, 0x9F, 0xA6, 0x80]),
+    ("tombstone",       &[0x00],                                           false, CellType::Tombstone,              &[]),
+    ("bool false",      &[0x01, 0x00],                                     false, CellType::Bool,                   &[0x00]),
+    ("bool true, idx",  &[0x81, 0x01],                                     true,  CellType::Bool,                   &[0x01]),
+    ("str empty",       &[0x02, 0x00, 0x00, 0x00, 0x00],                   false, CellType::Str,                    &[]),
+    ("str ascii",       &[0x02, 0x00, 0x00, 0x00, 0x02, b'h', b'i'],       false, CellType::Str,                    b"hi"),
+    ("str 2-byte utf8", &[0x02, 0x00, 0x00, 0x00, 0x02, 0xC3, 0xA9],       false, CellType::Str,                    &[0xC3, 0xA9]),
+    ("str 4-byte utf8", &[0x82, 0x00, 0x00, 0x00, 0x04, 0xF0, 0x9F, 0xA6, 0x80], true, CellType::Str,               &[0xF0, 0x9F, 0xA6, 0x80]),
     // The accept side of the UTF-8 boundary BAD_VECTORS attacks: an
     // embedded NUL is valid UTF-8, and these are the last code points
     // before each rejected range.
-    ("str with a NUL",  &[0x02, 0x03, b'a', 0x00, b'b'],       false, CellType::Str,                    &[b'a', 0x00, b'b']),
-    ("str U+D7FF",      &[0x02, 0x03, 0xED, 0x9F, 0xBF],       false, CellType::Str,                    &[0xED, 0x9F, 0xBF]),
-    ("str U+FFFF",      &[0x02, 0x03, 0xEF, 0xBF, 0xBF],       false, CellType::Str,                    &[0xEF, 0xBF, 0xBF]),
-    ("str U+10FFFF",    &[0x02, 0x04, 0xF4, 0x8F, 0xBF, 0xBF], false, CellType::Str,                    &[0xF4, 0x8F, 0xBF, 0xBF]),
-    ("bytes empty",     &[0x03, 0x00],                         false, CellType::Bytes,                  &[]),
-    ("bytes 2",         &[0x03, 0x02, 0xDE, 0xAD],             false, CellType::Bytes,                  &[0xDE, 0xAD]),
+    ("str with a NUL",  &[0x02, 0x00, 0x00, 0x00, 0x03, b'a', 0x00, b'b'], false, CellType::Str,                    &[b'a', 0x00, b'b']),
+    ("str U+D7FF",      &[0x02, 0x00, 0x00, 0x00, 0x03, 0xED, 0x9F, 0xBF], false, CellType::Str,                    &[0xED, 0x9F, 0xBF]),
+    ("str U+FFFF",      &[0x02, 0x00, 0x00, 0x00, 0x03, 0xEF, 0xBF, 0xBF], false, CellType::Str,                    &[0xEF, 0xBF, 0xBF]),
+    ("str U+10FFFF",    &[0x02, 0x00, 0x00, 0x00, 0x04, 0xF4, 0x8F, 0xBF, 0xBF], false, CellType::Str,              &[0xF4, 0x8F, 0xBF, 0xBF]),
+    ("bytes empty",     &[0x03, 0x00, 0x00, 0x00, 0x00],                   false, CellType::Bytes,                  &[]),
+    ("bytes 2",         &[0x03, 0x00, 0x00, 0x00, 0x02, 0xDE, 0xAD],       false, CellType::Bytes,                  &[0xDE, 0xAD]),
     ("bytes20",         &BYTES20_ZERO_CELL,                    false, CellType::Bytes20,                &ZERO_VALUE_20),
     ("bytes4",          &[0x08, 1, 2, 3, 4],                   false, CellType::FixedBytes(Width::W4),  &[1, 2, 3, 4]),
     ("bytes8, idx",     &[0x89, 1, 2, 3, 4, 5, 6, 7, 8],       true,  CellType::FixedBytes(Width::W8),  &[1, 2, 3, 4, 5, 6, 7, 8]),
@@ -57,9 +57,9 @@ pub(super) const VECTORS: &[Vector] = &[
 #[cfg(feature = "custom_types")]
 #[rustfmt::skip]
 pub(super) const CUSTOM_VECTORS: &[Vector] = &[
-    ("custom 64, 0 B", &[0x40, 0x00],                    false, CellType::Custom(CustomTypeId::new(64).unwrap()), &[]),
-    ("custom 100",     &[0x64, 0x03, 9, 9, 9],           false, CellType::Custom(CustomTypeId::new(100).unwrap()), &[9, 9, 9]),
-    ("custom 127, idx",&[0xFF, 0x01, 1],                 true,  CellType::Custom(CustomTypeId::new(127).unwrap()), &[1]),
+    ("custom 64, 0 B", &[0x40, 0x00, 0x00, 0x00, 0x00],           false, CellType::Custom(CustomTypeId::new(64).unwrap()), &[]),
+    ("custom 100",     &[0x64, 0x00, 0x00, 0x00, 0x03, 9, 9, 9],  false, CellType::Custom(CustomTypeId::new(100).unwrap()), &[9, 9, 9]),
+    ("custom 127, idx",&[0xFF, 0x00, 0x00, 0x00, 0x01, 1],        true,  CellType::Custom(CustomTypeId::new(127).unwrap()), &[1]),
 ];
 
 #[cfg(not(feature = "custom_types"))]
@@ -72,7 +72,7 @@ pub(super) fn accept_vectors() -> impl Iterator<Item = &'static Vector> {
 
 // The 16-, 20- and 32-byte vectors, lifted out of the table above so its
 // rows stay one line each. Every one is an all-zero value of a fixed-width
-// type, so there is no length byte and the value is the whole tail.
+// type, so there is no length prefix and the value is the whole tail.
 //
 // `<TYPE>_ZERO` is the value; `<TYPE>_ZERO_CELL` is that value with its
 // metadata byte in front.
@@ -166,24 +166,25 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
     ("u32 one byte over",       &[0x0C, 0, 0, 0, 7, 9],                   CellParseError::TrailingBytes { extra: 1 }),
 
     // -- variable-width framing ---------------------------------------
-    ("str, no length byte",     &[0x02],                                  CellParseError::MissingLength),
-    ("bytes, no length byte",   &[0x03],                                  CellParseError::MissingLength),
+    ("str, no length bytes",    &[0x02],                                  CellParseError::MissingLength),
+    ("str, partial length",     &[0x02, 0x00, 0x00],                      CellParseError::MissingLength),
+    ("bytes, no length bytes",  &[0x03],                                  CellParseError::MissingLength),
     #[cfg(feature = "custom_types")]
-    ("custom, no length byte",  &[0x40],                                  CellParseError::MissingLength),
-    ("str cut short",           &[0x02, 4, b'h', b'i'],                   CellParseError::Truncated { declared: 4, actual: 2 }),
-    ("bytes cut short",         &[0x03, 4, 1, 2],                         CellParseError::Truncated { declared: 4, actual: 2 }),
+    ("custom, no length bytes", &[0x40],                                  CellParseError::MissingLength),
+    ("str cut short",           &[0x02, 0x00, 0x00, 0x00, 4, b'h', b'i'], CellParseError::Truncated { declared: 4, actual: 2 }),
+    ("bytes cut short",         &[0x03, 0x00, 0x00, 0x00, 4, 1, 2],       CellParseError::Truncated { declared: 4, actual: 2 }),
     #[cfg(feature = "custom_types")]
-    ("custom cut short",        &[0x64, 3, 9],                            CellParseError::Truncated { declared: 3, actual: 1 }),
-    ("len 0 but bytes follow",  &[0x03, 0, 9, 9],                         CellParseError::TrailingBytes { extra: 2 }),
-    ("bytes, extra past end",   &[0x03, 1, 1, 9, 9],                      CellParseError::TrailingBytes { extra: 2 }),
+    ("custom cut short",        &[0x64, 0x00, 0x00, 0x00, 3, 9],          CellParseError::Truncated { declared: 3, actual: 1 }),
+    ("len 0 but bytes follow",  &[0x03, 0x00, 0x00, 0x00, 0, 9, 9],       CellParseError::TrailingBytes { extra: 2 }),
+    ("bytes, extra past end",   &[0x03, 0x00, 0x00, 0x00, 1, 1, 9, 9],    CellParseError::TrailingBytes { extra: 2 }),
 
     // -- the custom block with the feature off -------------------------
     #[cfg(not(feature = "custom_types"))]
-    ("custom 64, feature off",  &[0x40, 0x00],                            CellParseError::CustomTypesDisabled(64)),
+    ("custom 64, feature off",  &[0x40, 0x00, 0x00, 0x00, 0x00],          CellParseError::CustomTypesDisabled(64)),
     #[cfg(not(feature = "custom_types"))]
-    ("custom 100, feature off", &[0x64, 0x03, 9, 9, 9],                   CellParseError::CustomTypesDisabled(100)),
+    ("custom 100, feature off", &[0x64, 0x00, 0x00, 0x00, 0x03, 9, 9, 9], CellParseError::CustomTypesDisabled(100)),
     #[cfg(not(feature = "custom_types"))]
-    ("custom 127, feature off", &[0xFF, 0x01, 1],                         CellParseError::CustomTypesDisabled(127)),
+    ("custom 127, feature off", &[0xFF, 0x00, 0x00, 0x00, 0x01, 1],       CellParseError::CustomTypesDisabled(127)),
 
     // -- content: bool -------------------------------------------------
     ("bool byte 2",             &[0x01, 2],                               CellParseError::InvalidBool(2)),
@@ -191,26 +192,26 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
 
     // -- content: str that is not really UTF-8 -------------------------
     // Each is correctly framed, so only the content is under test.
-    ("lone continuation 0x80",  &[0x02, 1, 0x80],                         CellParseError::invalid_utf8(&[0x80], 0)),
-    ("continuation mid-str",    &[0x02, 3, b'h', 0x80, b'i'],             CellParseError::invalid_utf8(&[b'h', 0x80, b'i'], 1)),
-    ("0xFF, never in UTF-8",    &[0x02, 1, 0xFF],                         CellParseError::invalid_utf8(&[0xFF], 0)),
-    ("0xFE, never in UTF-8",    &[0x02, 1, 0xFE],                         CellParseError::invalid_utf8(&[0xFE], 0)),
+    ("lone continuation 0x80",  &[0x02, 0x00, 0x00, 0x00, 1, 0x80],                         CellParseError::invalid_utf8(&[0x80], 0)),
+    ("continuation mid-str",    &[0x02, 0x00, 0x00, 0x00, 3, b'h', 0x80, b'i'],              CellParseError::invalid_utf8(&[b'h', 0x80, b'i'], 1)),
+    ("0xFF, never in UTF-8",    &[0x02, 0x00, 0x00, 0x00, 1, 0xFF],                          CellParseError::invalid_utf8(&[0xFF], 0)),
+    ("0xFE, never in UTF-8",    &[0x02, 0x00, 0x00, 0x00, 1, 0xFE],                          CellParseError::invalid_utf8(&[0xFE], 0)),
     // A lead byte promising more bytes than the value carries.
-    ("2-byte lead, no tail",    &[0x02, 1, 0xC3],                         CellParseError::invalid_utf8(&[0xC3], 0)),
-    ("3-byte lead, one tail",   &[0x02, 2, 0xE2, 0x82],                   CellParseError::invalid_utf8(&[0xE2, 0x82], 0)),
-    ("4-byte lead, two tails",  &[0x02, 3, 0xF0, 0x9F, 0xA6],             CellParseError::invalid_utf8(&[0xF0, 0x9F, 0xA6], 0)),
+    ("2-byte lead, no tail",    &[0x02, 0x00, 0x00, 0x00, 1, 0xC3],                          CellParseError::invalid_utf8(&[0xC3], 0)),
+    ("3-byte lead, one tail",   &[0x02, 0x00, 0x00, 0x00, 2, 0xE2, 0x82],                    CellParseError::invalid_utf8(&[0xE2, 0x82], 0)),
+    ("4-byte lead, two tails",  &[0x02, 0x00, 0x00, 0x00, 3, 0xF0, 0x9F, 0xA6],               CellParseError::invalid_utf8(&[0xF0, 0x9F, 0xA6], 0)),
     // Overlong forms: a code point encoded in more bytes than needed. The
     // classic filter bypass — "/" and NUL smuggled past a byte comparison.
-    ("overlong '/' (C0 AF)",    &[0x02, 2, 0xC0, 0xAF],                   CellParseError::invalid_utf8(&[0xC0, 0xAF], 0)),
-    ("overlong NUL (C0 80)",    &[0x02, 2, 0xC0, 0x80],                   CellParseError::invalid_utf8(&[0xC0, 0x80], 0)),
-    ("overlong 3-byte NUL",     &[0x02, 3, 0xE0, 0x80, 0x80],             CellParseError::invalid_utf8(&[0xE0, 0x80, 0x80], 0)),
+    ("overlong '/' (C0 AF)",    &[0x02, 0x00, 0x00, 0x00, 2, 0xC0, 0xAF],                    CellParseError::invalid_utf8(&[0xC0, 0xAF], 0)),
+    ("overlong NUL (C0 80)",    &[0x02, 0x00, 0x00, 0x00, 2, 0xC0, 0x80],                    CellParseError::invalid_utf8(&[0xC0, 0x80], 0)),
+    ("overlong 3-byte NUL",     &[0x02, 0x00, 0x00, 0x00, 3, 0xE0, 0x80, 0x80],               CellParseError::invalid_utf8(&[0xE0, 0x80, 0x80], 0)),
     // UTF-16 surrogate halves are not scalar values, so not valid UTF-8.
-    ("surrogate U+D800",        &[0x02, 3, 0xED, 0xA0, 0x80],             CellParseError::invalid_utf8(&[0xED, 0xA0, 0x80], 0)),
-    ("surrogate U+DFFF",        &[0x02, 3, 0xED, 0xBF, 0xBF],             CellParseError::invalid_utf8(&[0xED, 0xBF, 0xBF], 0)),
+    ("surrogate U+D800",        &[0x02, 0x00, 0x00, 0x00, 3, 0xED, 0xA0, 0x80],               CellParseError::invalid_utf8(&[0xED, 0xA0, 0x80], 0)),
+    ("surrogate U+DFFF",        &[0x02, 0x00, 0x00, 0x00, 3, 0xED, 0xBF, 0xBF],               CellParseError::invalid_utf8(&[0xED, 0xBF, 0xBF], 0)),
     // Past U+10FFFF, and the 5-byte forms UTF-8 never had.
-    ("beyond U+10FFFF",         &[0x02, 4, 0xF5, 0x80, 0x80, 0x80],       CellParseError::invalid_utf8(&[0xF5, 0x80, 0x80, 0x80], 0)),
-    ("5-byte sequence",         &[0x02, 5, 0xF8, 0x88, 0x80, 0x80, 0x80], CellParseError::invalid_utf8(&[0xF8, 0x88, 0x80, 0x80, 0x80], 0)),
-    // Framing is right but the length byte cuts a character in half — the
-    // case a length byte alone cannot catch, and UTF-8 validation does.
-    ("len splits a character",  &[0x02, 1, 0xC3, 0xA9],                   CellParseError::invalid_utf8(&[0xC3], 0)),
+    ("beyond U+10FFFF",         &[0x02, 0x00, 0x00, 0x00, 4, 0xF5, 0x80, 0x80, 0x80],         CellParseError::invalid_utf8(&[0xF5, 0x80, 0x80, 0x80], 0)),
+    ("5-byte sequence",         &[0x02, 0x00, 0x00, 0x00, 5, 0xF8, 0x88, 0x80, 0x80, 0x80],   CellParseError::invalid_utf8(&[0xF8, 0x88, 0x80, 0x80, 0x80], 0)),
+    // Framing is right but the length prefix cuts a character in half — the
+    // case a length prefix alone cannot catch, and UTF-8 validation does.
+    ("len splits a character",  &[0x02, 0x00, 0x00, 0x00, 1, 0xC3, 0xA9],                    CellParseError::invalid_utf8(&[0xC3], 0)),
 ];

@@ -9,7 +9,6 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 
 - `crates/cells` (package `golemdb-cells`) — the wire format for "Cells",
   GolemDB's typed value encoding
-- `crates/indexes` — indexing structures, built on `golemdb-cells`
 
 ## Adding a crate
 
@@ -28,7 +27,16 @@ cargo nextest run --workspace
 cargo bench --workspace --no-run  # compile benches without running them
 ```
 
+To run the test suite across every feature combination a crate defines (e.g.
+`golemdb-cells`'s `custom_types`), use
+[cargo-hack](https://github.com/taiki-e/cargo-hack):
+
+```sh
+cargo hack nextest run --workspace --feature-powerset
+```
+
 ## CI
 
 `.github/workflows/ci.yml` builds the workspace, runs the test suite with
-[cargo-nextest](https://nexte.st/), and checks that benchmarks compile.
+[cargo-nextest](https://nexte.st/) across the full feature powerset via
+cargo-hack, and checks that benchmarks compile.
