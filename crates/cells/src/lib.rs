@@ -26,21 +26,29 @@
 //!
 //! # Order encoding
 //!
-//! [`order_encode`] lays a value out so that **bytewise order is value
-//! order**, which is what makes an `Index` cursor walk a range query (§5).
+//! **Stored value bytes sort as their values do.** So the `Cell` value is
+//! copied verbatim into its `CellIndex` term (`cellKey ‖ 0x00 ‖ typeTag ‖
+//! cellValue`), and a cursor seek plus a forward walk is a range query. A
+//! value has one byte form everywhere: `Cell` row, trie, change-sets, index.
 //!
-//! | transform             | types                                                  |
-//! | --------------------- | ------------------------------------------------------ |
-//! | none (borrowed)       | `bool`, `str`, `bytes20`, `bytes4..32`, `u32..u256`    |
-//! | flip byte 0's top bit | `i32..i256`, `dec32..dec256`, `date32`, `timestamp64`  |
-//! | IEEE total order      | `f32`, `f64`                                           |
+//! | stored form                                           | types                                                 |
+//! | ----------------------------------------------------- | ----------------------------------------------------- |
+//! | natural bytes                                         | `bool`, `str`, `bytes20`, `bytes4..32`, `u32..u256`   |
+//! | two's complement BE, sign bit flipped ([`encode_int`]) | `i32..i256`, `dec32..dec256`, `date32`, `timestamp64` |
+//! | IEEE-754 BE in total order ([`encode_float`])          | `f32`, `f64`                                          |
 //!
-//! `bytes` and custom types are [`OrderError::NotIndexable`]. The output
-//! matches Arkiv's `AttributeValue::index_bytes` byte for byte.
+//! The typed accessors (`as_i32`, `as_f64`, …) decode. Signed types match
+//! Arkiv's `AttributeValue::index_bytes` byte for byte.
 //!
 //! **Floats:** non-negative flips the sign bit, negative flips every bit.
-//! [`CellType::validate`] rejects NaN and `-0.0`, so every float has one byte
-//! form in storage and in the index.
+//! [`CellType::validate`] rejects NaN and `-0.0`, so zero has one byte form.
+//!
+//! **Field-only types:** `bytes` and custom types have no order; setting the
+//! indexable bit on one is [`CellParseError::NotIndexable`].
+//!
+//! **`str`** is the trailing field of an index term, so it needs no
+//! terminator. The term carries the value *without* the wire length prefix,
+//! which would sort by length first.
 //!
 //! **Decimals are integers.** A `dec` is the signed integer of its width at a
 //! fixed scale, so there is no separate decimal codec. Scales harden at
@@ -49,10 +57,6 @@
 //! | `dec32` | `dec64` | `dec128` | `dec256` |
 //! | ------- | ------- | -------- | -------- |
 //! | 4       | 6       | 18       | 18 (wei) |
-//!
-//! **Open:** raw UTF-8 orders correctly only as the *last* component of a key.
-//! If §5's `Index` key puts a `recordID` after the value, `str` needs a
-//! different encoding.
 //!
 //! # The `0x00` tag
 //!
@@ -92,9 +96,9 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub use error::{CellParseError, OrderError};
+pub use error::CellParseError;
 pub use key::{CellKey, CellKeyError, CellKeyRef, DEFAULT_MAX_CELL_NAME_LEN, reserved};
-pub use order::{order_decode, order_encode, order_encode_into};
+pub use order::{decode_float, decode_int, encode_float, encode_int};
 #[cfg(feature = "custom_types")]
 pub use types::CustomTypeId;
 pub use types::{CellType, FloatWidth, ValueLayout, Width};

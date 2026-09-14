@@ -63,6 +63,9 @@ pub enum CellParseError {
     FloatNaN,
     /// A `-0.0` float: zero is stored as `+0.0` only, so it has one byte form.
     NegativeZero,
+    /// The indexable bit set on a field-only type — `bytes` or a custom type —
+    /// which has no order and never appears in an index term.
+    NotIndexable(CellType),
 }
 
 impl fmt::Display for CellParseError {
@@ -123,37 +126,12 @@ impl fmt::Display for CellParseError {
             }
             Self::FloatNaN => write!(f, "float is NaN, which has no order"),
             Self::NegativeZero => write!(f, "float is -0.0; zero is stored as +0.0"),
+            Self::NotIndexable(ty) => write!(f, "{} is not indexable", ty.name()),
         }
     }
 }
 
 impl core::error::Error for CellParseError {}
-
-/// Why a value has no order encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderError {
-    /// `bytes` or a custom type, which never appear in an index key.
-    NotIndexable(CellType),
-    /// The value is not a valid body for its type.
-    Invalid(CellParseError),
-}
-
-impl From<CellParseError> for OrderError {
-    fn from(e: CellParseError) -> Self {
-        Self::Invalid(e)
-    }
-}
-
-impl fmt::Display for OrderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotIndexable(ty) => write!(f, "{} is not indexable", ty.name()),
-            Self::Invalid(e) => e.fmt(f),
-        }
-    }
-}
-
-impl core::error::Error for OrderError {}
 
 impl CellParseError {
     /// The [`InvalidUtf8`](CellParseError::InvalidUtf8) for `value`, whose first

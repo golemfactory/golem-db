@@ -1,17 +1,23 @@
-//! Order encoding: a ladder per family, and the property this exists for —
-//! `a.cmp(&b) == enc(a).cmp(&enc(b))`.
+//! Stored-form ordering: a ladder per family, and the property this exists
+//! for — `a.cmp(&b) == stored(a).cmp(&stored(b))`.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use proptest::prelude::*;
 
-use super::properties::{any_cell_type, any_valid_cell};
+use crate::order::{flip_sign, float_from_stored, float_to_stored};
 use crate::*;
 
 const WIDTHS: [Width; 4] = [Width::W4, Width::W8, Width::W16, Width::W32];
 const F32: CellType = CellType::Float(FloatWidth::F32);
 const F64: CellType = CellType::Float(FloatWidth::F64);
+
+fn is_signed(ty: CellType) -> bool {
+    matches!(
+        ty,
+        CellType::Int(_) | CellType::Decimal(_) | CellType::Date32 | CellType::Timestamp64
+    )
+}
 
 fn signed_types() -> Vec<CellType> {
     let mut out: Vec<_> = WIDTHS
@@ -53,15 +59,38 @@ fn sext(v: i128, n: usize) -> Vec<u8> {
     wide[32 - n..].to_vec()
 }
 
-fn enc(ty: CellType, value: &[u8]) -> Vec<u8> {
-    order_encode(ty, value)
-        .unwrap_or_else(|e| panic!("{}: {value:02x?}: {e}", ty.name()))
-        .into_owned()
+/// A value's natural big-endian bytes — two's complement, IEEE-754, or
+/// already in order — in stored form.
+fn stored(ty: CellType, natural: &[u8]) -> Vec<u8> {
+    let mut out = natural.to_vec();
+    if is_signed(ty) {
+        flip_sign(&mut out);
+    } else if let CellType::Float(_) = ty {
+        float_to_stored(&mut out);
+    }
+    out
 }
 
-/// The encoded rungs climb strictly, and each decodes back to its value.
+/// The inverse of [`stored`].
+fn natural(ty: CellType, stored: &[u8]) -> Vec<u8> {
+    let mut out = stored.to_vec();
+    if is_signed(ty) {
+        flip_sign(&mut out);
+    } else if let CellType::Float(_) = ty {
+        float_from_stored(&mut out);
+    }
+    out
+}
+
+/// Each rung's stored form is valid, decodes back, and sorts strictly above
+/// the rung before it.
 fn assert_ladder(ty: CellType, ladder: &[(&str, Vec<u8>)]) {
-    let encoded: Vec<_> = ladder.iter().map(|(_, v)| enc(ty, v)).collect();
+    let encoded: Vec<_> = ladder.iter().map(|(_, v)| stored(ty, v)).collect();
+    for ((name, value), e) in ladder.iter().zip(&encoded) {
+        ty.validate(e)
+            .unwrap_or_else(|err| panic!("{} {name}: {err}", ty.name()));
+        assert_eq!(&natural(ty, e), value, "{} {name}", ty.name());
+    }
     for i in 1..ladder.len() {
         assert!(
             encoded[i - 1] < encoded[i],
@@ -70,10 +99,6 @@ fn assert_ladder(ty: CellType, ladder: &[(&str, Vec<u8>)]) {
             ladder[i - 1].0,
             ladder[i].0,
         );
-    }
-    for ((name, value), e) in ladder.iter().zip(&encoded) {
-        let decoded = order_decode(ty, e).unwrap_or_else(|err| panic!("{name}: {err}"));
-        assert_eq!(decoded.as_ref(), &value[..], "{}: {name}", ty.name());
     }
 }
 
@@ -90,7 +115,7 @@ fn signed_anchors_at_every_width() {
             ("MAX", be(n, 0x7F, 0xFF, 0xFF), be(n, 0xFF, 0xFF, 0xFF)),
         ];
         for (name, value, expected) in rows {
-            assert_eq!(enc(ty, &value), expected, "{} {name}", ty.name());
+            assert_eq!(stored(ty, &value), expected, "{} {name}", ty.name());
         }
     }
 }
@@ -138,10 +163,6 @@ fn bool_ladder() {
         CellType::Bool,
         &[("false", vec![0x00]), ("true", vec![0x01])],
     );
-    assert_eq!(
-        order_encode(CellType::Bool, &[2]),
-        Err(OrderError::Invalid(CellParseError::InvalidBool(2)))
-    );
 }
 
 macro_rules! float_ladder {
@@ -175,7 +196,7 @@ fn float_ladders() {
 
 /// Both branches of the float transform, byte for byte.
 #[test]
-fn f64_encoding_vectors() {
+fn f64_stored_vectors() {
     #[rustfmt::skip]
     let rows: &[(f64, [u8; 8])] = &[
         (f64::NEG_INFINITY, [0x00, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
@@ -185,26 +206,39 @@ fn f64_encoding_vectors() {
         (f64::INFINITY,     [0xFF, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
     ];
     for (v, expected) in rows {
-        assert_eq!(enc(F64, &v.to_be_bytes()), expected, "{v}");
+        assert_eq!(stored(F64, &v.to_be_bytes()), expected, "{v}");
+        assert_eq!(encode_float(v.to_be_bytes()), *expected, "{v}");
     }
 }
 
-/// The order forms -0.0 and NaN would have do not decode.
+/// Whatever stored bytes -0.0 and NaN would take are not valid values.
 #[test]
-fn nan_and_negative_zero_have_no_order_form() {
-    let nan = Err(OrderError::Invalid(CellParseError::FloatNaN));
-    let neg_zero = Err(OrderError::Invalid(CellParseError::NegativeZero));
-
-    assert_eq!(order_encode(F64, &(-0.0f64).to_be_bytes()), neg_zero);
+fn nan_and_negative_zero_are_not_stored() {
+    let neg_zero = Err(CellParseError::NegativeZero);
     assert_eq!(
-        order_decode(F64, &[0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+        F64.validate(&encode_float((-0.0f64).to_be_bytes())),
         neg_zero
     );
-    assert_eq!(order_decode(F64, &[0xFF, 0xF8, 0, 0, 0, 0, 0, 0]), nan);
-    assert_eq!(order_decode(F32, &[0x7F, 0xFF, 0xFF, 0xFF]), neg_zero);
+    assert_eq!(
+        F32.validate(&encode_float((-0.0f32).to_be_bytes())),
+        neg_zero
+    );
+    for bits in [
+        f64::NAN.to_bits(),
+        (-f64::NAN).to_bits(),
+        0x7FF0_0000_0000_0001,
+    ] {
+        assert_eq!(
+            F64.validate(&encode_float(bits.to_be_bytes())),
+            Err(CellParseError::FloatNaN),
+            "{bits:#x}"
+        );
+    }
 }
 
-/// Includes byte-prefixes ("Alice" < "Alice2" < "Alicia") and multi-byte UTF-8.
+/// Includes byte-prefixes ("Alice" < "Alice2" < "Alicia") and multi-byte
+/// UTF-8. `str` is the trailing field of an index term, so it needs no
+/// terminator.
 #[test]
 fn str_ladder() {
     let ladder: Vec<_> = ["", "A", "Alice", "Alice2", "Alicia", "Bob", "a", "é", "😀"]
@@ -214,28 +248,13 @@ fn str_ladder() {
     assert_ladder(CellType::Str, &ladder);
 }
 
-#[test]
-fn field_only_types_are_not_indexable() {
-    #[cfg(not(feature = "custom_types"))]
-    let types = [CellType::Bytes];
-    #[cfg(feature = "custom_types")]
-    let types = [
-        CellType::Bytes,
-        CellType::Custom(CustomTypeId::new(64).unwrap()),
-    ];
-    for ty in types {
-        assert_eq!(order_encode(ty, &[]), Err(OrderError::NotIndexable(ty)));
-        assert_eq!(order_decode(ty, &[]), Err(OrderError::NotIndexable(ty)));
-    }
-}
-
 /// Changing a scale after genesis re-encodes every value of that type.
 #[test]
 fn decimal_scales_are_pinned() {
     assert_eq!(WIDTHS.map(Width::decimal_scale), [4, 6, 18, 18]);
 }
 
-/// `enc(a).cmp(enc(b))` equals `expected`, the domain comparison.
+/// Stored bytes compare as `expected`, the domain comparison.
 fn order_matches(
     ty: CellType,
     a: &[u8],
@@ -243,7 +262,7 @@ fn order_matches(
     expected: Ordering,
 ) -> Result<(), TestCaseError> {
     prop_assert_eq!(
-        enc(ty, a).cmp(&enc(ty, b)),
+        stored(ty, a).cmp(&stored(ty, b)),
         expected,
         "{}: {:02x?} vs {:02x?}",
         ty.name(),
@@ -267,6 +286,11 @@ fn sext32(v: i128) -> [u8; 32] {
 /// Arbitrary bytes, and sign-extended `i128`s so values near zero are hit.
 fn any_i256() -> impl Strategy<Value = [u8; 32]> {
     prop_oneof![any::<[u8; 32]>(), any::<i128>().prop_map(sext32)]
+}
+
+/// An indexable cell of `ty` over stored bytes.
+fn cell(ty: CellType, value: &[u8]) -> CellValue<'_> {
+    CellValue::new(ty, value, true).unwrap()
 }
 
 proptest! {
@@ -314,16 +338,16 @@ proptest! {
     /// `total_cmp` is numeric order once NaN and -0.0 are excluded.
     #[test]
     fn order_preserved_f64(a: u64, b: u64) {
-        let (a, b) = (a.to_be_bytes(), b.to_be_bytes());
-        prop_assume!(F64.validate(&a).is_ok() && F64.validate(&b).is_ok());
-        order_matches(F64, &a, &b, f64::from_be_bytes(a).total_cmp(&f64::from_be_bytes(b)))?;
+        let (a, b) = (f64::from_bits(a), f64::from_bits(b));
+        prop_assume!(!a.is_nan() && !b.is_nan() && a.to_bits() != 1 << 63 && b.to_bits() != 1 << 63);
+        order_matches(F64, &a.to_be_bytes(), &b.to_be_bytes(), a.total_cmp(&b))?;
     }
 
     #[test]
     fn order_preserved_f32(a: u32, b: u32) {
-        let (a, b) = (a.to_be_bytes(), b.to_be_bytes());
-        prop_assume!(F32.validate(&a).is_ok() && F32.validate(&b).is_ok());
-        order_matches(F32, &a, &b, f32::from_be_bytes(a).total_cmp(&f32::from_be_bytes(b)))?;
+        let (a, b) = (f32::from_bits(a), f32::from_bits(b));
+        prop_assume!(!a.is_nan() && !b.is_nan() && a.to_bits() != 1 << 31 && b.to_bits() != 1 << 31);
+        order_matches(F32, &a.to_be_bytes(), &b.to_be_bytes(), a.total_cmp(&b))?;
     }
 
     /// `str` order is code-point order.
@@ -332,35 +356,36 @@ proptest! {
         order_matches(CellType::Str, a.as_bytes(), b.as_bytes(), a.chars().cmp(b.chars()))?;
     }
 
-    /// Every valid value survives encode → decode, `order_encode_into` agrees
-    /// with `order_encode`, and exactly the in-order types borrow.
+    /// `encode_int` → cell → accessor gives back the value, at every signed type.
     #[test]
-    fn round_trips((ty, value) in any_valid_cell()) {
-        // Field-only types and over-long values; the ladders pin that every
-        // indexable type encodes.
-        let Ok(encoded) = order_encode(ty, &value) else { return Ok(()) };
-        let decoded = order_decode(ty, &encoded).unwrap();
-        prop_assert_eq!(decoded.as_ref(), &value[..]);
+    fn int_accessors_round_trip(a: i32, b: i64, c: i128, d in any_i256()) {
+        let a4 = encode_int(a.to_be_bytes());
+        prop_assert_eq!(cell(CellType::Int(Width::W4), &a4).as_i32(), Some(a));
+        prop_assert_eq!(cell(CellType::Decimal(Width::W4), &a4).as_dec32_unscaled(), Some(a));
+        prop_assert_eq!(cell(CellType::Date32, &a4).as_date32(), Some(a));
 
-        let mut buf = vec![0xAA];
-        order_encode_into(ty, &value, &mut buf).unwrap();
-        prop_assert_eq!(&buf[1..], encoded.as_ref());
+        let b8 = encode_int(b.to_be_bytes());
+        prop_assert_eq!(cell(CellType::Int(Width::W8), &b8).as_i64(), Some(b));
+        prop_assert_eq!(cell(CellType::Decimal(Width::W8), &b8).as_dec64_unscaled(), Some(b));
+        prop_assert_eq!(cell(CellType::Timestamp64, &b8).as_timestamp64(), Some(b));
 
-        let in_order = matches!(
-            ty,
-            CellType::Bool | CellType::Str | CellType::Bytes20 | CellType::FixedBytes(_) | CellType::Uint(_)
-        );
-        prop_assert_eq!(matches!(encoded, Cow::Borrowed(_)), in_order);
+        let c16 = encode_int(c.to_be_bytes());
+        prop_assert_eq!(cell(CellType::Int(Width::W16), &c16).as_i128(), Some(c));
+        prop_assert_eq!(cell(CellType::Decimal(Width::W16), &c16).as_dec128_unscaled(), Some(c));
+
+        let d32 = encode_int(d);
+        prop_assert_eq!(cell(CellType::Int(Width::W32), &d32).as_i256_be(), Some(d));
+        prop_assert_eq!(cell(CellType::Decimal(Width::W32), &d32).as_dec256_unscaled_be(), Some(d));
     }
 
-    /// Decoding never panics, and whatever decodes re-encodes to the same bytes.
+    /// `encode_float` → cell → accessor gives back the same bits.
     #[test]
-    fn decode_is_total_and_canonical(
-        ty in any_cell_type(),
-        bytes in prop::collection::vec(any::<u8>(), 0..40),
-    ) {
-        if let Ok(value) = order_decode(ty, &bytes) {
-            prop_assert_eq!(enc(ty, &value), bytes);
-        }
+    fn float_accessors_round_trip(a: u32, b: u64) {
+        let (a, b) = (f32::from_bits(a), f64::from_bits(b));
+        prop_assume!(!a.is_nan() && !b.is_nan() && a.to_bits() != 1 << 31 && b.to_bits() != 1 << 63);
+        let a4 = encode_float(a.to_be_bytes());
+        let b8 = encode_float(b.to_be_bytes());
+        prop_assert_eq!(cell(F32, &a4).as_f32().map(f32::to_bits), Some(a.to_bits()));
+        prop_assert_eq!(cell(F64, &b8).as_f64().map(f64::to_bits), Some(b.to_bits()));
     }
 }

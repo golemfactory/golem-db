@@ -58,6 +58,7 @@ proptest! {
         (ty, value) in any_valid_cell(),
         indexable in any::<bool>(),
     ) {
+        let indexable = indexable && ty.is_indexable();
         let built = match CellValue::new(ty, &value, indexable) {
             Ok(cell) => cell,
             // The generator straddles the variable-width maximum on
@@ -79,10 +80,15 @@ proptest! {
     /// The indexable bit and the type id never bleed into each other.
     #[test]
     fn metadata_byte_splits_cleanly(ty in any_cell_type(), indexable in any::<bool>()) {
-        let value = vec![0u8; match ty.layout() {
+        let indexable = indexable && ty.is_indexable();
+        let mut value = vec![0u8; match ty.layout() {
             ValueLayout::Fixed(n) => n,
             _ => 0,
         }];
+        // Stored +0.0 is 0x80 00…; all-zero bytes decode to NaN.
+        if let CellType::Float(_) = ty {
+            value[0] = 0x80;
+        }
         let cell = CellValue::new(ty, &value, indexable).unwrap();
         let metadata = cell.metadata();
         prop_assert_eq!(metadata & TYPE_ID_MASK, ty.id());

@@ -2,6 +2,7 @@
 
 use crate::MAX_VALUE_LEN;
 use crate::error::CellParseError;
+use crate::order::decode_float;
 #[cfg(feature = "custom_types")]
 use crate::{CUSTOM_TYPE_ID_BASE, TYPE_ID_SPACE};
 
@@ -118,7 +119,7 @@ impl ValueLayout {
 
 /// The type of a cell's value — the 7-bit type-id space, decoded.
 ///
-/// | id     | type                                  | family                | value bytes               | order-encoding     |
+/// | id     | type                                  | family                | value bytes               | stored form        |
 /// | ------ | ------------------------------------- | --------------------- | ------------------------- | ------------------ |
 /// | 0      | *not a type* — the "absent" marker    | —                     | —                         | —                  |
 /// | 1      | `bool`                                | singleton             | 1                         | the byte           |
@@ -135,9 +136,9 @@ impl ValueLayout {
 /// | 32–63  | *reserved — future core families*     | 8 aligned blocks of 4 |                           |                    |
 /// | 64–127 | *custom types* (`custom_types`)       | per deployment        | var (≤ [`MAX_VALUE_LEN`]) | not indexable      |
 ///
-/// The order-encoding column says how a value must be laid out for a bytewise
-/// comparison to match a value comparison; [`order_encode`](crate::order_encode)
-/// applies it. Whether an ordered type is actually *offered* for range
+/// The stored-form column says how value bytes are laid out so that a bytewise
+/// comparison matches a value comparison; the typed accessors on
+/// [`CellValue`](crate::CellValue) decode it. Whether an ordered type is actually *offered* for range
 /// queries is a separate, policy question — `QueryCapabilities` answers it, and
 /// answers "no" for some types this column can order (`bytes32`, for one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,14 +313,25 @@ impl CellType {
             // Bits, never `==`: `-0.0 == 0.0` holds and `NaN == NaN` does not.
             // The length check above makes the conversions infallible.
             (Self::Float(FloatWidth::F32), v) => {
-                let bits = u32::from_be_bytes(v.try_into().unwrap());
+                let bits = u32::from_be_bytes(decode_float(v.try_into().unwrap()));
                 check_float(f32::from_bits(bits).is_nan(), bits == 1 << 31)
             }
             (Self::Float(FloatWidth::F64), v) => {
-                let bits = u64::from_be_bytes(v.try_into().unwrap());
+                let bits = u64::from_be_bytes(decode_float(v.try_into().unwrap()));
                 check_float(f64::from_bits(bits).is_nan(), bits == 1 << 63)
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Whether a cell of this type may carry the indexable bit. `bytes` and
+    /// custom types have no order, so they are field-only.
+    pub const fn is_indexable(self) -> bool {
+        match self {
+            Self::Bytes => false,
+            #[cfg(feature = "custom_types")]
+            Self::Custom(_) => false,
+            _ => true,
         }
     }
 }
