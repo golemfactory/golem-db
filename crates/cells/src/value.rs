@@ -200,8 +200,8 @@ impl<'a> CellValue<'a> {
 
     // -- signed integers, two's complement big-endian ----------------------
     //
-    // Plain two's complement, not the sign-biased form the order-encoding
-    // column describes: that bias belongs to index keys, not to stored values.
+    // Plain two's complement, not the sign-biased form `order_encode`
+    // produces: that bias belongs to index keys, not to stored values.
 
     pub fn as_i32(&self) -> Option<i32> {
         self.exact(CellType::Int(Width::W4)).map(i32::from_be_bytes)
@@ -223,9 +223,8 @@ impl<'a> CellValue<'a> {
 
     // -- decimals ----------------------------------------------------------
     //
-    // These return the *unscaled* mantissa. The spec pins a fixed scale per
-    // width, but that scale is not represented in this crate yet, so applying
-    // it is the caller's job — see the note on `CellType::Decimal`.
+    // These return the *unscaled* mantissa. The scale is fixed per width —
+    // `Width::decimal_scale` — and applying it is the caller's job.
 
     pub fn as_dec32_unscaled(&self) -> Option<i32> {
         self.exact(CellType::Decimal(Width::W4))

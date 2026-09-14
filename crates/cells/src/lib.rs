@@ -24,6 +24,36 @@
 //! grammar, the engine's `#`/`$` names, and the raw byte keys reserved records
 //! use. See [`CellKeyRef`].
 //!
+//! # Order encoding
+//!
+//! [`order_encode`] lays a value out so that **bytewise order is value
+//! order**, which is what makes an `Index` cursor walk a range query (§5).
+//!
+//! | transform             | types                                                  |
+//! | --------------------- | ------------------------------------------------------ |
+//! | none (borrowed)       | `bool`, `str`, `bytes20`, `bytes4..32`, `u32..u256`    |
+//! | flip byte 0's top bit | `i32..i256`, `dec32..dec256`, `date32`, `timestamp64`  |
+//! | IEEE total order      | `f32`, `f64`                                           |
+//!
+//! `bytes` and custom types are [`OrderError::NotIndexable`]. The output
+//! matches Arkiv's `AttributeValue::index_bytes` byte for byte.
+//!
+//! **Floats:** non-negative flips the sign bit, negative flips every bit.
+//! [`CellType::validate`] rejects NaN and `-0.0`, so every float has one byte
+//! form in storage and in the index.
+//!
+//! **Decimals are integers.** A `dec` is the signed integer of its width at a
+//! fixed scale, so there is no separate decimal codec. Scales harden at
+//! genesis; `dec256` is fixed by Arkiv, the rest **await sign-off**:
+//!
+//! | `dec32` | `dec64` | `dec128` | `dec256` |
+//! | ------- | ------- | -------- | -------- |
+//! | 4       | 6       | 18       | 18 (wei) |
+//!
+//! **Open:** raw UTF-8 orders correctly only as the *last* component of a key.
+//! If §5's `Index` key puts a `recordID` after the value, `str` needs a
+//! different encoding.
+//!
 //! # The `0x00` tag
 //!
 //! **Type ids start at `0x01`; `0x00` is not a type.** It is the engine's
@@ -55,14 +85,16 @@
 
 mod error;
 mod key;
+mod order;
 mod types;
 mod value;
 
 #[cfg(test)]
 mod tests;
 
-pub use error::CellParseError;
+pub use error::{CellParseError, OrderError};
 pub use key::{CellKey, CellKeyError, CellKeyRef, DEFAULT_MAX_CELL_NAME_LEN, reserved};
+pub use order::{order_decode, order_encode, order_encode_into};
 #[cfg(feature = "custom_types")]
 pub use types::CustomTypeId;
 pub use types::{CellType, FloatWidth, ValueLayout, Width};

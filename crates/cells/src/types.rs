@@ -41,6 +41,16 @@ impl Width {
     pub const fn bytes(self) -> usize {
         4usize << self.w()
     }
+
+    /// The decimal places a `dec` of this width carries.
+    pub const fn decimal_scale(self) -> u8 {
+        match self {
+            Self::W4 => 4,
+            Self::W8 => 6,
+            Self::W16 => 18,
+            Self::W32 => 18,
+        }
+    }
 }
 
 /// The width of a float: `f32` or `f64`.
@@ -111,9 +121,9 @@ impl ValueLayout {
 /// | id     | type                                  | family                | value bytes               | order-encoding     |
 /// | ------ | ------------------------------------- | --------------------- | ------------------------- | ------------------ |
 /// | 0      | *not a type* — the "absent" marker    | —                     | —                         | —                  |
-/// | 1      | `bool`                                | singleton             | 1                         | —                  |
+/// | 1      | `bool`                                | singleton             | 1                         | the byte           |
 /// | 2      | `str`                                 | singleton             | var (≤ [`MAX_VALUE_LEN`]) | raw UTF-8          |
-/// | 3      | `bytes` (field-only)                  | singleton             | var (≤ [`MAX_VALUE_LEN`]) | —                  |
+/// | 3      | `bytes` (field-only)                  | singleton             | var (≤ [`MAX_VALUE_LEN`]) | not indexable      |
 /// | 4      | `bytes20`                             | singleton             | 20                        | plain bytes        |
 /// | 5–7    | *reserved singletons*                 |                       |                           |                    |
 /// | 8–11   | `bytes4` `bytes8` `bytes16` `bytes32` | `8 + w`               | 4·2^w                     | plain bytes        |
@@ -123,12 +133,11 @@ impl ValueLayout {
 /// | 24–25  | `f32` `f64`                           | floats (26–27 rsvd)   | 4 / 8                     | IEEE total-order   |
 /// | 28–29  | `date32` `timestamp64`                | time (30–31 rsvd)     | 4 / 8                     | sign-bit-biased BE |
 /// | 32–63  | *reserved — future core families*     | 8 aligned blocks of 4 |                           |                    |
-/// | 64–127 | *custom types* (`custom_types`)       | per deployment        | var (≤ [`MAX_VALUE_LEN`]) |                    |
+/// | 64–127 | *custom types* (`custom_types`)       | per deployment        | var (≤ [`MAX_VALUE_LEN`]) | not indexable      |
 ///
 /// The order-encoding column says how a value must be laid out for a bytewise
-/// comparison to match a value comparison. It is recorded here but not applied
-/// here: `AttributeValue::index_bytes` in `arkiv-interfaces` owns those
-/// transforms today. Whether an ordered type is actually *offered* for range
+/// comparison to match a value comparison; [`order_encode`](crate::order_encode)
+/// applies it. Whether an ordered type is actually *offered* for range
 /// queries is a separate, policy question — `QueryCapabilities` answers it, and
 /// answers "no" for some types this column can order (`bytes32`, for one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,10 +156,10 @@ pub enum CellType {
     Uint(Width),
     /// `i32`, `i64`, `i128`, `i256`.
     Int(Width),
-    /// `dec32`, `dec64`, `dec128`, `dec256`, each at the fixed scale the spec
-    /// pins for its width.
+    /// `dec32`, `dec64`, `dec128`, `dec256`: the signed integer of the same
+    /// width, at the fixed scale [`Width::decimal_scale`] pins.
     Decimal(Width),
-    /// `f32`, `f64`.
+    /// `f32`, `f64`. NaN and `-0.0` are not valid values.
     Float(FloatWidth),
     /// Days since the Unix epoch, signed.
     Date32,
@@ -300,7 +309,27 @@ impl CellType {
                 // starts on the offending byte rather than the value's start.
                 Err(e) => Err(CellParseError::invalid_utf8(v, e.valid_up_to())),
             },
+            // Bits, never `==`: `-0.0 == 0.0` holds and `NaN == NaN` does not.
+            // The length check above makes the conversions infallible.
+            (Self::Float(FloatWidth::F32), v) => {
+                let bits = u32::from_be_bytes(v.try_into().unwrap());
+                check_float(f32::from_bits(bits).is_nan(), bits == 1 << 31)
+            }
+            (Self::Float(FloatWidth::F64), v) => {
+                let bits = u64::from_be_bytes(v.try_into().unwrap());
+                check_float(f64::from_bits(bits).is_nan(), bits == 1 << 63)
+            }
             _ => Ok(()),
         }
+    }
+}
+
+const fn check_float(is_nan: bool, is_negative_zero: bool) -> Result<(), CellParseError> {
+    if is_nan {
+        Err(CellParseError::FloatNaN)
+    } else if is_negative_zero {
+        Err(CellParseError::NegativeZero)
+    } else {
+        Ok(())
     }
 }

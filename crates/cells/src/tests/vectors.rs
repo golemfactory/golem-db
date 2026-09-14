@@ -37,18 +37,19 @@ pub(super) const VECTORS: &[Vector] = &[
     ("u64, idx",        &[0x8D, 0, 0, 0, 0, 0, 0, 0, 7],       true,  CellType::Uint(Width::W8),        &[0, 0, 0, 0, 0, 0, 0, 7]),
     ("u128",            &U128_ZERO_CELL,                       false, CellType::Uint(Width::W16),       &ZERO_VALUE_16),
     ("u256",            &U256_ZERO_CELL,                       false, CellType::Uint(Width::W32),       &ZERO_VALUE_32),
-    ("i32",             &[0x10, 0x80, 0, 0, 1],                false, CellType::Int(Width::W4),         &[0x80, 0, 0, 1]),
-    ("i64",             &[0x11, 0x80, 0, 0, 0, 0, 0, 0, 1],    false, CellType::Int(Width::W8),         &[0x80, 0, 0, 0, 0, 0, 0, 1]),
+    // Stored as plain two's complement (-1); the sign bias is index-only.
+    ("i32 -1",          &[0x10, 0xFF, 0xFF, 0xFF, 0xFF],       false, CellType::Int(Width::W4),         &[0xFF, 0xFF, 0xFF, 0xFF]),
+    ("i64 -1",          &[0x11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], false, CellType::Int(Width::W8), &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
     ("i128",            &I128_ZERO_CELL,                       false, CellType::Int(Width::W16),        &ZERO_VALUE_16),
     ("i256",            &I256_ZERO_CELL,                       false, CellType::Int(Width::W32),        &ZERO_VALUE_32),
-    ("dec32",           &[0x14, 0x80, 0, 0, 1],                false, CellType::Decimal(Width::W4),     &[0x80, 0, 0, 1]),
+    ("dec32 -1",        &[0x14, 0xFF, 0xFF, 0xFF, 0xFF],       false, CellType::Decimal(Width::W4),     &[0xFF, 0xFF, 0xFF, 0xFF]),
     ("dec64",           &[0x15, 0, 0, 0, 0, 0, 0, 0, 0],       false, CellType::Decimal(Width::W8),     &[0, 0, 0, 0, 0, 0, 0, 0]),
     ("dec128",          &DEC128_ZERO_CELL,                     false, CellType::Decimal(Width::W16),    &ZERO_VALUE_16),
     ("dec256",          &DEC256_ZERO_CELL,                     false, CellType::Decimal(Width::W32),    &ZERO_VALUE_32),
     ("f32",             &[0x18, 0x3F, 0x80, 0, 0],             false, CellType::Float(FloatWidth::F32), &[0x3F, 0x80, 0, 0]),
     ("f64",             &[0x19, 0x3F, 0xF0, 0, 0, 0, 0, 0, 0], false, CellType::Float(FloatWidth::F64), &[0x3F, 0xF0, 0, 0, 0, 0, 0, 0]),
-    ("date32",          &[0x1C, 0x80, 0, 0x4E, 0x20],          false, CellType::Date32,                 &[0x80, 0, 0x4E, 0x20]),
-    ("timestamp64",     &[0x9D, 0x80, 0, 0, 0, 0, 0, 0, 1],    true,  CellType::Timestamp64,            &[0x80, 0, 0, 0, 0, 0, 0, 1]),
+    ("date32 20000",    &[0x1C, 0, 0, 0x4E, 0x20],             false, CellType::Date32,                 &[0, 0, 0x4E, 0x20]),
+    ("timestamp64 1",   &[0x9D, 0, 0, 0, 0, 0, 0, 0, 1],       true,  CellType::Timestamp64,            &[0, 0, 0, 0, 0, 0, 0, 1]),
 ];
 
 /// The custom block's vectors, present only when the feature that decodes
@@ -192,6 +193,14 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
     // -- content: bool -------------------------------------------------
     ("bool byte 2",             &[0x01, 2],                               CellParseError::InvalidBool(2)),
     ("bool byte 0xFF",          &[0x01, 0xFF],                            CellParseError::InvalidBool(0xFF)),
+
+    // -- content: floats with no single byte form ----------------------
+    ("f32 quiet NaN",           &[0x18, 0x7F, 0xC0, 0, 0],                CellParseError::FloatNaN),
+    ("f32 -0.0",                &[0x18, 0x80, 0, 0, 0],                   CellParseError::NegativeZero),
+    ("f64 quiet NaN",           &[0x19, 0x7F, 0xF8, 0, 0, 0, 0, 0, 0],    CellParseError::FloatNaN),
+    ("f64 signalling NaN",      &[0x19, 0x7F, 0xF0, 0, 0, 0, 0, 0, 1],    CellParseError::FloatNaN),
+    ("f64 negative NaN",        &[0x19, 0xFF, 0xF8, 0, 0, 0, 0, 0, 0],    CellParseError::FloatNaN),
+    ("f64 -0.0",                &[0x19, 0x80, 0, 0, 0, 0, 0, 0, 0],       CellParseError::NegativeZero),
 
     // -- content: str that is not really UTF-8 -------------------------
     // Each is correctly framed, so only the content is under test.

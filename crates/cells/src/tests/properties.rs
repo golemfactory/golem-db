@@ -8,14 +8,14 @@ use proptest::prelude::*;
 use crate::*;
 
 /// Every type in the table, each width included.
-fn any_cell_type() -> impl Strategy<Value = CellType> {
+pub(super) fn any_cell_type() -> impl Strategy<Value = CellType> {
     (0u8..TYPE_ID_SPACE).prop_filter_map("reserved id", |id| CellType::from_id(id).ok())
 }
 
 /// A type paired with a value whose *content* is valid for it. Lengths
 /// deliberately straddle the variable-width maximum, so `TooLong` is the one
 /// error [`build_encode_parse_round_trips`] may see.
-fn any_valid_cell() -> impl Strategy<Value = (CellType, Vec<u8>)> {
+pub(super) fn any_valid_cell() -> impl Strategy<Value = (CellType, Vec<u8>)> {
     any_cell_type().prop_flat_map(|ty| {
         let value = match ty {
             // Content-constrained: not every byte string of the right
@@ -24,6 +24,10 @@ fn any_valid_cell() -> impl Strategy<Value = (CellType, Vec<u8>)> {
             CellType::Str => prop::string::string_regex(".{0,120}")
                 .unwrap()
                 .prop_map(String::into_bytes)
+                .boxed(),
+            // Any bits but NaN and -0.0.
+            CellType::Float(f) => prop::collection::vec(any::<u8>(), f.bytes())
+                .prop_filter("NaN or -0.0", move |v| ty.validate(v).is_ok())
                 .boxed(),
             // Length is the only constraint.
             _ => match ty.layout() {
