@@ -2,8 +2,10 @@
 //!
 //! - [`vectors`] holds the tables, accept and reject.
 //! - [`properties`] holds what must hold over *generated* input instead.
+//! - [`order`] holds the order-encoding ladders and properties.
 
 mod keys;
+mod order;
 mod properties;
 mod vectors;
 
