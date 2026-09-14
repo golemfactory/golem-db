@@ -3,6 +3,7 @@
 //! - [`vectors`] holds the tables, accept and reject.
 //! - [`properties`] holds what must hold over *generated* input instead.
 
+mod keys;
 mod properties;
 mod vectors;
 
@@ -56,7 +57,7 @@ fn vectors_cover_every_core_family() {
 fn type_names_match_the_spec() {
     #[rustfmt::skip]
     const NAMES: &[(u8, &str)] = &[
-        (0, "tombstone"), (1, "bool"), (2, "str"), (3, "bytes"), (4, "bytes20"),
+        (1, "bool"), (2, "str"), (3, "bytes"), (4, "bytes20"),
         (8, "bytes4"), (9, "bytes8"), (10, "bytes16"), (11, "bytes32"),
         (12, "u32"), (13, "u64"), (14, "u128"), (15, "u256"),
         (16, "i32"), (17, "i64"), (18, "i128"), (19, "i256"),
@@ -89,17 +90,19 @@ fn type_names_match_the_spec() {
 #[test]
 fn id_space_matches_the_spec() {
     const RESERVED: &[u8] = &[5, 6, 7, 26, 27, 30, 31];
+    // 0 is not reserved-for-later; it is the absent marker, and reports so.
     // With `custom_types` off the top block decodes to nothing either, but
     // as `CustomTypesDisabled` rather than `ReservedType`.
     let custom_off = cfg!(not(feature = "custom_types"));
     for id in 0..TYPE_ID_SPACE {
-        let reserved = RESERVED.contains(&id) || (32..64).contains(&id);
+        let reserved = id == 0 || RESERVED.contains(&id) || (32..64).contains(&id);
         let disabled = custom_off && id >= CUSTOM_TYPE_ID_BASE;
         match CellType::from_id(id) {
             Ok(ty) => {
                 assert!(!reserved && !disabled, "id {id} should not decode");
                 assert_eq!(ty.id(), id);
             }
+            Err(e) if id == 0 => assert_eq!(e, CellParseError::AbsentTag),
             Err(e) if disabled => {
                 assert_eq!(e, CellParseError::CustomTypesDisabled(id));
             }
@@ -147,6 +150,34 @@ fn every_metadata_byte_and_length() {
             }
         }
     }
+}
+
+/// The A2 resolution, pinned: `0x00` is not a member of the type grid.
+///
+/// Type ids start at `0x01`, so the engine can use a zero tag as an
+/// unambiguous "absent" marker. A branch-overlay tombstone is therefore
+/// `Option<CellValue>::None` — a branch-layer concept kept out of the
+/// consensus-critical vocabulary — and no `CellType::Tombstone` exists to
+/// let one decode where the spec says it must not appear.
+#[test]
+fn absent_tag_is_not_a_type() {
+    assert_eq!(CellType::from_id(0), Err(CellParseError::AbsentTag));
+    assert_eq!(
+        CellParseError::AbsentTag.to_string(),
+        "type id 0 is the absent marker, not a type"
+    );
+    // No type claims id 0, so nothing can encode one.
+    for id in 1..TYPE_ID_SPACE {
+        if let Ok(ty) = CellType::from_id(id) {
+            assert_ne!(ty.id(), 0, "id {id}");
+        }
+    }
+    // Absence is `Option`, and it costs nothing: the compiler puts `None`
+    // in a `CellType` niche.
+    assert_eq!(
+        size_of::<Option<CellValue<'_>>>(),
+        size_of::<CellValue<'_>>()
+    );
 }
 
 #[test]
@@ -354,7 +385,7 @@ fn packed_cells_walk_and_truncation_is_caught() {
         CellValue::new(CellType::Str, b"hi", true).unwrap(),
         CellValue::new(CellType::Uint(Width::W8), &seven, false).unwrap(),
         CellValue::new(CellType::Bytes, &[0xDE, 0xAD], false).unwrap(),
-        CellValue::new(CellType::Tombstone, &[], false).unwrap(),
+        CellValue::new(CellType::Bool, &[1], false).unwrap(),
     ];
 
     let mut packed = Vec::new();
@@ -401,7 +432,7 @@ fn typed_accessors() {
     assert_eq!(CellValue::parse(&[0x01, 0]).unwrap().as_bool(), Some(false));
     // Wrong type: no coercion, no panic.
     assert_eq!(CellValue::parse(&[0x01, 1]).unwrap().as_str(), None);
-    assert_eq!(CellValue::parse(&[0x00]).unwrap().as_bool(), None);
+    assert_eq!(CellValue::parse(&[0x00]), Err(CellParseError::AbsentTag));
 }
 
 #[cfg(feature = "custom_types")]
