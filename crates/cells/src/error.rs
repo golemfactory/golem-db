@@ -13,6 +13,11 @@ pub enum CellParseError {
     Empty,
     /// The type id names a slot the spec reserves for future use.
     ReservedType(u8),
+    /// The type id is `0x00`, the "absent" marker. Type codes start at `0x01`
+    /// precisely so that no valid cell can collide with it; it is not a type,
+    /// and it never appears in a persisted `Cell` row, a `CellTrie` leaf
+    /// preimage or an `Index` term. See the crate docs, "The `0x00` tag".
+    AbsentTag,
     /// A variable-width cell that stops before its 4-byte length prefix.
     MissingLength,
     /// A fixed-width type whose value is not exactly that wide.
@@ -61,6 +66,7 @@ impl fmt::Display for CellParseError {
         match self {
             Self::Empty => write!(f, "cell is missing its metadata byte"),
             Self::ReservedType(id) => write!(f, "type id {id} is reserved"),
+            Self::AbsentTag => write!(f, "type id 0 is the absent marker, not a type"),
             Self::MissingLength => write!(f, "cell is missing its length prefix"),
             Self::LengthMismatch {
                 ty,

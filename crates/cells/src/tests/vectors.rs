@@ -13,7 +13,6 @@ pub(super) type Vector = (&'static str, &'static [u8], bool, CellType, &'static 
 #[rustfmt::skip]
 pub(super) const VECTORS: &[Vector] = &[
     // name              wire bytes                             idx    type                              value
-    ("tombstone",       &[0x00],                                           false, CellType::Tombstone,              &[]),
     ("bool false",      &[0x01, 0x00],                                     false, CellType::Bool,                   &[0x00]),
     ("bool true, idx",  &[0x81, 0x01],                                     true,  CellType::Bool,                   &[0x01]),
     ("str empty",       &[0x02, 0x00, 0x00, 0x00, 0x00],                   false, CellType::Str,                    &[]),
@@ -152,6 +151,11 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
     ("reserved float 26",       &[26],                                    CellParseError::ReservedType(26)),
     ("reserved time 30",        &[30],                                    CellParseError::ReservedType(30)),
     ("reserved family 32",      &[32],                                    CellParseError::ReservedType(32)),
+    // 0x00 is the absent marker, not a type — with or without a payload,
+    // and with the indexable bit set or not.
+    ("absent tag",              &[0x00],                                  CellParseError::AbsentTag),
+    ("absent tag with payload", &[0x00, 9],                               CellParseError::AbsentTag),
+    ("absent tag, idx bit set", &[0x80],                                  CellParseError::AbsentTag),
     ("reserved family 63",      &[63],                                    CellParseError::ReservedType(63)),
     ("reserved, idx bit set",   &[0x80 | 5],                              CellParseError::ReservedType(5)),
     ("reserved with payload",   &[32, 1, 2, 3],                           CellParseError::ReservedType(32)),
@@ -162,7 +166,6 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
     ("u64 empty",               &[0x0D],                                  length_mismatch(CellType::Uint(Width::W8), 8, 0)),
     ("bool empty",              &[0x01],                                  length_mismatch(CellType::Bool, 1, 0)),
     ("bool with a spare byte",  &[0x01, 1, 9],                            CellParseError::TrailingBytes { extra: 1 }),
-    ("tombstone with a value",  &[0x00, 9],                               CellParseError::TrailingBytes { extra: 1 }),
     ("u32 one byte over",       &[0x0C, 0, 0, 0, 7, 9],                   CellParseError::TrailingBytes { extra: 1 }),
 
     // -- variable-width framing ---------------------------------------

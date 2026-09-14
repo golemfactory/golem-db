@@ -110,7 +110,7 @@ impl ValueLayout {
 ///
 /// | id     | type                                  | family                | value bytes               | order-encoding     |
 /// | ------ | ------------------------------------- | --------------------- | ------------------------- | ------------------ |
-/// | 0      | tombstone                             | singleton             | 0                         | —                  |
+/// | 0      | *not a type* — the "absent" marker    | —                     | —                         | —                  |
 /// | 1      | `bool`                                | singleton             | 1                         | —                  |
 /// | 2      | `str`                                 | singleton             | var (≤ [`MAX_VALUE_LEN`]) | raw UTF-8          |
 /// | 3      | `bytes` (field-only)                  | singleton             | var (≤ [`MAX_VALUE_LEN`]) | —                  |
@@ -133,8 +133,6 @@ impl ValueLayout {
 /// answers "no" for some types this column can order (`bytes32`, for one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellType {
-    /// A deleted cell: no value bytes at all.
-    Tombstone,
     Bool,
     Str,
     /// Field-only: storable, but never range-indexed. Variable width, and byte
@@ -169,7 +167,6 @@ impl CellType {
     /// The type id this type occupies in the metadata byte's low 7 bits.
     pub const fn id(self) -> u8 {
         match self {
-            Self::Tombstone => 0,
             Self::Bool => 1,
             Self::Str => 2,
             Self::Bytes => 3,
@@ -191,7 +188,6 @@ impl CellType {
     /// `"dec128"`. What errors and diagnostics print.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Tombstone => "tombstone",
             Self::Bool => "bool",
             Self::Str => "str",
             Self::Bytes => "bytes",
@@ -233,7 +229,7 @@ impl CellType {
     /// reserves come back as [`CellParseError::ReservedType`].
     pub const fn from_id(id: u8) -> Result<Self, CellParseError> {
         match id {
-            0 => Ok(Self::Tombstone),
+            0 => Err(CellParseError::AbsentTag),
             1 => Ok(Self::Bool),
             2 => Ok(Self::Str),
             3 => Ok(Self::Bytes),
@@ -251,7 +247,8 @@ impl CellType {
             #[cfg(not(feature = "custom_types"))]
             64..=127 => Err(CellParseError::CustomTypesDisabled(id)),
             // 5–7, 26–27, 30–31 and 32–63 are reserved; 128.. cannot fit the
-            // 7-bit field and is treated the same way.
+            // 7-bit field and is treated the same way. 0 is not among them:
+            // it is the absent marker, and says so.
             _ => Err(CellParseError::ReservedType(id)),
         }
     }
@@ -263,7 +260,6 @@ impl CellType {
     /// would not be self-delimiting.
     pub const fn layout(self) -> ValueLayout {
         match self {
-            Self::Tombstone => ValueLayout::Fixed(0),
             Self::Bool => ValueLayout::Fixed(1),
             #[cfg(feature = "custom_types")]
             Self::Custom(_) => ValueLayout::LengthPrefixed { max: MAX_VALUE_LEN },

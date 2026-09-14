@@ -127,10 +127,12 @@ proptest! {
     }
 
     /// Reserved ids stay reserved whatever follows them. Scoped to the core
-    /// block, since the custom block's verdict depends on the feature.
+    /// block, since the custom block's verdict depends on the feature, and
+    /// skipping 0, which is the absent marker rather than a reserved slot —
+    /// see `absent_tag_is_never_a_cell`.
     #[test]
     fn reserved_ids_never_parse(
-        id in (0u8..CUSTOM_TYPE_ID_BASE)
+        id in (1u8..CUSTOM_TYPE_ID_BASE)
             .prop_filter("valid id", |id| CellType::from_id(*id).is_err()),
         indexable in any::<bool>(),
         tail in prop::collection::vec(any::<u8>(), 0..40),
@@ -169,5 +171,20 @@ proptest! {
                 prop_assert_eq!(parsed.cell_type(), ty);
             }
         }
+    }
+
+
+    /// No byte string whose type id is 0 ever decodes to a cell, whatever
+    /// follows it and whichever way the indexable bit is set. This is what
+    /// lets the branch overlay (§10) use a zero tag as its tombstone without
+    /// a field of its own.
+    #[test]
+    fn absent_tag_is_never_a_cell(
+        indexable in any::<bool>(),
+        tail in prop::collection::vec(any::<u8>(), 0..40),
+    ) {
+        let cell = [&[if indexable { INDEXABLE_BIT } else { 0 }][..], &tail].concat();
+        prop_assert_eq!(CellValue::parse(&cell), Err(CellParseError::AbsentTag));
+        prop_assert_eq!(CellValue::parse_prefix(&cell).err(), Some(CellParseError::AbsentTag));
     }
 }
