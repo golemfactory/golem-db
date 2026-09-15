@@ -1,15 +1,12 @@
-//! The type-id space: [`CellType`] and the pieces it is built from.
+//! [`CellType`]: the 7-bit type-id space, decoded.
 
 use crate::MAX_VALUE_LEN;
 use crate::error::CellParseError;
 use crate::order::decode_float;
-#[cfg(feature = "custom_types")]
-use crate::{CUSTOM_TYPE_ID_BASE, TYPE_ID_SPACE};
 
-/// The width exponent `w` of a `4 · 2^w`-byte family: 4, 8, 16 or 32 bytes.
-///
-/// The four members of such a family sit at consecutive type ids `base + w`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// The `w` of a `4 · 2^w`-byte family: 4, 8, 16 or 32 bytes. A family's four
+/// members sit at consecutive type ids `base + w`, e.g. `u32..u256` at 12–15.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Width {
     W4,
     W8,
@@ -18,17 +15,6 @@ pub enum Width {
 }
 
 impl Width {
-    /// The `w` in `4 · 2^w`, i.e. the type id's offset within its family.
-    pub const fn w(self) -> u8 {
-        match self {
-            Self::W4 => 0,
-            Self::W8 => 1,
-            Self::W16 => 2,
-            Self::W32 => 3,
-        }
-    }
-
-    /// Inverse of [`Width::w`]; `w` must be 0–3.
     const fn from_w(w: u8) -> Self {
         match w {
             0 => Self::W4,
@@ -38,9 +24,8 @@ impl Width {
         }
     }
 
-    /// The value width in bytes: `4 · 2^w`.
     pub const fn bytes(self) -> usize {
-        4usize << self.w()
+        4 << (self as u8)
     }
 
     /// The decimal places a `dec` of this width carries.
@@ -48,195 +33,73 @@ impl Width {
         match self {
             Self::W4 => 4,
             Self::W8 => 6,
-            Self::W16 => 18,
-            Self::W32 => 18,
+            Self::W16 | Self::W32 => 18,
         }
     }
 }
 
-/// The width of a float: `f32` or `f64`.
-///
-/// `f16` and `f128` are reserved at ids 26–27, so this is deliberately not a
-/// `4 · 2^w` family — it is a two-member family at ids 24–25.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatWidth {
     F32,
     F64,
 }
 
-impl FloatWidth {
-    pub const fn bytes(self) -> usize {
-        match self {
-            Self::F32 => 4,
-            Self::F64 => 8,
-        }
-    }
-}
-
-/// A custom, per-deployment type id from the 64–127 block.
+/// A cell's type.
 ///
-/// A newtype so a `CellType::Custom` cannot be built holding an id from the core
-/// block. What the id *means* is up to the deployment's type registry, so this
-/// layer only frames a custom value — [`ValueLayout::LengthPrefixed`] — and
-/// never inspects its content.
+/// | id    | type                   | value bytes | stored form      |
+/// | ----- | ---------------------- | ----------- | ---------------- |
+/// | 0     | *absent marker*        |             |                  |
+/// | 1     | `bool`                 | 1           | `00` / `01`      |
+/// | 2     | `str`                  | var         | UTF-8            |
+/// | 3     | `bytes` (field-only)   | var         | as-is            |
+/// | 4     | `bytes20`              | 20          | as-is            |
+/// | 8–11  | `bytes4..32`           | 4·2^w       | as-is            |
+/// | 12–15 | `u32..u256`            | 4·2^w       | big-endian       |
+/// | 16–19 | `i32..i256`            | 4·2^w       | sign bit flipped |
+/// | 20–23 | `dec32..dec256`        | 4·2^w       | sign bit flipped |
+/// | 24–25 | `f32` `f64`            | 4 / 8       | IEEE total order |
+/// | 28–29 | `date32` `timestamp64` | 4 / 8       | sign bit flipped |
 ///
-/// Behind the `custom_types` feature, which is off by default.
-#[cfg(feature = "custom_types")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CustomTypeId(u8);
-
-#[cfg(feature = "custom_types")]
-impl CustomTypeId {
-    /// `id` must be in 64–127; anything else is not a custom type.
-    pub const fn new(id: u8) -> Option<Self> {
-        if id >= CUSTOM_TYPE_ID_BASE && id < TYPE_ID_SPACE {
-            Some(Self(id))
-        } else {
-            None
-        }
-    }
-
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-}
-
-/// How a type's value bytes are framed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueLayout {
-    /// Exactly this many bytes, no length prefix — the width is in the type id.
-    Fixed(usize),
-    /// A 4-byte big-endian length, then that many bytes, up to `max`.
-    LengthPrefixed { max: usize },
-}
-
-impl ValueLayout {
-    /// Whether a cell of this layout carries a length prefix after its metadata.
-    pub const fn has_length_prefix(self) -> bool {
-        matches!(self, Self::LengthPrefixed { .. })
-    }
-}
-
-/// The type of a cell's value — the 7-bit type-id space, decoded.
-///
-/// | id     | type                                  | family                | value bytes               | stored form        |
-/// | ------ | ------------------------------------- | --------------------- | ------------------------- | ------------------ |
-/// | 0      | *not a type* — the "absent" marker    | —                     | —                         | —                  |
-/// | 1      | `bool`                                | singleton             | 1                         | the byte           |
-/// | 2      | `str`                                 | singleton             | var (≤ [`MAX_VALUE_LEN`]) | raw UTF-8          |
-/// | 3      | `bytes` (field-only)                  | singleton             | var (≤ [`MAX_VALUE_LEN`]) | not indexable      |
-/// | 4      | `bytes20`                             | singleton             | 20                        | plain bytes        |
-/// | 5–7    | *reserved singletons*                 |                       |                           |                    |
-/// | 8–11   | `bytes4` `bytes8` `bytes16` `bytes32` | `8 + w`               | 4·2^w                     | plain bytes        |
-/// | 12–15  | `u32` `u64` `u128` `u256`             | `12 + w`              | 4·2^w                     | plain BE           |
-/// | 16–19  | `i32` `i64` `i128` `i256`             | `16 + w`              | 4·2^w                     | sign-bit-biased BE |
-/// | 20–23  | `dec32` `dec64` `dec128` `dec256`     | `20 + w`              | 4·2^w (fixed scale)       | sign-bit-biased BE |
-/// | 24–25  | `f32` `f64`                           | floats (26–27 rsvd)   | 4 / 8                     | IEEE total-order   |
-/// | 28–29  | `date32` `timestamp64`                | time (30–31 rsvd)     | 4 / 8                     | sign-bit-biased BE |
-/// | 32–63  | *reserved — future core families*     | 8 aligned blocks of 4 |                           |                    |
-/// | 64–127 | *custom types* (`custom_types`)       | per deployment        | var (≤ [`MAX_VALUE_LEN`]) | not indexable      |
-///
-/// The stored-form column says how value bytes are laid out so that a bytewise
-/// comparison matches a value comparison; the typed accessors on
-/// [`CellValue`](crate::CellValue) decode it. Whether an ordered type is actually *offered* for range
-/// queries is a separate, policy question — `QueryCapabilities` answers it, and
-/// answers "no" for some types this column can order (`bytes32`, for one).
+/// Every other id up to 127 is reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellType {
     Bool,
     Str,
-    /// Field-only: storable, but never range-indexed. Variable width, and byte
-    /// blobs have no meaningful order.
+    /// Field-only: no order, so never indexable.
     Bytes,
-    /// An address-width byte string; its own singleton rather than part of the
-    /// `4 · 2^w` family below, because 20 is not a power-of-two multiple of 4.
+    /// Address width; its own id because 20 is not `4 · 2^w`.
     Bytes20,
-    /// `bytes4`, `bytes8`, `bytes16`, `bytes32`.
     FixedBytes(Width),
-    /// `u32`, `u64`, `u128`, `u256`.
     Uint(Width),
-    /// `i32`, `i64`, `i128`, `i256`.
     Int(Width),
-    /// `dec32`, `dec64`, `dec128`, `dec256`: the signed integer of the same
-    /// width, at the fixed scale [`Width::decimal_scale`] pins.
+    /// A signed integer at the fixed scale [`Width::decimal_scale`].
     Decimal(Width),
-    /// `f32`, `f64`. NaN and `-0.0` are not valid values.
     Float(FloatWidth),
-    /// Days since the Unix epoch, signed.
+    /// Days since the Unix epoch.
     Date32,
-    /// Microseconds since the Unix epoch, signed.
+    /// Microseconds since the Unix epoch.
     Timestamp64,
-    /// A per-deployment type from the 64–127 block. Behind the `custom_types`
-    /// feature; without it those ids are rejected as
-    /// [`CellParseError::CustomTypesDisabled`].
-    #[cfg(feature = "custom_types")]
-    Custom(CustomTypeId),
 }
 
 impl CellType {
-    /// The type id this type occupies in the metadata byte's low 7 bits.
     pub const fn id(self) -> u8 {
         match self {
             Self::Bool => 1,
             Self::Str => 2,
             Self::Bytes => 3,
             Self::Bytes20 => 4,
-            Self::FixedBytes(w) => 8 + w.w(),
-            Self::Uint(w) => 12 + w.w(),
-            Self::Int(w) => 16 + w.w(),
-            Self::Decimal(w) => 20 + w.w(),
+            Self::FixedBytes(w) => 8 + w as u8,
+            Self::Uint(w) => 12 + w as u8,
+            Self::Int(w) => 16 + w as u8,
+            Self::Decimal(w) => 20 + w as u8,
             Self::Float(FloatWidth::F32) => 24,
             Self::Float(FloatWidth::F64) => 25,
             Self::Date32 => 28,
             Self::Timestamp64 => 29,
-            #[cfg(feature = "custom_types")]
-            Self::Custom(c) => c.get(),
         }
     }
 
-    /// The type's name as the spec's table writes it — `"bytes20"`, `"u64"`,
-    /// `"dec128"`. What errors and diagnostics print.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Bool => "bool",
-            Self::Str => "str",
-            Self::Bytes => "bytes",
-            Self::Bytes20 => "bytes20",
-            Self::FixedBytes(w) => match w {
-                Width::W4 => "bytes4",
-                Width::W8 => "bytes8",
-                Width::W16 => "bytes16",
-                Width::W32 => "bytes32",
-            },
-            Self::Uint(w) => match w {
-                Width::W4 => "u32",
-                Width::W8 => "u64",
-                Width::W16 => "u128",
-                Width::W32 => "u256",
-            },
-            Self::Int(w) => match w {
-                Width::W4 => "i32",
-                Width::W8 => "i64",
-                Width::W16 => "i128",
-                Width::W32 => "i256",
-            },
-            Self::Decimal(w) => match w {
-                Width::W4 => "dec32",
-                Width::W8 => "dec64",
-                Width::W16 => "dec128",
-                Width::W32 => "dec256",
-            },
-            Self::Float(FloatWidth::F32) => "f32",
-            Self::Float(FloatWidth::F64) => "f64",
-            Self::Date32 => "date32",
-            Self::Timestamp64 => "timestamp64",
-            #[cfg(feature = "custom_types")]
-            Self::Custom(_) => "custom",
-        }
-    }
-
-    /// Decode a type id. `id` must already be masked to 7 bits; ids the spec
-    /// reserves come back as [`CellParseError::ReservedType`].
+    /// Decode a 7-bit type id.
     pub const fn from_id(id: u8) -> Result<Self, CellParseError> {
         match id {
             0 => Err(CellParseError::AbsentTag),
@@ -252,96 +115,68 @@ impl CellType {
             25 => Ok(Self::Float(FloatWidth::F64)),
             28 => Ok(Self::Date32),
             29 => Ok(Self::Timestamp64),
-            #[cfg(feature = "custom_types")]
-            64..=127 => Ok(Self::Custom(CustomTypeId(id))),
-            #[cfg(not(feature = "custom_types"))]
-            64..=127 => Err(CellParseError::CustomTypesDisabled(id)),
-            // 5–7, 26–27, 30–31 and 32–63 are reserved; 128.. cannot fit the
-            // 7-bit field and is treated the same way. 0 is not among them:
-            // it is the absent marker, and says so.
             _ => Err(CellParseError::ReservedType(id)),
         }
     }
 
-    /// How this type's value bytes are framed.
-    ///
-    /// Custom types are length-prefixed because this layer cannot know their
-    /// widths, and a cell whose length only the deployment's registry knows
-    /// would not be self-delimiting.
-    pub const fn layout(self) -> ValueLayout {
+    /// The value width in bytes, or `None` for the length-prefixed `str` and
+    /// `bytes`.
+    pub const fn width(self) -> Option<usize> {
         match self {
-            Self::Bool => ValueLayout::Fixed(1),
-            #[cfg(feature = "custom_types")]
-            Self::Custom(_) => ValueLayout::LengthPrefixed { max: MAX_VALUE_LEN },
-            Self::Str | Self::Bytes => ValueLayout::LengthPrefixed { max: MAX_VALUE_LEN },
-            Self::Bytes20 => ValueLayout::Fixed(20),
+            Self::Str | Self::Bytes => None,
+            Self::Bool => Some(1),
+            Self::Bytes20 => Some(20),
             Self::FixedBytes(w) | Self::Uint(w) | Self::Int(w) | Self::Decimal(w) => {
-                ValueLayout::Fixed(w.bytes())
+                Some(w.bytes())
             }
-            Self::Float(f) => ValueLayout::Fixed(f.bytes()),
-            Self::Date32 => ValueLayout::Fixed(4),
-            Self::Timestamp64 => ValueLayout::Fixed(8),
+            Self::Float(FloatWidth::F32) | Self::Date32 => Some(4),
+            Self::Float(FloatWidth::F64) | Self::Timestamp64 => Some(8),
         }
     }
 
-    /// Check that `value` is a well-formed body for this type.
+    /// Check that `value` is a valid stored value of this type.
     pub fn validate(self, value: &[u8]) -> Result<(), CellParseError> {
-        match self.layout() {
-            ValueLayout::Fixed(n) if value.len() != n => {
+        match self.width() {
+            Some(n) if value.len() != n => {
                 return Err(CellParseError::LengthMismatch {
                     ty: self,
                     expected: n,
                     actual: value.len(),
                 });
             }
-            ValueLayout::LengthPrefixed { max } if value.len() > max => {
+            None if value.len() > MAX_VALUE_LEN => {
                 return Err(CellParseError::TooLong {
-                    max,
                     actual: value.len(),
                 });
             }
             _ => {}
         }
-        match (self, value) {
-            (Self::Bool, [b]) if *b > 1 => Err(CellParseError::InvalidBool(*b)),
-            (Self::Str, v) => match core::str::from_utf8(v) {
+        match self {
+            Self::Bool if value[0] > 1 => Err(CellParseError::InvalidBool(value[0])),
+            Self::Str => match core::str::from_utf8(value) {
                 Ok(_) => Ok(()),
-                // `valid_up_to` is where the decoder stopped, so the snippet
-                // starts on the offending byte rather than the value's start.
-                Err(e) => Err(CellParseError::invalid_utf8(v, e.valid_up_to())),
+                Err(e) => Err(CellParseError::InvalidUtf8 {
+                    valid_up_to: e.valid_up_to(),
+                }),
             },
-            // Bits, never `==`: `-0.0 == 0.0` holds and `NaN == NaN` does not.
-            // The length check above makes the conversions infallible.
-            (Self::Float(FloatWidth::F32), v) => {
-                let bits = u32::from_be_bytes(decode_float(v.try_into().unwrap()));
-                check_float(f32::from_bits(bits).is_nan(), bits == 1 << 31)
-            }
-            (Self::Float(FloatWidth::F64), v) => {
-                let bits = u64::from_be_bytes(decode_float(v.try_into().unwrap()));
-                check_float(f64::from_bits(bits).is_nan(), bits == 1 << 63)
+            Self::Float(w) => {
+                // The length check above makes `try_into` infallible, and f32
+                // widens to f64 exactly, NaN and -0.0 included.
+                let x = match w {
+                    FloatWidth::F32 => {
+                        f32::from_be_bytes(decode_float(value.try_into().unwrap())) as f64
+                    }
+                    FloatWidth::F64 => f64::from_be_bytes(decode_float(value.try_into().unwrap())),
+                };
+                if x.is_nan() {
+                    Err(CellParseError::FloatNaN)
+                } else if x == 0.0 && x.is_sign_negative() {
+                    Err(CellParseError::NegativeZero)
+                } else {
+                    Ok(())
+                }
             }
             _ => Ok(()),
         }
-    }
-
-    /// Whether a cell of this type may carry the indexable bit. `bytes` and
-    /// custom types have no order, so they are field-only.
-    pub const fn is_indexable(self) -> bool {
-        match self {
-            Self::Bytes => false,
-            #[cfg(feature = "custom_types")]
-            Self::Custom(_) => false,
-            _ => true,
-        }
-    }
-}
-
-const fn check_float(is_nan: bool, is_negative_zero: bool) -> Result<(), CellParseError> {
-    if is_nan {
-        Err(CellParseError::FloatNaN)
-    } else if is_negative_zero {
-        Err(CellParseError::NegativeZero)
-    } else {
-        Ok(())
     }
 }

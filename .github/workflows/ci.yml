@@ -17,11 +17,8 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - uses: taiki-e/install-action@cargo-hack
       - run: cargo build --workspace --all-targets
-      # Every feature combination each crate defines (none, custom_types
-      # alone, and so on), not just the default build.
-      - run: cargo hack nextest run --workspace --feature-powerset
+      - run: cargo nextest run --workspace
 
   bench-build:
     runs-on: ubuntu-latest

@@ -1,157 +1,77 @@
-//! [`CellParseError`] — why a cell failed to parse.
+//! [`CellParseError`]: why bytes are not a cell.
 
 use core::fmt;
 
-use crate::UTF8_SNIPPET_LEN;
 use crate::types::CellType;
-#[cfg(doc)]
-use crate::value::CellValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellParseError {
-    /// The cell is too short to hold its metadata byte.
+    /// No metadata byte.
     Empty,
-    /// The type id names a slot the spec reserves for future use.
-    ReservedType(u8),
-    /// The type id is `0x00`, the "absent" marker. Type codes start at `0x01`
-    /// precisely so that no valid cell can collide with it; it is not a type,
-    /// and it never appears in a persisted `Cell` row, a `CellTrie` leaf
-    /// preimage or an `Index` term. See the crate docs, "The `0x00` tag".
+    /// Type id `0x00`, the absent marker. See the crate docs.
     AbsentTag,
-    /// A variable-width cell that stops before its 4-byte length prefix.
+    /// A type id the spec reserves.
+    ReservedType(u8),
+    /// A `str`/`bytes` cell that ends inside its 4-byte length prefix.
     MissingLength,
-    /// A fixed-width type whose value is not exactly that wide.
+    /// A fixed-width value of the wrong width.
     LengthMismatch {
         ty: CellType,
         expected: usize,
         actual: usize,
     },
-    /// The length prefix declares more value bytes than the cell carries — the
-    /// cell was cut short.
+    /// A length prefix declaring more bytes than follow.
     Truncated { declared: usize, actual: usize },
-    /// Bytes left over after the cell this slice declares. Use
-    /// [`CellValue::parse_prefix`] to walk a run of packed cells.
+    /// Bytes after the cell. [`CellValue::parse_prefix`](crate::CellValue::parse_prefix)
+    /// walks packed cells.
     TrailingBytes { extra: usize },
-    /// A value longer than [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN).
-    TooLong { max: usize, actual: usize },
-    /// A `bool` whose byte is neither 0 nor 1.
+    /// A `str`/`bytes` value longer than [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN).
+    TooLong { actual: usize },
+    /// A `bool` byte other than 0 or 1.
     InvalidBool(u8),
-    /// A `str` whose bytes are not valid UTF-8, with a window onto the bytes
-    /// that failed. Build one with [`CellParseError::invalid_utf8`].
-    ///
-    /// The window is copied inline rather than borrowed or boxed, so the error
-    /// stays `Copy` and rejecting a cell costs no allocation — this parses
-    /// untrusted input, so the reject path is the hot one under attack.
-    InvalidUtf8 {
-        /// How many bytes were valid before the failure.
-        valid_up_to: usize,
-        /// The value's full length, which `snippet` may not cover.
-        total: usize,
-        /// Up to [`UTF8_SNIPPET_LEN`] bytes starting at `valid_up_to`, so the
-        /// window shows the failure rather than the start of a long value.
-        snippet: [u8; UTF8_SNIPPET_LEN],
-        /// How much of `snippet` is real; the rest is zero padding.
-        snippet_len: u8,
-    },
-    /// The type id is in the custom block (64–127) but this build has the
-    /// `custom_types` feature off, so it has no way to interpret the cell.
-    ///
-    /// Defined whether or not the feature is on, so that turning it on does not
-    /// change the shape of this enum for anything matching on it.
-    CustomTypesDisabled(u8),
+    /// A `str` that stops being UTF-8 at byte `valid_up_to`.
+    InvalidUtf8 { valid_up_to: usize },
     /// A NaN float: many bit patterns, no order.
     FloatNaN,
-    /// A `-0.0` float: zero is stored as `+0.0` only, so it has one byte form.
+    /// A `-0.0` float: zero is stored as `+0.0` only.
     NegativeZero,
-    /// The indexable bit set on a field-only type — `bytes` or a custom type —
-    /// which has no order and never appears in an index term.
-    NotIndexable(CellType),
+    /// The indexable bit on a `bytes` cell, which has no order.
+    NotIndexable,
 }
 
 impl fmt::Display for CellParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => write!(f, "cell is missing its metadata byte"),
-            Self::ReservedType(id) => write!(f, "type id {id} is reserved"),
+            Self::Empty => write!(f, "cell is empty"),
             Self::AbsentTag => write!(f, "type id 0 is the absent marker, not a type"),
+            Self::ReservedType(id) => write!(f, "type id {id} is reserved"),
             Self::MissingLength => write!(f, "cell is missing its length prefix"),
             Self::LengthMismatch {
                 ty,
                 expected,
                 actual,
-            } => {
-                write!(
-                    f,
-                    "{} expects {expected} value bytes, got {actual}",
-                    ty.name()
-                )
-            }
+            } => write!(f, "{ty:?} expects {expected} value bytes, got {actual}"),
             Self::Truncated { declared, actual } => {
                 write!(
                     f,
                     "cell declares {declared} value bytes but carries {actual}"
                 )
             }
-            Self::TrailingBytes { extra } => {
-                write!(f, "{extra} bytes left over after the cell")
-            }
-            Self::TooLong { max, actual } => {
-                write!(f, "value is {actual} bytes, the maximum is {max}")
-            }
+            Self::TrailingBytes { extra } => write!(f, "{extra} bytes left over after the cell"),
+            Self::TooLong { actual } => write!(
+                f,
+                "value is {actual} bytes, the maximum is {}",
+                crate::MAX_VALUE_LEN
+            ),
             Self::InvalidBool(b) => write!(f, "bool byte must be 0 or 1, got {b}"),
-            Self::InvalidUtf8 {
-                valid_up_to,
-                total,
-                snippet,
-                snippet_len,
-            } => {
-                write!(
-                    f,
-                    "str is not valid UTF-8 at byte {valid_up_to} of {total}: "
-                )?;
-                let len = *snippet_len as usize;
-                for (i, b) in snippet[..len].iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{b:02x}")?;
-                }
-                if valid_up_to + len < *total {
-                    write!(f, " …")?;
-                }
-                Ok(())
-            }
-            Self::CustomTypesDisabled(id) => {
-                write!(f, "type id {id} is custom; the custom_types feature is off")
+            Self::InvalidUtf8 { valid_up_to } => {
+                write!(f, "str is not valid UTF-8 at byte {valid_up_to}")
             }
             Self::FloatNaN => write!(f, "float is NaN, which has no order"),
             Self::NegativeZero => write!(f, "float is -0.0; zero is stored as +0.0"),
-            Self::NotIndexable(ty) => write!(f, "{} is not indexable", ty.name()),
+            Self::NotIndexable => write!(f, "a bytes cell cannot be indexable"),
         }
     }
 }
 
 impl core::error::Error for CellParseError {}
-
-impl CellParseError {
-    /// The [`InvalidUtf8`](CellParseError::InvalidUtf8) for `value`, whose first
-    /// `valid_up_to` bytes decoded before it went wrong.
-    ///
-    /// `const` so test vectors and other tables can name the expected error
-    /// without spelling out the padded snippet array.
-    pub const fn invalid_utf8(value: &[u8], valid_up_to: usize) -> Self {
-        let mut snippet = [0u8; UTF8_SNIPPET_LEN];
-        let mut i = 0;
-        // A plain loop rather than `copy_from_slice`, which is not const.
-        while i < UTF8_SNIPPET_LEN && valid_up_to + i < value.len() {
-            snippet[i] = value[valid_up_to + i];
-            i += 1;
-        }
-        Self::InvalidUtf8 {
-            valid_up_to,
-            total: value.len(),
-            snippet,
-            snippet_len: i as u8,
-        }
-    }
-}
