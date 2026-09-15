@@ -2,7 +2,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use golemdb_merkle::Tree;
 use sha2::{Digest, Sha256};
 
-const STATE: u64 = 100_000;
+const STATE: u64 = 1_000_000;
 const BLOCK: u64 = 1_000;
 
 /// Uniform keys, as when entity keys are hashes.

@@ -13,14 +13,18 @@
 //!
 //! Hashes are computed lazily and cached per node, so a block's batch of
 //! writes hashes each touched node once, at [`Tree::root`], not once per write.
+//! Dirty subtrees are hashed in parallel on the rayon pool.
 //!
 //! # Shape
 //!
 //! ```text
 //! leaf    H(0x00 ‖ key ‖ H(value))
-//! branch  H(0x01 ‖ child_0 ‖ … ‖ child_{B-1})   empty child = zero digest
+//! branch  H(0x01 ‖ bitmap ‖ present children, in slot order)
 //! empty   zero digest
 //! ```
+//!
+//! `bitmap` is `ceil(B/8)` bytes, bit `i % 8` of byte `i / 8` set when slot
+//! `i` is occupied.
 //!
 //! A leaf sits at the shallowest depth where its key prefix is unique, and a
 //! branch always holds at least two leaves below it, so the root depends only
@@ -31,8 +35,12 @@
 //! vanishing probability. Hash non-uniform keys before inserting.
 
 use digest::{Digest, Output};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
+
+/// Dirty subtrees to fan out to rayon in [`Tree::root`]; a few per core.
+const PAR_TASKS: usize = 64;
 
 type Child<H, const B: usize, const K: usize> = Option<Arc<Node<H, B, K>>>;
 
@@ -79,12 +87,17 @@ impl<H: Digest, const B: usize, const K: usize> Node<H, B, K> {
                 .chain_update(value)
                 .finalize(),
             Kind::Branch(children) => {
-                let mut h = H::new().chain_update([1]);
-                for child in children {
-                    match child {
-                        Some(node) => h.update(node.hash()),
-                        None => h.update(Output::<H>::default()),
+                let mut bitmap = [0u8; 32];
+                for (i, child) in children.iter().enumerate() {
+                    if child.is_some() {
+                        bitmap[i / 8] |= 1 << (i % 8);
                     }
+                }
+                let mut h = H::new()
+                    .chain_update([1])
+                    .chain_update(&bitmap[..B.div_ceil(8)]);
+                for node in children.iter().flatten() {
+                    h.update(node.hash());
                 }
                 h.finalize()
             }
@@ -134,9 +147,33 @@ impl<H: Digest, const B: usize, const K: usize> Tree<H, B, K> {
 
     /// Commitment to the whole key/value set; zero digest when empty.
     pub fn root(&self) -> Output<H> {
-        self.root
-            .as_ref()
-            .map_or_else(Output::<H>::default, |n| n.hash().clone())
+        let Some(root) = &self.root else {
+            return Output::<H>::default();
+        };
+        // Walk down dirty branches until there are enough dirty subtrees to
+        // be worth a task each, hash those in parallel, then finish the top
+        // levels serially from the cache.
+        let mut frontier = vec![root];
+        while frontier.len() < PAR_TASKS {
+            let next: Vec<_> = frontier
+                .iter()
+                .filter_map(|n| match &n.kind {
+                    Kind::Branch(children) => Some(children),
+                    Kind::Leaf { .. } => None,
+                })
+                .flatten()
+                .flatten()
+                .filter(|n| n.hash.get().is_none())
+                .collect();
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        frontier.par_iter().for_each(|n| {
+            n.hash();
+        });
+        root.hash().clone()
     }
 
     /// `H(value)` stored under `key`.
