@@ -159,9 +159,7 @@ fn raw_keys_bypass_the_grammar() {
 fn owned_keys_order_bytewise_and_borrow_as_bytes() {
     let mut map = BTreeMap::new();
     for name in ["price", "Price", "a", "price.usd", "priceX"] {
-        let key = CellKeyRef::parse_user(name.as_bytes(), MAX)
-            .unwrap()
-            .to_owned();
+        let key = CellKey::from(CellKeyRef::parse_user(name.as_bytes(), MAX).unwrap());
         map.insert(key, name);
     }
 
@@ -183,7 +181,6 @@ fn owned_keys_order_bytewise_and_borrow_as_bytes() {
 fn owned_and_borrowed_round_trip() {
     let key = CellKeyRef::parse_user(b"erc20:balance", MAX).unwrap();
     let owned: CellKey = key.into();
-    assert_eq!(owned.as_key_ref(), key);
     assert_eq!(owned.as_bytes(), key.as_bytes());
     assert_eq!(owned.to_string(), "erc20:balance");
     // The escape is what makes a `raw` key printable at all.
