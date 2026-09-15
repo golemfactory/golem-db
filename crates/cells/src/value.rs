@@ -1,7 +1,7 @@
 //! [`CellValue`] — a parsed cell, and the accessors that read its value out.
 
 use crate::error::CellParseError;
-use crate::order::{decode_float, decode_int};
+use crate::order::{decode_float, flip_sign};
 #[cfg(feature = "custom_types")]
 use crate::types::CustomTypeId;
 use crate::types::{CellType, FloatWidth, ValueLayout, Width};
@@ -209,23 +209,23 @@ impl<'a> CellValue<'a> {
 
     pub fn as_i32(&self) -> Option<i32> {
         self.exact(CellType::Int(Width::W4))
-            .map(|b| i32::from_be_bytes(decode_int(b)))
+            .map(|b| i32::from_be_bytes(flip_sign(b)))
     }
 
     pub fn as_i64(&self) -> Option<i64> {
         self.exact(CellType::Int(Width::W8))
-            .map(|b| i64::from_be_bytes(decode_int(b)))
+            .map(|b| i64::from_be_bytes(flip_sign(b)))
     }
 
     pub fn as_i128(&self) -> Option<i128> {
         self.exact(CellType::Int(Width::W16))
-            .map(|b| i128::from_be_bytes(decode_int(b)))
+            .map(|b| i128::from_be_bytes(flip_sign(b)))
     }
 
     /// An `i256` as its 32 two's-complement big-endian bytes; see
     /// [`as_u256_be`](Self::as_u256_be).
     pub fn as_i256_be(&self) -> Option<[u8; 32]> {
-        self.exact(CellType::Int(Width::W32)).map(decode_int)
+        self.exact(CellType::Int(Width::W32)).map(flip_sign)
     }
 
     // -- decimals ----------------------------------------------------------
@@ -235,22 +235,22 @@ impl<'a> CellValue<'a> {
 
     pub fn as_dec32_unscaled(&self) -> Option<i32> {
         self.exact(CellType::Decimal(Width::W4))
-            .map(|b| i32::from_be_bytes(decode_int(b)))
+            .map(|b| i32::from_be_bytes(flip_sign(b)))
     }
 
     pub fn as_dec64_unscaled(&self) -> Option<i64> {
         self.exact(CellType::Decimal(Width::W8))
-            .map(|b| i64::from_be_bytes(decode_int(b)))
+            .map(|b| i64::from_be_bytes(flip_sign(b)))
     }
 
     pub fn as_dec128_unscaled(&self) -> Option<i128> {
         self.exact(CellType::Decimal(Width::W16))
-            .map(|b| i128::from_be_bytes(decode_int(b)))
+            .map(|b| i128::from_be_bytes(flip_sign(b)))
     }
 
     /// A `dec256` mantissa as its 32 two's-complement big-endian bytes.
     pub fn as_dec256_unscaled_be(&self) -> Option<[u8; 32]> {
-        self.exact(CellType::Decimal(Width::W32)).map(decode_int)
+        self.exact(CellType::Decimal(Width::W32)).map(flip_sign)
     }
 
     // -- floats, stored in IEEE total order --------------------------------
@@ -270,13 +270,13 @@ impl<'a> CellValue<'a> {
     /// Days since the Unix epoch, signed.
     pub fn as_date32(&self) -> Option<i32> {
         self.exact(CellType::Date32)
-            .map(|b| i32::from_be_bytes(decode_int(b)))
+            .map(|b| i32::from_be_bytes(flip_sign(b)))
     }
 
     /// Microseconds since the Unix epoch, signed.
     pub fn as_timestamp64(&self) -> Option<i64> {
         self.exact(CellType::Timestamp64)
-            .map(|b| i64::from_be_bytes(decode_int(b)))
+            .map(|b| i64::from_be_bytes(flip_sign(b)))
     }
 
     // -- custom ------------------------------------------------------------

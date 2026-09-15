@@ -1,60 +1,51 @@
-//! The stored form of signed integers and floats, laid out so that bytewise
-//! order is value order. Every other type's natural bytes are already in
-//! order. See the crate docs, "Order encoding".
+//! Stored forms that make bytewise order equal value order, for the types
+//! whose natural bytes do not already sort. See the crate docs, "Order
+//! encoding".
 
-/// Two's complement big-endian → stored form: flip the sign bit.
-pub fn encode_int<const N: usize>(mut be: [u8; N]) -> [u8; N] {
-    flip_sign(&mut be);
-    be
-}
-
-/// Stored form → two's complement big-endian.
-pub fn decode_int<const N: usize>(stored: [u8; N]) -> [u8; N] {
-    encode_int(stored)
-}
-
-/// IEEE-754 big-endian → stored form. NaN and `-0.0` encode to bytes that
-/// [`CellType::validate`](crate::CellType::validate) rejects.
-pub fn encode_float<const N: usize>(mut be: [u8; N]) -> [u8; N] {
-    float_to_stored(&mut be);
-    be
-}
-
-/// Stored form → IEEE-754 big-endian.
-pub fn decode_float<const N: usize>(mut stored: [u8; N]) -> [u8; N] {
-    float_from_stored(&mut stored);
-    stored
-}
-
-// Big-endian puts the sign bit in byte 0 at every width, so none of these
-// needs to know the width.
-
-pub(crate) fn flip_sign(bytes: &mut [u8]) {
+/// Two's complement big-endian ⇄ stored form: flip the sign bit. Flipping
+/// twice is a no-op, so this both encodes and decodes.
+///
+/// ```text
+/// i32::MIN  80 00 00 00  →  00 00 00 00
+///       -1  FF FF FF FF  →  7F FF FF FF
+///        0  00 00 00 00  →  80 00 00 00
+/// i32::MAX  7F FF FF FF  →  FF FF FF FF
+/// ```
+///
+/// Big-endian puts the sign bit in byte 0 at every width, so `i256` is the
+/// same one-byte flip.
+pub fn flip_sign<const N: usize>(mut bytes: [u8; N]) -> [u8; N] {
     bytes[0] ^= 0x80;
+    bytes
 }
 
-// A negative float's bits grow with its magnitude, so it is inverted whole;
-// a non-negative one only flips the sign. Stored, the top bit is set exactly
-// for non-negatives.
-
-pub(crate) fn float_to_stored(bytes: &mut [u8]) {
-    if bytes[0] & 0x80 != 0 {
-        invert(bytes);
+/// IEEE-754 big-endian → stored form. A non-negative float flips its sign
+/// bit, as an integer does. A negative float flips every bit, because its
+/// bits grow with its magnitude and so sort backwards:
+///
+/// ```text
+/// -2.0  C0 00 00 00  →  3F FF FF FF
+/// -1.0  BF 80 00 00  →  40 7F FF FF    3F… < 40…, so -2.0 < -1.0
+///  0.0  00 00 00 00  →  80 00 00 00
+///  1.0  3F 80 00 00  →  BF 80 00 00
+/// ```
+///
+/// NaN and `-0.0` encode to bytes that
+/// [`CellType::validate`](crate::CellType::validate) rejects.
+pub fn encode_float<const N: usize>(be: [u8; N]) -> [u8; N] {
+    if be[0] & 0x80 == 0 {
+        flip_sign(be)
     } else {
-        flip_sign(bytes);
+        be.map(|b| !b)
     }
 }
 
-pub(crate) fn float_from_stored(bytes: &mut [u8]) {
-    if bytes[0] & 0x80 != 0 {
-        flip_sign(bytes);
+/// Stored form → IEEE-754 big-endian. The stored top bit is set exactly for
+/// non-negative values (see [`encode_float`]).
+pub fn decode_float<const N: usize>(stored: [u8; N]) -> [u8; N] {
+    if stored[0] & 0x80 != 0 {
+        flip_sign(stored)
     } else {
-        invert(bytes);
-    }
-}
-
-fn invert(bytes: &mut [u8]) {
-    for b in bytes {
-        *b = !*b;
+        stored.map(|b| !b)
     }
 }

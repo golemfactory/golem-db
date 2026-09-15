@@ -243,16 +243,16 @@ fn accessors_decode_their_rust_equivalents() {
     // Signed values and floats are stored in order form; the accessors decode.
     assert_eq!(parse(&[0x10, 0x7F, 0xFF, 0xFF, 0xFF]).as_i32(), Some(-1));
     assert_eq!(
-        parse(&[&[0x11][..], &encode_int(i64::MIN.to_be_bytes())].concat()).as_i64(),
+        parse(&[&[0x11][..], &flip_sign(i64::MIN.to_be_bytes())].concat()).as_i64(),
         Some(i64::MIN)
     );
     assert_eq!(
-        parse(&[&[0x12][..], &encode_int((-42i128).to_be_bytes())].concat()).as_i128(),
+        parse(&[&[0x12][..], &flip_sign((-42i128).to_be_bytes())].concat()).as_i128(),
         Some(-42)
     );
 
     assert_eq!(
-        parse(&[&[0x14][..], &encode_int((-5i32).to_be_bytes())].concat()).as_dec32_unscaled(),
+        parse(&[&[0x14][..], &flip_sign((-5i32).to_be_bytes())].concat()).as_dec32_unscaled(),
         Some(-5)
     );
 
@@ -263,11 +263,11 @@ fn accessors_decode_their_rust_equivalents() {
     );
 
     assert_eq!(
-        parse(&[&[0x1C][..], &encode_int(20_000i32.to_be_bytes())].concat()).as_date32(),
+        parse(&[&[0x1C][..], &flip_sign(20_000i32.to_be_bytes())].concat()).as_date32(),
         Some(20_000)
     );
     assert_eq!(
-        parse(&[&[0x1D][..], &encode_int((-1i64).to_be_bytes())].concat()).as_timestamp64(),
+        parse(&[&[0x1D][..], &flip_sign((-1i64).to_be_bytes())].concat()).as_timestamp64(),
         Some(-1)
     );
 }

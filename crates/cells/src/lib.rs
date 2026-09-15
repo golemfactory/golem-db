@@ -34,7 +34,7 @@
 //! | stored form                                           | types                                                 |
 //! | ----------------------------------------------------- | ----------------------------------------------------- |
 //! | natural bytes                                         | `bool`, `str`, `bytes20`, `bytes4..32`, `u32..u256`   |
-//! | two's complement BE, sign bit flipped ([`encode_int`]) | `i32..i256`, `dec32..dec256`, `date32`, `timestamp64` |
+//! | two's complement BE, sign bit flipped ([`flip_sign`]) | `i32..i256`, `dec32..dec256`, `date32`, `timestamp64` |
 //! | IEEE-754 BE in total order ([`encode_float`])          | `f32`, `f64`                                          |
 //!
 //! The typed accessors (`as_i32`, `as_f64`, …) decode. Signed types match
@@ -98,7 +98,7 @@ mod tests;
 
 pub use error::CellParseError;
 pub use key::{CellKey, CellKeyError, CellKeyRef, DEFAULT_MAX_CELL_NAME_LEN, reserved};
-pub use order::{decode_float, decode_int, encode_float, encode_int};
+pub use order::{decode_float, encode_float, flip_sign};
 #[cfg(feature = "custom_types")]
 pub use types::CustomTypeId;
 pub use types::{CellType, FloatWidth, ValueLayout, Width};
