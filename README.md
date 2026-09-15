@@ -9,6 +9,8 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 
 - `crates/cells` (package `golemdb-cells`) — the wire format for "Cells",
   GolemDB's typed value encoding
+- `crates/merkle` (package `golemdb-merkle`) — copy-on-write sparse merkle
+  tree shared across block versions
 
 ## Adding a crate
 
