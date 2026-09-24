@@ -7,8 +7,15 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 
 ## Layout
 
+- `docs/` - project-wide design and API documentation
 - `crates/cells` (package `golemdb-cells`) — the wire format for "Cells",
   GolemDB's typed value encoding
+
+## Documentation
+
+- [Technical design](docs/golem-db-design.md): storage architecture, data model,
+  commitments, history, and query design.
+- [API](docs/golem-db-api.md): the caller-facing interface and operation semantics.
 
 ## Adding a crate
 
