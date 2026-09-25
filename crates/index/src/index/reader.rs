@@ -1,0 +1,86 @@
+use std::{iter::FusedIterator, ops::Bound};
+
+use golemdb_merkle::{Hash, HashProvider, RootRef};
+use golemdb_storage::{ReadCursor, ReadTransaction, Scan, scan, scan_prefix};
+
+use super::Index;
+use crate::{Bitmap, IndexTerm, Result, index_trie::decode_root, tables};
+
+impl<H: HashProvider + ?Sized> Index<'_, H> {
+    /// Reconstruct current root metadata. Singleton recovery uses the flat table
+    /// from this snapshot. This does not audit all descendants of a branch root.
+    pub fn reopen(&self, tx: &impl ReadTransaction, hash: Hash) -> Result<RootRef<32>> {
+        self.trie.reopen(tx, hash)
+    }
+
+    /// Materialize a term's postings; absent terms return None, never an empty bitmap.
+    pub fn bitmap(&self, tx: &impl ReadTransaction, term: &IndexTerm) -> Result<Option<Bitmap>> {
+        self.bitmap_root(tx, term)?
+            .map(|hash| self.bitmaps.bitmap(tx, hash))
+            .transpose()
+    }
+
+    /// Ordered flat-table scan. Constrain bounds to one name/type when evaluating
+    /// a typed predicate. This returns roots without materializing their bitmaps.
+    pub fn terms<'a, T: ReadTransaction>(
+        &'a self,
+        tx: &'a T,
+        lower: Bound<IndexTerm>,
+        upper: Bound<IndexTerm>,
+    ) -> Result<TermScan<'a, T::Cursor<'a>, H>> {
+        Ok(TermScan {
+            scan: scan(
+                tx,
+                tables::INDEX,
+                lower.map(IndexTerm::into_bytes),
+                upper.map(IndexTerm::into_bytes),
+            )?,
+            hasher: self.hasher,
+            done: false,
+        })
+    }
+
+    /// Prefix from `IndexTerm::prefix`, optionally followed by an ordered value
+    /// prefix (for example UTF-8 for a string). Empty prefix scans every term.
+    pub fn terms_with_prefix<'a, T: ReadTransaction>(
+        &'a self,
+        tx: &'a T,
+        prefix: Vec<u8>,
+    ) -> Result<TermScan<'a, T::Cursor<'a>, H>> {
+        Ok(TermScan {
+            scan: scan_prefix(tx, tables::INDEX, prefix)?,
+            hasher: self.hasher,
+            done: false,
+        })
+    }
+}
+
+/// Lazy typed term scan; any storage or decoding error ends iteration.
+pub struct TermScan<'h, C: ReadCursor, H: HashProvider + ?Sized> {
+    scan: Scan<C>,
+    hasher: &'h H,
+    done: bool,
+}
+
+impl<C: ReadCursor, H: HashProvider + ?Sized> Iterator for TermScan<'_, C, H> {
+    type Item = Result<(IndexTerm, Hash)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let result = self
+            .scan
+            .next()?
+            .map_err(Into::into)
+            .and_then(|(key, value)| {
+                Ok((IndexTerm::decode(&key)?, decode_root(&value, self.hasher)?))
+            });
+        if result.is_err() {
+            self.done = true;
+        }
+        Some(result)
+    }
+}
+
+impl<C: ReadCursor, H: HashProvider + ?Sized> FusedIterator for TermScan<'_, C, H> {}

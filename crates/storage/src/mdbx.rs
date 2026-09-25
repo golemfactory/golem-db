@@ -1,0 +1,315 @@
+//! Native MDBX tables, snapshot transactions and lazy bidirectional cursors.
+use std::{path::Path, sync::Arc};
+
+use libmdbx::{NoWriteMap, RO, RW, TableFlags, TransactionKind, WriteFlags};
+
+use crate::{
+    Database, Entry, ReadCursor, ReadTransaction, Result, StorageError, Table, WriteTransaction,
+};
+
+/// Backend capacity settings, not table declarations or logical storage quotas.
+#[derive(Clone, Copy, Debug)]
+pub struct MdbxOptions {
+    pub max_tables: u64,
+    pub max_map_size: usize,
+    pub growth_step: usize,
+}
+
+impl Default for MdbxOptions {
+    fn default() -> Self {
+        Self {
+            max_tables: 128,
+            max_map_size: 1024 * 1024 * 1024,
+            growth_step: 16 * 1024 * 1024,
+        }
+    }
+}
+
+/// Clone to share one environment. Do not independently open the same directory
+/// twice within a process; close all handles before reopening it.
+/// The environment's named tables must be managed by this adapter, with normal
+/// byte ordering and unique keys (no external integer/reverse/DUPSORT tables).
+///
+/// ```
+/// use golemdb_storage::{Database, MdbxDatabase, ReadTransaction, Table, WriteTransaction};
+/// let dir = tempfile::tempdir()?;
+/// let db = MdbxDatabase::open(dir.path())?;
+/// let mut tx = db.begin_write()?;
+/// tx.put(Table("Example"), b"key", b"value")?;
+/// tx.commit()?;
+/// assert_eq!(db.begin_read()?.get(Table("Example"), b"key")?, Some(b"value".to_vec()));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Clone)]
+pub struct MdbxDatabase {
+    inner: Arc<libmdbx::Database<NoWriteMap>>,
+    limits: Limits,
+}
+
+#[derive(Clone, Copy)]
+struct Limits {
+    key: usize,
+    value: usize,
+}
+
+impl Limits {
+    fn key(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.len() > self.key {
+            return Err(StorageError::KeyTooLarge {
+                actual: bytes.len(),
+                max: self.key,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl MdbxDatabase {
+    /// Create the directory if needed and open a durable read/write environment.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, MdbxOptions::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: MdbxOptions) -> Result<Self> {
+        let invalid = || {
+            StorageError::Backend(
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid MDBX capacity settings",
+                )
+                .into(),
+            )
+        };
+        if options.max_tables == 0 || options.max_map_size == 0 || options.growth_step == 0 {
+            return Err(invalid());
+        }
+        let max_size = isize::try_from(options.max_map_size).map_err(|_| invalid())?;
+        let growth_step = isize::try_from(options.growth_step).map_err(|_| invalid())?;
+        std::fs::create_dir_all(path.as_ref()).map_err(|e| StorageError::Backend(e.into()))?;
+        let inner = libmdbx::Database::open_with_options(
+            path,
+            libmdbx::DatabaseOptions {
+                max_tables: Some(options.max_tables),
+                mode: libmdbx::Mode::ReadWrite(libmdbx::ReadWriteOptions {
+                    sync_mode: libmdbx::SyncMode::Durable,
+                    max_size: Some(max_size),
+                    growth_step: Some(growth_step),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .map_err(backend)?;
+        // SAFETY: the environment is successfully opened and remains alive;
+        // both functions are read-only queries with normal (non-DUPSORT) flags.
+        let (key, value) = unsafe {
+            (
+                mdbx_sys::mdbx_env_get_maxkeysize_ex(inner.ptr().0, 0),
+                mdbx_sys::mdbx_env_get_maxvalsize_ex(inner.ptr().0, 0),
+            )
+        };
+        if key <= 0 || value <= 0 {
+            return Err(backend(libmdbx::Error::Invalid));
+        }
+        Ok(Self {
+            inner: Arc::new(inner),
+            limits: Limits {
+                key: key as usize,
+                value: value as usize,
+            },
+        })
+    }
+
+    /// Physical key/table-name limit for this environment's page size.
+    pub fn max_key_size(&self) -> usize {
+        self.limits.key
+    }
+    /// Physical value limit for normal (non-DUPSORT) tables.
+    pub fn max_value_size(&self) -> usize {
+        self.limits.value
+    }
+}
+
+fn backend(error: libmdbx::Error) -> StorageError {
+    match error {
+        libmdbx::Error::KeyExist => StorageError::AlreadyExists,
+        error => StorageError::Backend(Box::new(error)),
+    }
+}
+
+pub struct MdbxTransaction<'db, K: TransactionKind> {
+    inner: libmdbx::Transaction<'db, K, NoWriteMap>,
+    limits: Limits,
+}
+pub type MdbxReadTransaction<'db> = MdbxTransaction<'db, RO>;
+pub type MdbxWriteTransaction<'db> = MdbxTransaction<'db, RW>;
+
+impl Database for MdbxDatabase {
+    type Read<'db> = MdbxReadTransaction<'db>;
+    type Write<'db> = MdbxWriteTransaction<'db>;
+    fn begin_read(&self) -> Result<Self::Read<'_>> {
+        Ok(MdbxTransaction {
+            inner: self.inner.begin_ro_txn().map_err(backend)?,
+            limits: self.limits,
+        })
+    }
+    fn begin_write(&self) -> Result<Self::Write<'_>> {
+        Ok(MdbxTransaction {
+            inner: self.inner.begin_rw_txn().map_err(backend)?,
+            limits: self.limits,
+        })
+    }
+}
+
+impl<K: TransactionKind> MdbxTransaction<'_, K> {
+    fn table(&self, table: Table) -> Result<Option<libmdbx::Table<'_>>> {
+        table.validate()?;
+        self.limits.key(table.0.as_bytes())?;
+        // DBI handles are environment-wide: opening a name can find a cached
+        // handle for a table newer than this reader's snapshot. Check the
+        // native catalogue in this transaction before using such a handle.
+        // Do not translate arbitrary BadDbi failures into missing data.
+        let catalog = self.inner.open_table(None).map_err(backend)?;
+        if self
+            .inner
+            .get::<Vec<u8>>(&catalog, table.0.as_bytes())
+            .map_err(backend)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        match self.inner.open_table(Some(table.0)) {
+            Ok(handle) => Ok(Some(handle)),
+            Err(libmdbx::Error::NotFound) => Ok(None),
+            Err(error) => Err(backend(error)),
+        }
+    }
+}
+
+impl<K: TransactionKind> ReadTransaction for MdbxTransaction<'_, K> {
+    type Cursor<'tx>
+        = MdbxCursor<'tx, K>
+    where
+        Self: 'tx;
+
+    fn get(&self, table: Table, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        table.validate()?;
+        self.limits.key(key)?;
+        match self.table(table)? {
+            Some(handle) => self.inner.get(&handle, key).map_err(backend),
+            None => Ok(None),
+        }
+    }
+
+    fn cursor(&self, table: Table, key: &[u8]) -> Result<Self::Cursor<'_>> {
+        table.validate()?;
+        self.limits.key(key)?;
+        let inner = self
+            .table(table)?
+            .map(|handle| self.inner.cursor(&handle))
+            .transpose()
+            .map_err(backend)?;
+        Ok(MdbxCursor {
+            inner,
+            position: Position::Start(key.to_vec()),
+        })
+    }
+}
+
+impl MdbxWriteTransaction<'_> {
+    fn write(&mut self, table: Table, key: &[u8], value: &[u8], flags: WriteFlags) -> Result<()> {
+        table.validate()?;
+        self.limits.key(table.0.as_bytes())?;
+        self.limits.key(key)?;
+        if value.len() > self.limits.value {
+            return Err(StorageError::ValueTooLarge {
+                actual: value.len(),
+                max: self.limits.value,
+            });
+        }
+        let handle = self
+            .inner
+            .create_table(Some(table.0), TableFlags::empty())
+            .map_err(backend)?;
+        self.inner.put(&handle, key, value, flags).map_err(backend)
+    }
+}
+
+impl WriteTransaction for MdbxWriteTransaction<'_> {
+    fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()> {
+        self.write(table, key, value, WriteFlags::UPSERT)
+    }
+    fn insert(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()> {
+        self.write(table, key, value, WriteFlags::NO_OVERWRITE)
+    }
+    fn delete(&mut self, table: Table, key: &[u8]) -> Result<bool> {
+        table.validate()?;
+        self.limits.key(key)?;
+        match self.table(table)? {
+            Some(handle) => self.inner.del(&handle, key, None).map_err(backend),
+            None => Ok(false),
+        }
+    }
+    fn commit(self) -> Result<()> {
+        self.inner.commit().map(|_| ()).map_err(backend)
+    }
+    fn abort(self) {
+        drop(self);
+    }
+}
+
+enum Position {
+    Start(Vec<u8>),
+    At,
+    Before,
+    After,
+}
+
+pub struct MdbxCursor<'tx, K: TransactionKind> {
+    inner: Option<libmdbx::Cursor<'tx, K>>,
+    position: Position,
+}
+
+impl<K: TransactionKind> MdbxCursor<'_, K> {
+    fn advance(&mut self, forward: bool) -> Result<Option<Entry>> {
+        let Some(cursor) = &mut self.inner else {
+            return Ok(None);
+        };
+        let row = match &self.position {
+            Position::Start(key) => {
+                let row = cursor.set_range::<Vec<u8>, Vec<u8>>(key).map_err(backend)?;
+                if forward {
+                    row
+                } else {
+                    match row {
+                        Some((found, value)) if found.as_slice() == key => Some((found, value)),
+                        Some(_) => cursor.prev().map_err(backend)?,
+                        None => cursor.last().map_err(backend)?,
+                    }
+                }
+            }
+            Position::Before if forward => cursor.first().map_err(backend)?,
+            Position::After if !forward => cursor.last().map_err(backend)?,
+            Position::Before | Position::After => None,
+            Position::At if forward => cursor.next().map_err(backend)?,
+            Position::At => cursor.prev().map_err(backend)?,
+        };
+        self.position = if row.is_some() {
+            Position::At
+        } else if forward {
+            Position::After
+        } else {
+            Position::Before
+        };
+        Ok(row)
+    }
+}
+
+impl<K: TransactionKind> ReadCursor for MdbxCursor<'_, K> {
+    fn next(&mut self) -> Result<Option<Entry>> {
+        self.advance(true)
+    }
+    fn prev(&mut self) -> Result<Option<Entry>> {
+        self.advance(false)
+    }
+}

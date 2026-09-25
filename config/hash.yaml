@@ -1,0 +1,2 @@
+# Initial protocol choice; later supplied by genesis/persisted engine metadata.
+hash_function: keccak-256
