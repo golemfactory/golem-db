@@ -10,6 +10,7 @@ use std::{
 
 use golemdb_branch::{BranchError, BranchId, BranchInfo, Branches, OperationError};
 use golemdb_cells::{CellKey, CellNameRef, CellValue, tables};
+use golemdb_merkle::{HashProvider, Keccak256Hasher};
 use golemdb_storage::{
     Database, MemoryDatabase, ReadTransaction, StorageError, Table, WriteTransaction,
 };
@@ -37,11 +38,14 @@ fn publish(db: &impl Database, commit: u64, text: &str) {
     tx.commit().unwrap();
 }
 
-fn get<D: Database>(branches: &Branches<D>, handle: BranchId) -> Option<CellValue> {
+fn get<D: Database>(
+    branches: &Branches<D, impl HashProvider>,
+    handle: BranchId,
+) -> Option<CellValue> {
     branches.read(handle, |cells| cells.get(&key())).unwrap()
 }
 
-fn put<D: Database>(branches: &Branches<D>, handle: BranchId, text: &str) {
+fn put<D: Database>(branches: &Branches<D, impl HashProvider>, handle: BranchId, text: &str) {
     branches
         .write(handle, |cells| {
             cells.put(key(), value(text));
@@ -50,7 +54,7 @@ fn put<D: Database>(branches: &Branches<D>, handle: BranchId, text: &str) {
         .unwrap();
 }
 
-fn assert_invalid<D: Database>(branches: &Branches<D>, handle: BranchId) {
+fn assert_invalid<D: Database>(branches: &Branches<D, impl HashProvider>, handle: BranchId) {
     assert!(matches!(
         branches.branch_info(handle),
         Err(BranchError::HandleInvalid)
@@ -84,7 +88,7 @@ fn assert_invalid<D: Database>(branches: &Branches<D>, handle: BranchId) {
 
 fn lifecycle(db: impl Database + Clone) {
     publish(&db, 7, "origin");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     assert_eq!(branches.head().unwrap(), 7);
     let a = branches.begin().unwrap();
     let b = branches.begin().unwrap();
@@ -158,7 +162,7 @@ fn memory_lifecycle() {
 fn branch_info_counts_retained_undo_entries_instead_of_callbacks_or_net_changes() {
     let db = MemoryDatabase::new();
     publish(&db, 9, "origin");
-    let branches = Branches::new(db).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let id = branches.begin().unwrap();
     let info = BranchInfo {
         commit_id: 9,
@@ -217,7 +221,7 @@ fn branch_info_counts_retained_undo_entries_instead_of_callbacks_or_net_changes(
 fn each_operation_independently_detects_a_stale_head() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let handles: Vec<_> = (0..6).map(|_| branches.begin().unwrap()).collect();
     for &handle in &handles {
         put(&branches, handle, "staged");
@@ -263,7 +267,7 @@ fn mdbx_lifecycle() {
 fn missing_and_malformed_heads_are_errors_not_genesis() {
     let db = MemoryDatabase::new();
     assert!(matches!(
-        Branches::new(db.clone()),
+        Branches::new(db.clone(), Keccak256Hasher),
         Err(BranchError::MissingHead)
     ));
     assert_eq!(
@@ -275,12 +279,12 @@ fn missing_and_malformed_heads_are_errors_not_genesis() {
         tx.put(SUPERBLOCK, b"head", &vec![0; len]).unwrap();
         tx.commit().unwrap();
         assert!(
-            matches!(Branches::new(db.clone()), Err(BranchError::InvalidHead { actual }) if actual == len)
+            matches!(Branches::new(db.clone(), Keccak256Hasher), Err(BranchError::InvalidHead { actual }) if actual == len)
         );
     }
     for number in [0, 0x0102_0304_0506_0708, u64::MAX] {
         publish(&db, number, "origin");
-        let branches = Branches::new(db.clone()).unwrap();
+        let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
         assert_eq!(branches.head().unwrap(), number);
         assert_eq!(
             branches
@@ -296,7 +300,7 @@ fn missing_and_malformed_heads_are_errors_not_genesis() {
 fn every_existing_handle_operation_rejects_bad_head_before_callback_or_mutation() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     put(&branches, b, "keep");
     let mut tx = db.begin_write().unwrap();
@@ -345,8 +349,8 @@ fn every_existing_handle_operation_rejects_bad_head_before_callback_or_mutation(
 fn handles_are_unique_across_managers_and_clones_share_ownership() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let first = Branches::new(db.clone()).unwrap();
-    let second = Branches::new(db.clone()).unwrap();
+    let first = Branches::new(db.clone(), Keccak256Hasher).unwrap();
+    let second = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let a = first.begin().unwrap();
     let b = second.begin().unwrap();
     assert_ne!(a, b);
@@ -356,7 +360,7 @@ fn handles_are_unique_across_managers_and_clones_share_ownership() {
     put(&first.clone(), a, "shared");
     assert_eq!(get(&first, a), Some(value("shared")));
     drop(first);
-    let reopened = Branches::new(db).unwrap();
+    let reopened = Branches::new(db, Keccak256Hasher).unwrap();
     let c = reopened.begin().unwrap();
     assert!(c > b);
     assert_invalid(&reopened, a);
@@ -367,7 +371,7 @@ fn handles_are_unique_across_managers_and_clones_share_ownership() {
 fn callback_failures_and_panics_preserve_state_and_leave_manager_usable() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     put(&branches, b, "keep");
     let error = branches.write(b, |cells| {
@@ -403,7 +407,7 @@ fn callback_failures_and_panics_preserve_state_and_leave_manager_usable() {
 fn head_check_and_cell_reads_use_one_snapshot_even_when_head_moves_mid_call() {
     let db = MemoryDatabase::new();
     publish(&db, 12, "old");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     let reads = branches
         .read(b, |cells| {
@@ -435,7 +439,7 @@ fn head_check_and_cell_reads_use_one_snapshot_even_when_head_moves_mid_call() {
 fn independent_branches_do_not_wait_for_another_branch_callback() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let a = branches.begin().unwrap();
     let b = branches.begin().unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -465,7 +469,7 @@ fn independent_branches_do_not_wait_for_another_branch_callback() {
 fn concurrent_operations_on_one_branch_are_atomic_and_do_not_lose_updates() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     put(&branches, b, "0");
     let barrier = Barrier::new(8);
@@ -503,7 +507,7 @@ fn concurrent_operations_on_one_branch_are_atomic_and_do_not_lose_updates() {
 fn operation_waiting_for_branch_validates_head_after_acquiring_lock() {
     let db = MemoryDatabase::new();
     publish(&db, 0, "origin");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -583,7 +587,7 @@ fn storage_admission_failures_preserve_branch_and_do_not_run_callbacks() {
         fail_head: Arc::new(AtomicBool::new(false)),
     };
     publish(&db.inner, 0, "origin");
-    let branches = Branches::new(db.clone()).unwrap();
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let b = branches.begin().unwrap();
     put(&branches, b, "keep");
     for failure in [&db.fail_open, &db.fail_head] {
@@ -640,7 +644,7 @@ fn prefix_scans_match_encoded_keys_through_both_public_views() {
         expected.insert(key, value("base"));
     }
     tx.commit().unwrap();
-    let branches = Branches::new(db).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let branch = branches.begin().unwrap();
     let deleted = cell(64, b"na");
     let inserted = cell(64, b"name-new");

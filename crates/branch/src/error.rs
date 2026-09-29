@@ -3,6 +3,18 @@
 pub enum BranchError {
     #[error("branch ID is unknown, discarded, or no longer over the head")]
     HandleInvalid,
+    #[error("branch is sealed")]
+    Sealed,
+    #[error("commit number space exhausted")]
+    CommitNumberExhausted,
+    #[error("the previous commit's #roots cell already exists")]
+    RootsCellExists,
+    #[error(transparent)]
+    Cells(#[from] golemdb_cells::CellError),
+    #[error(transparent)]
+    Index(#[from] golemdb_index::IndexError),
+    #[error(transparent)]
+    Term(#[from] golemdb_index::TermError),
     #[error("database has no Superblock/head row; initialize genesis before opening branches")]
     MissingHead,
     #[error("Superblock/head must be 72 bytes, got {actual}")]

@@ -505,6 +505,8 @@ name = "golemdb-branch"
 version = "0.1.0"
 dependencies = [
  "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
  "golemdb-storage",
  "proptest",
  "tempfile",

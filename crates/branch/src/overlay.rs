@@ -102,7 +102,6 @@ impl CellOverlay {
     /// This does not read the origin or discard net-zero changes: `Cells::apply`
     /// performs that comparison at seal and returns the actual before/after diff.
     /// Iteration neither consumes the overlay nor releases its undo journal.
-    #[cfg(test)]
     pub(crate) fn changes(&self) -> impl Iterator<Item = golemdb_cells::CellChange> + '_ {
         self.entries.iter().map(|(key, value)| match value {
             Some(value) => golemdb_cells::CellChange::Put {
