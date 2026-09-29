@@ -16,6 +16,9 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   bitmap/index tries, ordered terms and scans, canonical chunks, and query bitmaps
 - `crates/merkle` (package `golemdb-merkle`) — branch-only persistent Merkle trie,
   canonical compact branches, shared hashing and YAML hash configuration
+- `crates/branch` (package `golemdb-branch`) — head-validated branch IDs and guarded cell
+  read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
+  seal and persistence follow
 
 ## Documentation
 
@@ -47,12 +50,3 @@ To run the test suite across every feature combination a crate defines (e.g.
 ```sh
 cargo hack nextest run --workspace --feature-powerset
 ```
-
-## CI
-
-See [performance benchmarks](internal_docs/benchmarks.md) for the cells, Merkle and index
-Criterion suites, workload filters, timing boundaries and baseline comparisons.
-
-`.github/workflows/ci.yml` builds the workspace, runs the test suite with
-[cargo-nextest](https://nexte.st/) across the full feature powerset via
-cargo-hack, and checks that benchmarks compile.

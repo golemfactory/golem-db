@@ -1,0 +1,19 @@
+[package]
+name = "golemdb-branch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+golemdb-cells.workspace = true
+golemdb-storage.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+mdbx = ["golemdb-storage/mdbx"]
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile = "3"
