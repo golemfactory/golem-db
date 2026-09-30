@@ -26,8 +26,7 @@ pub struct SealedCommit {
     pub index_root: Hash,
     pub cells: CellsUpdate,
     pub index: IndexUpdate,
-    // The next increment will replay these rows inside the head-checked writer.
-    #[allow(dead_code)]
+    // Replayed by commit inside the head-checked writer.
     pub(crate) writes: Writes,
 }
 

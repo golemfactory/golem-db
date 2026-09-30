@@ -1,5 +1,5 @@
 use golemdb_merkle::Hash;
-use golemdb_storage::{ReadTransaction, Table};
+use golemdb_storage::{ReadTransaction, Table, WriteTransaction};
 
 use crate::{BranchError, CommitId, Result};
 
@@ -32,4 +32,13 @@ pub(crate) fn read_head_state(tx: &impl ReadTransaction) -> Result<Head> {
         state_root: bytes[8..40].try_into().unwrap(),
         index_root: bytes[40..72].try_into().unwrap(),
     })
+}
+
+pub(crate) fn write_head(tx: &mut impl WriteTransaction, head: &Head) -> Result<()> {
+    let mut bytes = [0; HEAD_BYTES];
+    bytes[..8].copy_from_slice(&head.commit_id.to_be_bytes());
+    bytes[8..40].copy_from_slice(&head.state_root);
+    bytes[40..].copy_from_slice(&head.index_root);
+    tx.put(SUPERBLOCK, HEAD_KEY, &bytes)?;
+    Ok(())
 }

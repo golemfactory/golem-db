@@ -8,7 +8,7 @@ use std::{
 };
 
 use golemdb_merkle::HashProvider;
-use golemdb_storage::Database;
+use golemdb_storage::{Database, ReadTransaction};
 
 use crate::{
     BranchError, BranchId, BranchInfo, CellRead, CellWrite, CommitId, OperationError, Result,
@@ -32,6 +32,19 @@ impl BranchState {
         } else {
             Ok(())
         }
+    }
+
+    fn seal(
+        &mut self,
+        origin: &impl ReadTransaction,
+        hasher: &impl HashProvider,
+    ) -> Result<Arc<SealedCommit>> {
+        if let Some(sealed) = &self.sealed {
+            return Ok(Arc::clone(sealed));
+        }
+        let sealed = Arc::new(crate::seal::compute(origin, &self.overlay, hasher)?);
+        self.sealed = Some(Arc::clone(&sealed));
+        Ok(sealed)
     }
 }
 
@@ -61,7 +74,7 @@ struct Inner<D, H> {
 /// leaving the manager usable if the caller catches the panic.
 ///
 /// This increment does not initialize genesis, validate format/hash settings,
-/// authenticate entire tries, commit, or rewind the database. The supplied hash
+/// authenticate entire tries, maintain history, or rewind the database. The supplied hash
 /// provider must match the deployment and is shared by all branch seals. External writers
 /// must publish cells and a strictly increasing head atomically; changing cells
 /// under an unchanged head or rewinding it violates this manager's contract.
@@ -179,16 +192,36 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     /// after validating head again; it does not reserve a commit number.
     pub fn seal(&self, branch_id: BranchId) -> Result<Arc<SealedCommit>> {
         self.with_branch(branch_id, |state, origin| {
-            if let Some(sealed) = &state.sealed {
-                return Ok(Arc::clone(sealed));
+            state.seal(origin, &self.inner.hasher)
+        })?
+    }
+
+    /// Seal if necessary, then atomically persist the computed rows and head.
+    /// Head is checked again inside the storage writer before any row is written.
+    /// Success consumes the branch; competitors over the old head become stale.
+    /// A failed seal leaves the branch open. A storage failure after sealing
+    /// retains the sealed result for retry or discard, subject to head validation.
+    pub fn commit(&self, branch_id: BranchId) -> Result<CommitId> {
+        self.with_slot(branch_id, |slot, origin| {
+            let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
+            let sealed = state.seal(origin, &self.inner.hasher)?;
+            let tx = self.inner.database.begin_write()?;
+            match crate::commit::persist(tx, state.commit_id, &sealed) {
+                Ok(commit_id) => {
+                    *slot = None;
+                    // Publication has succeeded. Registry housekeeping must not
+                    // turn that durable success into an apparent commit failure.
+                    // Queued callers already holding this entry see None.
+                    let _ = self.remove(branch_id);
+                    Ok(commit_id)
+                }
+                Err(BranchError::HandleInvalid) => {
+                    *slot = None;
+                    self.remove(branch_id)?;
+                    Err(BranchError::HandleInvalid)
+                }
+                Err(error) => Err(error),
             }
-            let sealed = Arc::new(crate::seal::compute(
-                origin,
-                &state.overlay,
-                &self.inner.hasher,
-            )?);
-            state.sealed = Some(Arc::clone(&sealed));
-            Ok(sealed)
         })?
     }
 
@@ -223,7 +256,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     }
 
     /// Keep slot removal, locking, head validation, and panic handling in one
-    /// place. Only discard needs direct slot access; other operations use
+    /// place. Only discard and commit need direct slot access; other operations use
     /// `with_branch` so they cannot remove or replace the state.
     fn with_slot<T>(
         &self,

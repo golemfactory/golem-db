@@ -18,7 +18,8 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   canonical compact branches, shared hashing and YAML hash configuration
 - `crates/branch` (package `golemdb-branch`) — head-validated branch IDs and guarded cell
   read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
-  seal buffers cell/index updates and roots without persistence; commit follows
+  seal buffers cell/index updates and roots; commit atomically persists them and
+  advances head, with history deferred
 
 ## Documentation
 
