@@ -70,14 +70,14 @@ impl CellOverlay {
         operation: impl FnOnce(&mut CellWrite<'_, R>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
         let mark = self.journal.mark();
-        let mut cells = CellWrite {
+        let mut cell_writer = CellWrite {
             overlay: self,
             origin,
             mark,
             completed: false,
         };
-        let result = operation(&mut cells)?;
-        cells.completed = true;
+        let result = operation(&mut cell_writer)?;
+        cell_writer.completed = true;
         Ok(result)
     }
 
@@ -149,6 +149,12 @@ pub struct CellWrite<'a, R: ReadTransaction> {
 }
 
 impl<R: ReadTransaction> CellWrite<'_, R> {
+    /// Borrow the current working state for shared read logic. The borrow
+    /// prevents mutations until this read view is no longer used.
+    pub fn as_read(&self) -> CellRead<'_, R> {
+        CellRead::new(self.overlay, self.origin)
+    }
+
     pub fn get(&self, key: &CellKey) -> Result<Option<CellValue>> {
         self.overlay.get(self.origin, key)
     }

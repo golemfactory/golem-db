@@ -111,6 +111,13 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
         read_head(&self.inner.database.begin_read()?)
     }
 
+    /// The database shared by this manager. Committed readers can open a
+    /// snapshot directly; no branch registration or overlay is needed.
+    /// Direct writers must obey the publication contract documented on Branches.
+    pub fn database(&self) -> &D {
+        &self.inner.database
+    }
+
     /// Open a new independent overlay and its first frame over the current head.
     pub fn begin(&self) -> Result<BranchId> {
         let state = BranchState {

@@ -1,0 +1,634 @@
+use golemdb_branch::{BranchError, Branches};
+use golemdb_cells::{
+    CellChange, CellKey, CellName, CellNameRef, CellType, CellValue, CellValueRef, Cells, Width,
+    reserved, system,
+};
+use golemdb_index::{Index, IndexTerm};
+use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
+use golemdb_record::{CellPatch, ReadTarget, RecordCells, RecordError, RecordKey, Records};
+use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+
+const KEY: RecordKey = RecordKey([0x42; 32]);
+const OTHER: RecordKey = RecordKey([0x43; 32]);
+
+fn name(bytes: &[u8]) -> CellName {
+    CellNameRef::raw(bytes).into()
+}
+fn field(ty: CellType, bytes: &[u8]) -> CellValue {
+    CellValueRef::new(ty, bytes, false).unwrap().into()
+}
+fn text(s: &str, indexed: bool) -> CellValue {
+    CellValueRef::new(CellType::Str, s.as_bytes(), indexed)
+        .unwrap()
+        .into()
+}
+fn u64_value(n: u64) -> CellValue {
+    field(CellType::Uint(Width::W8), &n.to_be_bytes())
+}
+fn values(s: &str) -> RecordCells {
+    [(name(b"name"), text(s, true))].into()
+}
+fn binding(key: RecordKey) -> CellKey {
+    CellKey::new(system::RECORD_KEYS.id, CellNameRef::raw(&key.0))
+}
+
+// Explicit initialized state, as supplied by the future connection/genesis layer.
+// Build the real cell trie so seal/commit exercise production root updates.
+fn initialize(db: &impl Database) {
+    let mut changes = Vec::new();
+    let mut put = |id, name: CellNameRef<'_>, value| {
+        changes.push(CellChange::Put {
+            key: CellKey::new(id, name),
+            value,
+        });
+    };
+    for record in system::ALL {
+        put(
+            record.id,
+            reserved::KEY,
+            field(CellType::FixedBytes(Width::W32), &record.key),
+        );
+        put(
+            system::RECORD_KEYS.id,
+            CellNameRef::raw(&record.key),
+            u64_value(record.id),
+        );
+    }
+    for (name, value) in [
+        (reserved::MAX_CELL_NAME_LEN, 32u32),
+        (reserved::MAX_STR_LEN, 64),
+        (reserved::MAX_BYTES_LEN, 128),
+    ] {
+        put(
+            system::PARAMS.id,
+            name,
+            field(CellType::Uint(Width::W4), &value.to_be_bytes()),
+        );
+    }
+    put(system::ALLOC.id, reserved::NEXT_RECORD_ID, u64_value(64));
+    let hash = Keccak256Hasher;
+    let mut tx = db.begin_write().unwrap();
+    let update = Cells::new(&hash)
+        .apply(&mut tx, RootRef::Empty, changes)
+        .unwrap();
+    tx.put(
+        Table("Superblock"),
+        b"head",
+        &[
+            0u64.to_be_bytes().as_slice(),
+            &update.root.hash(&hash),
+            &hash.hash(&[]),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
+fn setup() -> (
+    MemoryDatabase,
+    Branches<MemoryDatabase, Keccak256Hasher>,
+    Records<MemoryDatabase, Keccak256Hasher>,
+) {
+    let db = MemoryDatabase::new();
+    initialize(&db);
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
+    let records = Records::new(branches.clone());
+    (db, branches, records)
+}
+fn snapshot<D: Database>(
+    branches: &Branches<D, Keccak256Hasher>,
+    b: u64,
+) -> Vec<(CellKey, CellValue)> {
+    branches
+        .read(b, |cell_reader| {
+            cell_reader
+                .scan_prefix(&[])?
+                .collect::<golemdb_branch::Result<_>>()
+        })
+        .unwrap()
+}
+fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u64 {
+    branches
+        .read(b, |cell_reader| {
+            cell_reader.get(&CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID))
+        })
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap()
+}
+fn id<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64, key: RecordKey) -> u64 {
+    branches
+        .read(b, |cell_reader| cell_reader.get(&binding(key)))
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap()
+}
+
+#[test]
+fn work_in_progress_is_isolated_and_projection_preserves_identity() {
+    let (_, branches, records) = setup();
+    let a = branches.begin().unwrap();
+    let b = branches.begin().unwrap();
+    assert_eq!(records.create(a, KEY, values("Alice")).unwrap(), KEY);
+    assert_eq!(id(&branches, a, KEY), 64);
+    let full = records.get(ReadTarget::Branch(a), KEY, None).unwrap();
+    assert_eq!(full.cells.len(), 2);
+    assert_eq!(full.cells[b"#key".as_slice()].as_bytes32(), Some(KEY.0));
+    assert!(!full.cells[b"#key".as_slice()].is_indexable());
+    for target in [ReadTarget::Branch(b), ReadTarget::Commit(0)] {
+        assert!(matches!(
+            records.get(target, KEY, None),
+            Err(RecordError::NotFound)
+        ));
+    }
+    let projection = [name(b"name"), name(b"missing"), name(b"name")];
+    let projected = records
+        .get(ReadTarget::Branch(a), KEY, Some(&projection))
+        .unwrap();
+    assert_eq!(projected.cells, values("Alice"));
+    assert!(
+        records
+            .get(ReadTarget::Branch(a), KEY, Some(&[]))
+            .unwrap()
+            .cells
+            .is_empty()
+    );
+    assert!(matches!(
+        records.get(ReadTarget::Branch(a), OTHER, Some(&[])),
+        Err(RecordError::NotFound)
+    ));
+    records
+        .patch(
+            a,
+            KEY,
+            [(name(b"name"), CellPatch::Set(text("Bob", false)))].into(),
+        )
+        .unwrap();
+    assert_eq!(
+        records.get(ReadTarget::Branch(a), KEY, None).unwrap().cells[b"name".as_slice()],
+        text("Bob", false)
+    );
+    records.delete(a, KEY).unwrap();
+    assert!(matches!(
+        records.get(ReadTarget::Branch(a), KEY, None),
+        Err(RecordError::NotFound)
+    ));
+}
+
+#[test]
+fn reserved_records_are_readable_but_only_exact_keys_are_protected() {
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    let before = snapshot(&branches, b);
+    for reserved in system::ALL {
+        let key = RecordKey(reserved.key);
+        let result = records.get(ReadTarget::Branch(b), key, None).unwrap();
+        assert_eq!(result.cells[b"#key".as_slice()].as_bytes32(), Some(key.0));
+        assert!(result.cells.values().all(|value| !value.is_indexable()));
+        assert!(matches!(
+            records.create(b, key, values("x")),
+            Err(RecordError::Reserved)
+        ));
+        assert!(matches!(
+            records.patch(b, key, Default::default()),
+            Err(RecordError::Reserved)
+        ));
+        assert!(matches!(records.delete(b, key), Err(RecordError::Reserved)));
+    }
+    assert_eq!(snapshot(&branches, b), before);
+    assert_eq!(branches.branch_info(b).unwrap().version, 0);
+    let projection = [name(&system::ALLOC.key)];
+    let bindings = records
+        .get(
+            ReadTarget::Commit(0),
+            RecordKey(system::RECORD_KEYS.key),
+            Some(&projection),
+        )
+        .unwrap();
+    assert_eq!(
+        bindings.cells[system::ALLOC.key.as_slice()].as_u64(),
+        Some(1)
+    );
+    let mut similar = system::PARAMS.key;
+    similar[31] = 1;
+    records
+        .create(b, RecordKey(similar), values("ordinary"))
+        .unwrap();
+}
+
+#[test]
+fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    records.create(b, KEY, values("Alice")).unwrap();
+    let before = snapshot(&branches, b);
+    let info = branches.branch_info(b).unwrap();
+    assert!(matches!(
+        records.create(b, KEY, values("duplicate")),
+        Err(RecordError::AlreadyExists)
+    ));
+    assert!(matches!(
+        records.create(b, OTHER, Default::default()),
+        Err(RecordError::InvalidArgument(_))
+    ));
+    for invalid in [
+        b"#key".as_slice(),
+        b"@admin",
+        b"",
+        b"9name",
+        b"a\0b",
+        &[b'a'; 33],
+    ] {
+        assert!(matches!(
+            records.create(b, OTHER, [(name(invalid), text("x", false))].into()),
+            Err(RecordError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            records.patch(b, KEY, [(name(invalid), CellPatch::Remove)].into()),
+            Err(RecordError::InvalidArgument(_))
+        ));
+    }
+    for value in [
+        text(&"s".repeat(65), true),
+        field(CellType::Bytes, &[0; 129]),
+    ] {
+        assert!(matches!(
+            records.create(b, OTHER, [(name(b"value"), value.clone())].into()),
+            Err(RecordError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            records.patch(b, KEY, [(name(b"value"), CellPatch::Set(value))].into()),
+            Err(RecordError::InvalidArgument(_))
+        ));
+    }
+    assert!(matches!(
+        records.patch(b, KEY, [(name(b"name"), CellPatch::Remove)].into()),
+        Err(RecordError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        records.patch(b, OTHER, Default::default()),
+        Err(RecordError::NotFound)
+    ));
+    assert!(matches!(
+        records.delete(b, OTHER),
+        Err(RecordError::NotFound)
+    ));
+    assert_eq!(snapshot(&branches, b), before);
+    assert_eq!(branches.branch_info(b).unwrap(), info);
+}
+
+#[test]
+fn patches_check_final_shape_and_no_ops_add_no_journal_entries() {
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    records.create(b, KEY, values("Alice")).unwrap();
+    branches.commit(b).unwrap();
+    let b = branches.begin().unwrap();
+    let info = branches.branch_info(b).unwrap();
+    records.patch(b, KEY, Default::default()).unwrap();
+    records
+        .patch(
+            b,
+            KEY,
+            [
+                (name(b"missing"), CellPatch::Remove),
+                (name(b"name"), CellPatch::Set(text("Alice", true))),
+            ]
+            .into(),
+        )
+        .unwrap();
+    assert_eq!(branches.branch_info(b).unwrap(), info);
+    records
+        .patch(
+            b,
+            KEY,
+            [
+                (name(b"name"), CellPatch::Remove),
+                (name(b"replacement"), CellPatch::Set(u64_value(7))),
+            ]
+            .into(),
+        )
+        .unwrap();
+    let record = records.get(ReadTarget::Branch(b), KEY, None).unwrap();
+    assert_eq!(record.cells.len(), 2);
+    assert_eq!(record.cells[b"replacement".as_slice()].as_u64(), Some(7));
+}
+
+#[test]
+fn rollback_restores_records_bindings_allocator_and_incarnations() {
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    let genesis = snapshot(&branches, b);
+    records.create(b, KEY, values("original")).unwrap();
+    let original = snapshot(&branches, b);
+    branches.checkpoint(b).unwrap();
+    records.delete(b, KEY).unwrap();
+    records
+        .create(b, KEY, [(name(b"new"), text("new", false))].into())
+        .unwrap();
+    assert_eq!(id(&branches, b, KEY), 65);
+    assert_eq!(allocated(&branches, b), 66);
+    assert!(
+        !records
+            .get(ReadTarget::Branch(b), KEY, None)
+            .unwrap()
+            .cells
+            .contains_key(b"name".as_slice())
+    );
+    branches.rollback(b).unwrap();
+    assert_eq!(snapshot(&branches, b), original);
+    branches.rollback(b).unwrap();
+    assert_eq!(snapshot(&branches, b), genesis);
+    records
+        .create(b, OTHER, values("reused uncommitted allocation"))
+        .unwrap();
+    assert_eq!(id(&branches, b, OTHER), 64);
+}
+
+fn lifecycle(db: impl Database + Clone) {
+    initialize(&db);
+    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
+    let records = Records::new(branches.clone());
+    let b = branches.begin().unwrap();
+    let competitor = branches.begin().unwrap();
+    records.create(b, KEY, values("Alice")).unwrap();
+    records.create(competitor, OTHER, values("loser")).unwrap();
+    assert_eq!(id(&branches, competitor, OTHER), 64);
+    branches.seal(b).unwrap();
+    assert!(matches!(
+        records.get(ReadTarget::Branch(b), KEY, None),
+        Err(RecordError::Branch(BranchError::Sealed))
+    ));
+    assert!(matches!(
+        records.delete(b, KEY),
+        Err(RecordError::Branch(BranchError::Sealed))
+    ));
+    assert_eq!(branches.commit(b).unwrap(), 1);
+    assert!(matches!(
+        records.get(ReadTarget::Branch(competitor), OTHER, None),
+        Err(RecordError::Branch(BranchError::HandleInvalid))
+    ));
+    assert!(matches!(
+        records.create(b, OTHER, values("consumed")),
+        Err(RecordError::Branch(BranchError::HandleInvalid))
+    ));
+    assert!(matches!(
+        records.get(ReadTarget::Commit(0), KEY, None),
+        Err(RecordError::CommitUnavailable {
+            requested: 0,
+            head: 1
+        })
+    ));
+    assert!(matches!(
+        records.get(ReadTarget::Commit(2), KEY, None),
+        Err(RecordError::CommitUnavailable {
+            requested: 2,
+            head: 1
+        })
+    ));
+    assert_eq!(
+        records.get(ReadTarget::Commit(1), KEY, None).unwrap().cells[b"name".as_slice()],
+        text("Alice", true)
+    );
+    let term = IndexTerm::new("name", CellType::Str, b"Alice").unwrap();
+    assert_eq!(
+        Index::new(&Keccak256Hasher)
+            .bitmap(&db.begin_read().unwrap(), &term)
+            .unwrap()
+            .unwrap()
+            .treemap()
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![64]
+    );
+    // Changing kind/type removes the old posting. Another indexed cell is
+    // deleted during recreation; the new incarnation must use only its own ID.
+    let b = branches.begin().unwrap();
+    records
+        .patch(
+            b,
+            KEY,
+            [
+                (name(b"name"), CellPatch::Set(u64_value(9))),
+                (name(b"old"), CellPatch::Set(text("indexed", true))),
+            ]
+            .into(),
+        )
+        .unwrap();
+    branches.commit(b).unwrap();
+    assert!(
+        Index::new(&Keccak256Hasher)
+            .bitmap(&db.begin_read().unwrap(), &term)
+            .unwrap()
+            .is_none()
+    );
+    let b = branches.begin().unwrap();
+    records.delete(b, KEY).unwrap();
+    records.create(b, KEY, values("Alice")).unwrap();
+    assert_eq!(id(&branches, b, KEY), 65);
+    branches.commit(b).unwrap();
+    let tx = db.begin_read().unwrap();
+    assert_eq!(
+        Index::new(&Keccak256Hasher)
+            .bitmap(&tx, &term)
+            .unwrap()
+            .unwrap()
+            .treemap()
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![65]
+    );
+    assert!(
+        Index::new(&Keccak256Hasher)
+            .bitmap(
+                &tx,
+                &IndexTerm::new("old", CellType::Str, b"indexed").unwrap()
+            )
+            .unwrap()
+            .is_none()
+    );
+    drop(tx);
+    let reopened = Branches::new(db, Keccak256Hasher).unwrap();
+    let records = Records::new(reopened.clone());
+    let b = reopened.begin().unwrap();
+    assert_eq!(allocated(&reopened, b), 66);
+    assert_eq!(id(&reopened, b, KEY), 65);
+    assert_eq!(
+        records
+            .get(ReadTarget::Commit(3), KEY, None)
+            .unwrap()
+            .cells
+            .len(),
+        2
+    );
+    assert!(
+        reopened
+            .read(b, |cell_reader| cell_reader
+                .scan_prefix(&64u64.to_be_bytes())?
+                .collect::<golemdb_branch::Result<Vec<_>>>())
+            .unwrap()
+            .is_empty()
+    );
+    records.delete(b, KEY).unwrap();
+    reopened.commit(b).unwrap();
+    assert!(matches!(
+        records.get(ReadTarget::Commit(4), KEY, None),
+        Err(RecordError::NotFound)
+    ));
+}
+
+#[test]
+fn memory_commit_reopen_and_index_lifecycle() {
+    lifecycle(MemoryDatabase::new());
+}
+
+#[cfg(feature = "mdbx")]
+#[test]
+fn mdbx_commit_and_database_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    lifecycle(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
+    let records = Records::new(branches.clone());
+    let b = branches.begin().unwrap();
+    assert_eq!(allocated(&branches, b), 66);
+    assert!(matches!(
+        records.get(ReadTarget::Commit(4), KEY, None),
+        Err(RecordError::NotFound)
+    ));
+    records.create(b, KEY, values("after restart")).unwrap();
+    assert_eq!(id(&branches, b, KEY), 66);
+    branches.commit(b).unwrap();
+}
+
+#[test]
+fn corrupt_system_state_never_defaults_or_overwrites_records() {
+    for bad in [
+        None,
+        Some(text("wrong type", false)),
+        Some(u64_value(0)),
+        Some(u64_value(u64::MAX)),
+    ] {
+        let (_, branches, records) = setup();
+        let b = branches.begin().unwrap();
+        branches
+            .write(b, |cell_writer| {
+                let key = CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID);
+                match bad {
+                    Some(value) => cell_writer.put(key, value),
+                    None => cell_writer.delete(key),
+                }
+                Ok::<_, RecordError>(())
+            })
+            .unwrap();
+        let before = snapshot(&branches, b);
+        let info = branches.branch_info(b).unwrap();
+        assert!(matches!(
+            records.create(b, KEY, values("x")),
+            Err(RecordError::CorruptState(_)) | Err(RecordError::RecordIdExhausted)
+        ));
+        assert_eq!(snapshot(&branches, b), before);
+        assert_eq!(branches.branch_info(b).unwrap(), info);
+    }
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    records.create(b, KEY, values("existing")).unwrap();
+    branches
+        .write(b, |cell_writer| {
+            cell_writer.put(
+                CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID),
+                u64_value(64),
+            );
+            Ok::<_, RecordError>(())
+        })
+        .unwrap();
+    let before = snapshot(&branches, b);
+    assert!(matches!(
+        records.create(b, OTHER, values("x")),
+        Err(RecordError::CorruptState(_))
+    ));
+    assert_eq!(snapshot(&branches, b), before);
+    branches
+        .write(b, |cell_writer| {
+            cell_writer.delete(CellKey::new(system::PARAMS.id, reserved::MAX_STR_LEN));
+            Ok::<_, RecordError>(())
+        })
+        .unwrap();
+    assert!(matches!(
+        records.create(b, OTHER, values("x")),
+        Err(RecordError::CorruptState(_))
+    ));
+}
+
+#[test]
+fn inconsistent_identity_and_reserved_id_aliases_are_rejected() {
+    let (_, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    records.create(b, KEY, values("Alice")).unwrap();
+    for bad_id in [0, 32, 63, 65] {
+        branches
+            .write(b, |cell_writer| {
+                cell_writer.put(binding(OTHER), u64_value(bad_id));
+                Ok::<_, RecordError>(())
+            })
+            .unwrap();
+        let before = snapshot(&branches, b);
+        assert!(matches!(
+            records.get(ReadTarget::Branch(b), OTHER, None),
+            Err(RecordError::CorruptState(_))
+        ));
+        assert!(matches!(
+            records.delete(b, OTHER),
+            Err(RecordError::CorruptState(_))
+        ));
+        assert_eq!(snapshot(&branches, b), before);
+    }
+    branches
+        .write(b, |cell_writer| {
+            cell_writer.put(binding(OTHER), u64_value(64));
+            Ok::<_, RecordError>(())
+        })
+        .unwrap();
+    assert!(matches!(
+        records.get(ReadTarget::Branch(b), OTHER, Some(&[])),
+        Err(RecordError::CorruptState(_))
+    ));
+}
+
+#[test]
+fn committed_cell_reader_keeps_one_snapshot_when_head_advances() {
+    let (db, branches, records) = setup();
+    let b = branches.begin().unwrap();
+    records.create(b, KEY, values("before")).unwrap();
+    branches.commit(b).unwrap();
+    let b = branches.begin().unwrap();
+    records
+        .patch(
+            b,
+            KEY,
+            [(name(b"name"), CellPatch::Set(text("after", true)))].into(),
+        )
+        .unwrap();
+    let tx = db.begin_read().unwrap();
+    assert_eq!(golemdb_branch::read_head(&tx).unwrap(), 1);
+    let cell_reader = golemdb_cells::CellReader::new(&tx);
+    branches.commit(b).unwrap();
+    assert_eq!(
+        cell_reader.get(&CellKey::new(64, name(b"name"))).unwrap(),
+        Some(text("before", true))
+    );
+    let stored = cell_reader
+        .scan_record(64)
+        .unwrap()
+        .collect::<golemdb_cells::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[1].1, text("before", true));
+    assert_eq!(
+        records.get(ReadTarget::Commit(2), KEY, None).unwrap().cells[b"name".as_slice()],
+        text("after", true)
+    );
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cells", "crates/storage", "crates/merkle", "crates/index", "crates/branch"]
+members = ["crates/cells", "crates/storage", "crates/merkle", "crates/index", "crates/branch", "crates/record"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ golemdb-storage = { path = "crates/storage", version = "0.1.0" }
 golemdb-merkle = { path = "crates/merkle", version = "0.1.0" }
 golemdb-index = { path = "crates/index", version = "0.1.0" }
 golemdb-branch = { path = "crates/branch", version = "0.1.0" }
+golemdb-record = { path = "crates/record", version = "0.1.0" }
 
 # Common external dependencies.
 anyhow = "1"

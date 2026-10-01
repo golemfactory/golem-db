@@ -20,6 +20,9 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
   seal buffers cell/index updates and roots; commit atomically persists them and
   advances head, with history deferred
+- `crates/record` (package `golemdb-record`) — caller-keyed record CRUD, allocation,
+  identity and bindings; branch work-in-progress and committed-head reads
+  ([scope and usage](crates/record/README.md))
 
 ## Documentation
 
