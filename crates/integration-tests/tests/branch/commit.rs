@@ -64,6 +64,31 @@ fn stage<D: Database, H: HashProvider>(branches: &Branches<D, H>, text: &str) ->
         .unwrap();
     branch
 }
+
+#[test]
+fn stale_commit_conflicts_unless_another_operation_already_invalidated_it() {
+    let db = MemoryDatabase::new();
+    genesis(&db, &Keccak256Hasher);
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
+    let winner = stage(&branches, "winner");
+    let stale = stage(&branches, "stale");
+    let invalidated = stage(&branches, "invalidated");
+    branches.commit(winner).unwrap();
+    // Conflict applies even if the caller did not explicitly seal first.
+    assert!(matches!(branches.commit(stale), Err(BranchError::Conflict)));
+    assert!(matches!(
+        branches.commit(stale),
+        Err(BranchError::HandleInvalid)
+    ));
+    assert!(matches!(
+        branches.branch_info(invalidated),
+        Err(BranchError::HandleInvalid)
+    ));
+    assert!(matches!(
+        branches.commit(invalidated),
+        Err(BranchError::HandleInvalid)
+    ));
+}
 fn lifecycle(db: impl Database + Clone, hash: impl HashProvider + Copy) {
     genesis(&db, &hash);
     let branches = Branches::new(db.clone(), hash).unwrap();
@@ -83,6 +108,7 @@ fn lifecycle(db: impl Database + Clone, hash: impl HashProvider + Copy) {
         branches.branch_info(winner),
         Err(BranchError::HandleInvalid)
     ));
+    assert!(matches!(branches.commit(stale), Err(BranchError::Conflict)));
     assert!(matches!(
         branches.commit(stale),
         Err(BranchError::HandleInvalid)
@@ -377,8 +403,8 @@ fn race(db: impl Database + Clone + Send + Sync + 'static) {
         (first.join().unwrap(), second.join().unwrap())
     });
     let winner = match (&result_a, &result_b) {
-        (Ok(1), Err(BranchError::HandleInvalid)) => &seal_a,
-        (Err(BranchError::HandleInvalid), Ok(1)) => &seal_b,
+        (Ok(1), Err(BranchError::Conflict)) => &seal_a,
+        (Err(BranchError::Conflict), Ok(1)) => &seal_b,
         _ => panic!("unexpected race results: {result_a:?}, {result_b:?}"),
     };
     assert_eq!(a.head().unwrap(), 1);

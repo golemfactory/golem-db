@@ -137,7 +137,7 @@ mod seal;
 mod types;
 
 pub use error::{BranchError, OperationError, Result};
-pub use head::read_head;
+pub use head::{Head, read_head, read_head_state, write_head};
 pub use manager::Branches;
 pub use overlay::{CellRead, CellWrite};
 pub use scan::CellScan;

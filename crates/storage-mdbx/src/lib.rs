@@ -146,6 +146,13 @@ pub type MdbxReadTransaction<'db> = MdbxTransaction<'db, RO>;
 pub type MdbxWriteTransaction<'db> = MdbxTransaction<'db, RW>;
 
 impl Database for MdbxDatabase {
+    fn max_key_size(&self) -> usize {
+        self.limits.key
+    }
+    fn max_value_size(&self) -> usize {
+        self.limits.value
+    }
+
     type Read<'db> = MdbxReadTransaction<'db>;
     type Write<'db> = MdbxWriteTransaction<'db>;
     fn begin_read(&self) -> Result<Self::Read<'_>> {
@@ -237,6 +244,11 @@ impl MdbxWriteTransaction<'_> {
 }
 
 impl WriteTransaction for MdbxWriteTransaction<'_> {
+    fn is_pristine(&self) -> Result<bool> {
+        let catalog = self.inner.open_table(None).map_err(backend)?;
+        Ok(self.inner.table_stat(&catalog).map_err(backend)?.entries() == 0)
+    }
+
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()> {
         self.write(table, key, value, WriteFlags::UPSERT)
     }

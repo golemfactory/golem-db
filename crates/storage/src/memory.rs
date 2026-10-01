@@ -115,6 +115,10 @@ impl ReadTransaction for MemoryWriteTransaction<'_> {
 }
 
 impl WriteTransaction for MemoryWriteTransaction<'_> {
+    fn is_pristine(&self) -> Result<bool> {
+        Ok(self.state.is_empty())
+    }
+
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()> {
         table.validate()?;
         self.state

@@ -501,6 +501,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "golemdb-api"
+version = "0.1.0"
+dependencies = [
+ "golemdb-branch",
+ "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
+ "golemdb-record",
+ "golemdb-storage",
+ "golemdb-storage-mdbx",
+ "serde",
+ "serde-saphyr",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "golemdb-branch"
 version = "0.1.0"
 dependencies = [
@@ -541,6 +557,7 @@ name = "golemdb-integration-tests"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "golemdb-api",
  "golemdb-branch",
  "golemdb-cells",
  "golemdb-index",

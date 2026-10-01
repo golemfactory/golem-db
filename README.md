@@ -24,6 +24,10 @@ The unpublished integration-test package is a workspace member only.
   advances head, with history deferred
 - `crates/record` (package `golemdb-record`) — caller-keyed record CRUD, allocation,
   identity and bindings; branch work-in-progress and committed-head reads
+- `crates/api` (package `golemdb-api`) — one public `Api` trait implemented by the
+  cloneable `GolemDb` facade, explicit input builders, projections, errors, and
+  atomic memory/MDBX opening from typed or YAML genesis
+  ([scope and usage](crates/api/README.md))
 - `crates/integration-tests` (package `golemdb-integration-tests`) — backend and
   cross-layer integration tests, plus the index backend benchmarks
 
@@ -58,8 +62,8 @@ by itself make a test an integration test. Hash/codec vectors, trie algorithms,
 cell batch semantics, bitmap/term encoding, branch state and lock behavior, and
 local error handling belong here.
 
-`crates/integration-tests/tests/` contains the `branch`, `index`, `record`, and `storage`
-targets. These cover MDBX persistence, reopening, limits, and transactions, plus
+`crates/integration-tests/tests/` contains the `api`, `branch`, `index`, `record`,
+and `storage` targets. These cover MDBX persistence, reopening, limits, and transactions, plus
 scenarios that verify cells, indexes, trie roots, and head publication together.
 Some end-to-end scenarios also run against memory storage as a backend comparison.
 Fault-injection fixtures stay with the behavior they test: local branch admission
@@ -93,8 +97,8 @@ Criterion suites, workload filters, timing boundaries and baseline comparisons.
 `.github/workflows/ci.yml` builds the workspace, runs the test suite with
 [cargo-nextest](https://nexte.st/) in one workspace run with all features enabled,
 runs documentation examples, and checks that benchmarks compile. Individual
-members without tests do not fail that workspace run. There are currently no
-crate feature combinations requiring a separate cargo-hack matrix.
+members without tests do not fail that workspace run. The API crate optionally
+enables its MDBX opening helpers with the `mdbx` feature.
 
 ## Dev container (optional)
 
