@@ -162,6 +162,12 @@ limiting. → _design [§4](golem-db-design.md#what-the-engine-enforces)_
   the host's job.
 - Every commit's roots stay readable from `#roots`, which is what makes proofs against past commits
   possible ([Proofs](#proofs)).
+- **Retention.** Every node keeps at least the `#minRetention` most recent commits readable (see
+  `params`) and never prunes inside them; an operator may keep more, up to full history, and serves
+  it through this same API. A read at a commit before the node's earliest retained commit raises
+  `Pruned`; `retention()` reports the boundary ([Introspection](#introspection)). Block execution
+  reads only the head, so nodes may differ above the floor without affecting consensus.
+  → _design [§7](golem-db-design.md#retention)_
 
 ### Branches
 
@@ -478,7 +484,11 @@ Chosen when the first page is requested; the cursor carries it through the itera
 
 No page is ever internally wrong under either mechanism — only the sequence can be inconsistent.
 **Sorting on an immutable cell makes live paging anomaly-free.** Pinning adds one read per resolved
-value, roughly doubling a query's read count, and does not grow with age.
+value, roughly doubling a query's read count, and does not grow with age; range and prefix
+predicates at a pinned commit also visit the terms that changed in their range during the retention
+window. **A pinned iteration can be served by any node** while its commit stays within the
+`#minRetention` window; the cursor holds no lease, and once its commit falls before the serving
+node's earliest retained commit the next page raises `Pruned`.
 → _design [§13](golem-db-design.md#pinned-and-live)_
 
 #### The cursor
@@ -604,6 +614,7 @@ party holding nothing but the root. Two caller-relevant properties:
 | -------- | -------------------------------------------- | ------------------------------------------------------------------- |
 | `roots`  | `(at?: CommitId) → {state_root, index_root}` | the committed roots as of a commit; absent = head                   |
 | `params` | `() → map<name, value>`                      | the deployment's chain parameters — equivalently `get` on `#params` |
+| `retention` | `() → {earliest: CommitId, head: CommitId}` | this node's earliest retained commit and its head. `earliest ≤ head − #minRetention` (or 0); above that floor it differs between nodes, and an archival node reports 0. Any read at `at < earliest` raises `Pruned` |
 
 `branch_hash` is a branch operation and lives in [Operations](#operations) with the rest.
 
@@ -686,7 +697,7 @@ call the API.
 | `InvalidArgument` | malformed input: name grammar, cap, codec, or a metering lifecycle violation                         |
 | `LimitExceeded`   | DNF caps — group count, predicates per group, nesting                                                |
 | `OutOfBudget`     | the next charge or full planned cost cannot fit, or cost arithmetic overflows; carries `spent` and optional write `required`; no partial results |
-| `Pruned`          | an immutable-data ordinal existed but is beyond the retention window                                 |
+| `Pruned`          | the target commit, or the commit of an immutable-data ordinal, is before this node's earliest retained commit (`retention()`); never inside the `#minRetention` window; an archival node never raises it |
 | `HandleInvalid`   | a consumed branch handle, or one whose origin is no longer the head                                  |
 | `Conflict`        | a commit guard failed, or an `expected_version` mismatch                                             |
 | `Internal`        | engine fault                                                                                         |

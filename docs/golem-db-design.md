@@ -47,17 +47,17 @@ vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
 
 | Chapter | Status | Open items (`CHANGES.md`) |
 | --- | --- | --- |
-| [1. Fundamentals](#1-fundamentals) | recorded, open | D05 (retention mechanism behind property 5); D13 (environment assumptions) |
+| [1. Fundamentals](#1-fundamentals) | recorded, open | D13 (environment assumptions) |
 | [2. System Schema](#2-system-schema) | recorded, open | D09 (Roaring profile, encoding canon); D13 (MDBX durability model) |
 | [3. Records and Cells](#3-records-and-cells) | recorded, open | D09 (`bool` byte forms, shipped type-id map) |
-| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D10 (model activation semantics); D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`); D05 (retention mechanism behind `#minRetention`) |
+| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D10 (model activation semantics); D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`);  |
 | [5. Indexing Cells for Filtering](#5-indexing-cells-for-filtering) | recorded, open | D01 (filter evaluation: predicate combination, bounds, cost shape); D14 |
 | [6. Merkleizing the Posting List](#6-merkleizing-the-posting-list-bitmaptrie) | recorded, open | D09 (odd-nibble padding, `EMPTY_ROOT`) |
-| [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D05 (retention, historical discovery, `Pruned`); D12 |
+| [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D12 |
 | [8. State Commitment and Global Root](#8-state-commitment-and-global-root) | recorded, open | D06 (proof scope, non-inclusion witness); D09 (reserved-layout tags, absent pre-image) |
 | [9. Trie Representation](#9-trie-representation-canonical-vs-physical) | recorded | — |
 | [10. Write Branches and Checkpoint Frames](#10-write-branches-and-checkpoint-frames) | recorded, open | D02 (`rewind`: not in v1; semantics still to specify); D03 (crash recovery); D04 (concurrency contract); D07 (branch transitions); D15; D16 |
-| [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D05 (shard-mark survival); D02 (`rewind`: not in v1); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
+| [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D02 (`rewind`: not in v1); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
 | [12. Sorting](#12-sorting) | recorded, open | D14 (cost qualifications) |
 | [13. Paging](#13-paging) | recorded, open, depends-on-metering | D11 (cursor contract, fingerprint scope); D12 (live-paging guarantee) |
 | [Appendix A. Normative Surface](#appendix-a--normative-surface) | open | S05 (being assembled; the full list waits on D09) |
@@ -99,6 +99,7 @@ document assumes of it.
 - **[7. Point-in-Time History](#7-point-in-time-history)**
   - [Resolving a Value as of a Commit](#resolving-a-value-as-of-a-commit)
   - [Historical Query Execution Example](#historical-query-execution-example)
+  - [Retention](#retention)
 - **[8. State Commitment and Global Root](#8-state-commitment-and-global-root)**
   - [The Two Tries](#the-two-tries)
   - [Domain Separation and Preimage Encoding](#domain-separation-and-preimage-encoding)
@@ -186,7 +187,7 @@ adopted here is stated and the document follows it.
 | **frame / checkpoint** | A span of operations inside a branch, delimited by `checkpoint()`; the unit `rollback()` undoes (§10) |
 | **seal** | Computing a branch's roots without persisting: yields a `SealedCommit`; `commit` persists it (§10) |
 | **segment / shard / row / ordinal** | §11: an append-only sequence of opaque rows outside MDBX, stored as shard files per commit span, addressed by dense ordinal; **mark** = a segment's row count after a commit |
-| **retention / pruning** | Discarding history, orphaned trie nodes or shards older than a window; policy open (`CHANGES.md` D05) |
+| **retention / pruning** | Discarding history rows, unreachable trie and bitmap nodes, and shards before a node's earliest retained commit; every node keeps at least `#minRetention` commits ([§7](#retention)) |
 
 ---
 
@@ -211,7 +212,7 @@ is built to deliver.
 | 2   | **Filtering and querying**       | Records are queryable by cell value, with equality, **range** and **prefix** predicates, plus sorting and paging — served by a reverse index over index terms rather than by scanning ([§5](#5-indexing-cells-for-filtering)).           |
 | 3   | **State commitment with proofs** | Every state has a single 32-byte root, and any cell or index term in it can be proved against that root to a party holding nothing but the root ([§8](#8-state-commitment-and-global-root)).                                             |
 | 4   | **Determinism**                  | The same content written in the same order yields byte-identical state and therefore an identical commitment, on every implementation and every machine — which is what makes the root agreeable between mutually distrusting parties.   |
-| 5   | **History within a retention window** | Every state within the retention window is retained and directly addressable: point-in-time reads and queries at any commit in the window, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-point-in-time-history)). The minimum window is the instance parameter `#minRetention`, in commits ([§4](#params-recordid-0)); beyond it the consensus-path API refuses a historical read identically on every node, whatever a node retains. Longer history is served by a separate archival surface, not yet designed. Mechanism: `CHANGES.md` D05. |
+| 5   | **History within a retention window** | Every state within the retention window is retained and directly addressable: point-in-time reads and queries at any commit in the window, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-point-in-time-history)). Every node retains at least `#minRetention` commits ([§4](#params-recordid-0)) and never prunes inside that window; an operator may retain more, up to the full history, and serves it through the same API. A read before a node's earliest retained commit returns `Pruned`. Block execution reads only the head, so retention is a service guarantee, not a consensus input ([§7](#retention)). |
 | 6   | **Branches**                     | Several write transactions run concurrently over the head state, each seeing its own work in progress, with reversible checkpoints inside them and exactly one winner at commit.                                                         |
 | 7   | **Budget-bounded execution**     | Every data-plane operation is priced in cost units against a versioned schedule and capped by a caller-supplied budget: exceeding it aborts with the cost spent and **no partial results**, so no call can consume unbounded work.       |
 
@@ -967,7 +968,7 @@ anything, roots before it can prove anything, and mappings last.
 | `#maxStrLen`      | `u32` (BE) | cap on `str` values (attribute values land in index keys) |
 | `#maxBytesLen`    | `u32` (BE) | cap on `bytes` values (field-only, never in an index key) |
 | `#maxCellNameLen` | `u32` (BE) | cap on user cell names                                    |
-| `#minRetention`   | `u64` (BE) | minimum retention window, in commits: the consensus-path API refuses reads at commits before `head − #minRetention`, identically on every node ([§1](#1-fundamentals) property 5; mechanism D05) |
+| `#minRetention`   | `u64` (BE) | minimum retention window, in commits: every node retains at least the commits `≥ head − #minRetention` and never prunes inside them; operators may retain more ([§7](#retention)) |
 | `#shardSpan`      | `u64` (BE) | commits per segment shard file ([§11](#genesis-declaration)) |
 | `#immutableDataSegments` | layout open (D09) | segment declarations `(name, columns, compression)` ([§11](#genesis-declaration)) |
 
@@ -1527,20 +1528,9 @@ For any item — a primary cell or an index term — its value at commit `T` fol
 The cost is one history lookup plus at most one change-set lookup, independent of how far back `T`
 lies — no intermediate commits are replayed.
 
-> **Retention affects reads differently by class.** A historical _point read_ depends only on
-> `CellHistory` and `CellChangeSet`. A historical _filtered query_ — the example below — additionally
-> depends on `IndexHistory` and `IndexChangeSet` to recover the term's `bitmapHash` as of `T`, and on
-> the `BitmapTrie` nodes and `BitmapContainer` rows reachable from that hash: the posting list at `T`
-> exists nowhere else ([§8](#which-tables-are-under-commitment)). History and change-set rows are
-> written once and never rewritten; pruning them discards that history irrecoverably. Historical
-> _proofs_ further need the `CellTrie` / `IndexTrie` nodes from the `#roots` cell for `T`
-> ([§4](#roots-recordid-2)) down to the leaf. Superseded trie and bitmap nodes are orphaned —
-> unreachable from the current root ([§9](#the-canonical-trie-and-the-physical-trie)) — and once
-> garbage collection reclaims them the read is not lost but becomes _expensive_: a proof must rebuild
-> the trie at `T`, and a filtered query must recover the term's membership at `T`, both by resolving
-> every cell from history — O(state) instead of O(depth). The minimum window is `#minRetention`
-> ([§4](#params-recordid-0)); which structures a deployment retains beyond it, and exactly what a read
-> past the window returns, is open (`CHANGES.md` D05).
+> **Retention.** Which structures a historical read needs, how long every node keeps them, and what
+> a read before a node's window returns are specified in [Retention](#retention) at the end of this
+> chapter.
 
 ```mermaid
 flowchart TB
@@ -1670,6 +1660,73 @@ independently: `"Price"` on record 111 is served from a change-set pre-image whi
 served from live state, in the same record. A projection (`SELECT Price`) simply omits the
 un-requested cells from Phase 3 — the `"Status"` lookups disappear entirely rather than being read and
 discarded.
+
+
+### Retention
+
+History is kept for a window of commits, not forever ([§1](#1-fundamentals) property 5). This section
+states what a historical read needs, how long every node keeps it, what may be collected, and what a
+read sees.
+
+**What a read at commit `T` needs**, beyond live state:
+
+| Read at `T` | Needs |
+| --- | --- |
+| Point read `get(K, at=T)` | `CellHistory` + `CellChangeSet` for `#recordKeys ‖ K` and for each requested cell |
+| Full-record read | as above, plus discovery of the cells the record had at `T` (below) |
+| Filtered query | `IndexHistory` + `IndexChangeSet` for each term; the `BitmapTrie` nodes and `BitmapContainer` rows reachable from each term's `bitmapHash` at `T`, since the posting list at `T` exists nowhere else; plus discovery of terms for range and prefix literals |
+| Proof | the `#roots` cell for `T` ([§4](#roots-recordid-2)); the `CellTrie` / `IndexTrie` nodes from that commit's roots down to the leaf; for a virtual leaf, its tagged value at `T` |
+| Segment read | the shard covering `T`, and the system-segment shard covering it ([§11](#the-system-segment)) |
+| `rewind(to)` (not in v1) | the `CellChangeSet` / `IndexChangeSet` rows of every commit after `to` |
+
+**The window.**
+
+- Every node retains everything in the table for at least the `#minRetention` most recent commits
+  ([§4](#params-recordid-0)), and never prunes inside that window.
+- An operator may retain more, set in node configuration (at least `#minRetention`; unbounded for an
+  archival node), and serves it through the same API. A node's **earliest retained commit** is
+  `max(0, head − R)`, where `R` is its own retention.
+- `retention()` reports a node's `{ earliest, head }`, so a client can find a node with deeper
+  history ([golem-db-api.md](golem-db-api.md)).
+- Block execution reads only the head and the branch overlay; history that execution needs is kept in
+  state, as `#roots` is. Retention is therefore a service guarantee, not a consensus input, and nodes
+  may differ above the floor without risk to consensus. The floor exists so that a pinned paging
+  session ([§13](#pinned-and-live)), a recent proof or a read at a recent commit can be served by any
+  node.
+
+**What a read before the window returns.** `Pruned` if `at` is before the node's earliest retained
+commit. That is decided from the head and the node's retention before any table is read, so it never
+happens inside the `#minRetention` window. `NotFound` if `at` is within the node's window and the item
+did not exist at `at`. An archival node never returns `Pruned`.
+
+**No read is silently incomplete.** Retention and collection go by commit, across every structure in
+the table together. A read at a retained commit therefore finds every row it needs; there is no state
+in which, say, a term's history survives while the bitmap nodes it points to have been collected.
+
+**What may be collected.** The history and change-set rows of commits before the node's earliest
+retained commit, and every stored trie node, bitmap node or container that no root within the node's
+window reaches ([§9](#the-canonical-trie-and-the-physical-trie)). Segments are pruned by whole shards,
+once every commit a shard covers is before the node's earliest retained commit
+([§11](#the-system-segment)).
+
+**Discovery.** A historical read that lists rather than looks up (a full record at `T`, or a range or
+prefix literal at `T`) must also find cells and terms deleted since `T`, which the live tables no
+longer hold. It merges two scans over the same key range, in key order: the live table (`Cell`,
+`Index`) and its history table (`CellHistory`, `IndexHistory`), which is keyed identically. The live
+scan finds items unchanged since before the window, whose history rows have been collected; the
+history scan finds items that changed within the window, including those deleted since. Each item
+found is resolved at `T` by the rule above and kept if present. No further structure is needed; the
+cost is proportional to the items in the range now plus those that changed in it during the window
+([§13](#what-pinning-costs)).
+
+**Snapshots carry the window.** A node joining from a snapshot receives, besides live state, the
+history and change-set rows of the `#minRetention` most recent commits and the nodes their roots
+reach, so it serves the same window as every other node from its first commit. An archival node
+needs history from genesis.
+
+**Cursors hold no lease.** A pinned cursor does not extend retention; once its commit falls before
+the serving node's earliest retained commit, the next page returns `Pruned`
+([§13](#pinned-and-live)).
 
 ---
 
@@ -2043,7 +2100,12 @@ which has three consequences:
 
 The price is that a node can no longer be addressed by where it sits: resolving a path means walking
 down from the root, and superseded nodes are not deleted by the write that supersedes them, so
-reclaiming them requires garbage collection.
+reclaiming them requires garbage collection. A stored node is collectable once **no root within the
+node's retention window** reaches it ([§7](#retention)); being unreachable from the _current_ root
+only makes it a candidate, since older roots inside the window may still need it. Collection never
+changes a root. Because nodes are content-addressed, a superseded node can be referenced again later
+(a value written back recreates an identical node), so the collector must account for nodes that
+become reachable again; reference counting per node handles this naturally.
 
 **Caveat on deduplication.** Because leaf hashes bind the _complete_ path
 ([§8](#the-two-tries)), a sub-trie's hash encodes its absolute position, so two sub-tries at
@@ -2789,7 +2851,7 @@ mark(500 000)[bodies] = 5
 bodies_500000_1000000 starts at ordinal 3  =  mark(499 999)    not 5
 ```
 
-An empty boundary commit hides the difference (`mark(S−1) = mark(S)`), which is why a check of this rule must use a nonempty one. `mark(S−1)` is held by the system segment's _previous_ shard; what survives of it once that shard is pruned is open (`CHANGES.md` D05).
+An empty boundary commit hides the difference (`mark(S−1) = mark(S)`), which is why a check of this rule must use a nonempty one. `mark(S−1)` is held by the system segment's _previous_ shard, so a shard is never retained without that shard's final row: when the previous shard is pruned, its final row is kept as a one-row boundary file or copied into the next shard's header (an implementation choice; [§7](#retention)).
 
 The row is written **unconditionally at every commit**, including commits that append nothing anywhere. That is what makes `ordinal == commitNr` hold, and it costs roughly eight bytes per segment per commit.
 
@@ -2822,13 +2884,13 @@ That is deliberate. A `one-per-commit` declaration would be marginally faster �
 | `immutable_data_range_of` | `(seg, commitNr) → [from, to)` | reads the system segment                |
 | `immutable_data_rows_of`  | `(seg, commitNr) → [row]`      | the whole run, one contiguous read      |
 
-**`truncate` and `prune` are not in the API.** Truncation is internal to crash recovery and `rewind`; pruning is the engine's existing retention mechanism, extended to drop whole shards whose commit span has fallen entirely outside the window. A host never asks for either.
+**`truncate` and `prune` are not in the API.** Truncation is internal to crash recovery and `rewind`; pruning is the engine's existing retention mechanism, extended to drop whole shards whose commit span lies entirely before the node's earliest retained commit ([§7](#retention)). A host never asks for either.
 
 `rewind(to)` is not in v1 (`CHANGES.md` D02); what follows is the mechanism it will use. It uses the **mirror of commit's ordering — MDBX first, then truncate segments** — for the same reason commit orders them the other way: in the window between the two, segments ahead of MDBX is recoverable and MDBX ahead of segments is not. A property falls out of this that is worth naming: cells and segments unwind _together_, cells by change-set replay and segments by truncation, so a host's own mapping cells revert alongside the commits they describe with no separate fix-up.
 
 Two additions to the shared surfaces:
 
-- **`Pruned`**, a new error — the ordinal existed but is beyond the retention window — distinct from `NotFound`, which means it never existed. A node serving historical reads needs to tell a caller which of the two happened.
+- **`Pruned`**, a new error — the ordinal existed but is before the node's earliest retained commit ([§7](#retention)) — distinct from `NotFound`, which means it never existed. A node serving historical reads needs to tell a caller which of the two happened.
 - **Metering.** Appends consume disk, so under the security property of [architecture §10](../golem-db-architecture.md#what-cost-must-be) they must be charged: a `immutable_data_append` op class plus the byte term, and `immutable_data_read` plus `bytes_read` on the way out.
 
 ### Genesis Declaration
@@ -2839,7 +2901,7 @@ Two additions to the shared surfaces:
 ```
 
 - **`shardSpan` is global**, a single Golem DB parameter the pruning strategy reads. It is not per segment: shards from different segments covering the same commit span expire together, which is what makes pruning a single decision.
-- **Retention is not declared here.** How long a segment's rows survive is a matter for the pruning configuration and strategy, which decides when a shard is safe to delete. What genesis fixes is only the shape of a segment, not its lifetime. Note that a strategy will want to distinguish segments — a chain keeps headers far longer than bodies and receipts, and any host with a compact index over a bulky log will want the same asymmetry — but that is the pruning layer's decision to express, not a field of the declaration.
+- **Retention is not declared per segment.** Every node keeps every segment for at least the `#minRetention` window ([§7](#retention)). Beyond it, how long a segment's rows survive is a matter for the node's pruning configuration and strategy, which decides when a shard is safe to delete. What genesis fixes is only the shape of a segment, not its lifetime. Note that a strategy will want to distinguish segments — a chain keeps headers far longer than bodies and receipts, and any host with a compact index over a bulky log will want the same asymmetry — but that is the pruning layer's decision to express, not a field of the declaration.
 - **Compression is engine-owned**, declared per segment (`none` / `lz4` / `zstd` / `zstd-dict`). Rows go in and come out as plain bytes. This is where dictionary compression pays, and it needs to see across rows to work at all — which is exactly what the cell model cannot offer. **One constraint, not a tuning choice: compression must permit single-row decode.** If a shard compressed as a unit, a point read would decompress the whole shard.
 - **No row-size cap.** An oversize row surfaces at `commit` rather than at `immutable_data_append` — the same late-failure class [§10](#committing-a-branch) already documents for MDBX's own key and value limits, so it is consistent with the existing stance rather than a new hole.
 
@@ -3153,7 +3215,10 @@ The choice between the two is made once, when the first page is asked for, and t
 through the rest of the iteration.
 
 **Pinned.** The request names a `commit`. The cursor records it, and every page is evaluated there,
-so the whole iteration sees one unchanging state.
+so the whole iteration sees one unchanging state. Every node retains at least the `#minRetention`
+most recent commits, so a pinned iteration can be served page by page by **any** node for as long as
+its commit stays inside that window. The cursor holds no lease: once its commit falls before the
+serving node's earliest retained commit, the next page returns `Pruned` ([§7](#retention)).
 
 **Live.** The request names no commit — a deliberate decision to read the head rather than a
 snapshot. The cursor records no commit either, and each page resolves independently against whatever
@@ -3207,6 +3272,12 @@ touched the item** ([§2](#bitmap-encoding)), and resolving means locating the s
 than C within it. Roaring addresses the relevant container directly rather than scanning from the
 start, so the search itself stays cheap — but the structure being searched grows with the item's
 modification history, and a `Cell` or change-set row is a plain value by comparison.
+
+Range and prefix predicates pay once more, for **discovery**. At a pinned commit the term scan merges
+`Index` with `IndexHistory` over the literal's range ([§7](#retention)), so it visits the terms in
+the range now plus those that changed in it during the retention window, not only the terms present
+at C. A full-record read at C does the same over `Cell` and `CellHistory`. Equality predicates and
+projected cells are unaffected.
 
 ### The Cursor and the Warm Node
 
@@ -3322,10 +3393,9 @@ onto chapters.
 | ID | Question | Where it bites |
 | --- | --- | --- |
 | D01 | How predicates combine (conjunction only, ordered DNF, negation, match-all); bounds on groups, predicates, nesting; cost shape; whether a negated literal matches records where the cell is absent or of another type (MongoDB-style, recommended) or only records that have it (SQL-style) | §5 |
-| D02 | `rewind(to)` is **not in v1** (decided 2026-09-30), but its semantics are to be specified now, so the feature can be enabled later without a contract change. Open: what it undoes (cells, index, tries, history, `#roots`, segments); ordering across MDBX and segments; what happens to handles, cursors and caches; commit identity after rewind | §10, §11 |
+| D02 | `rewind(to)` is **not in v1** (decided 2026-09-30, assuming no reorgs: a single block producer and a fixed validator set), but its semantics are to be specified now, so the feature can be enabled later without a contract change. Open: what it undoes (cells, index, tries, history, `#roots`, segments); ordering across MDBX and segments; what happens to handles, cursors and caches; commit identity after rewind | §10, §11 |
 | D03 | Crash recovery: restart from the `Superblock` head; segment truncation; behaviour on segment-fsync or MDBX-write failure; retry idempotence; already-issued receipts | §10, §11 |
 | D04 | Concurrency contract: one MDBX read snapshot per branch and per query; where the commit guard's critical section starts relative to segment appends; arbitration of two sealed candidates | §10 |
-| D05 | Retention. **Decided (P06):** the minimum window is `#minRetention`, in commits, in `#params`, and the consensus path refuses beyond it on every node. Open: which structures survive per read class (point, filtered, proof, segments); earliest supported commit; reader and cursor protection from GC; `Pruned` vs `NotFound`; discovering terms and cell names deleted since T; where a shard's starting mark survives once the previous system-segment shard is pruned | §7, §11, §13 |
 | D06 | Proof scope: which classes are proven (membership, non-inclusion; not range completeness); how the server obtains a mismatching virtual leaf's tagged value at head and historically; cost | §8 |
 | D07 | Branch transitions: delete visibility over real overlay values; the net diff with restored or no-op entries after rollback; history of cancelled changes; create-then-delete in one commit | §10 |
 | D09 | The normative encoding profile: Roaring version, container selection and run-opt rule; odd-nibble padding; `EMPTY_ROOT`; `typeTag` for reserved-record layouts; the absent pre-image encoding for `IndexChangeSet`; `bool` byte forms; the shipped type-id map; change-set key caps | §2, §3, §4, §6, §8 |

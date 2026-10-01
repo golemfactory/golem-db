@@ -29,7 +29,7 @@ their heading.
 | 4 | [D04](#46--d04--d03--d02--concurrency-contract-crash-recovery-rewind) | waiting, verify that this is natively solved by our branch impl and mdbx features | What guarantees a read never mixes two states, and where is the commit race decided? | One MDBX read txn per operation with head check inside; commit mutex over guard → segment fsync → MDBX txn | D13 (sync mode), P05 | D03, D02, S08, S09 | — | P1 |
 | 5 | [D03](#46--d04--d03--d02--concurrency-contract-crash-recovery-rewind) | waiting, likely post mumbai | What happens on restart and on failure mid-commit? | Five-step restart; failure table by point; deterministic vs environmental errors | D04 | S08 | yes — new `Io` error | P1 |
 | 6 | [D02](#46--d04--d03--d02--concurrency-contract-crash-recovery-rewind) | waiting (2.1 decided), likely v2 (not necessary with bft) | Does `rewind` exist, what does it undo, and what does "commit 100" mean afterwards? | **Semantics specified; feature deployment-optional, not in v1** (aligned with requirements OQ4); undo by change-set replay, one txn per commit, MDBX then segments; root-based identity for cursors and `at` | D04, D03 | D11, D05, S08 | yes — `Stale` error; optional root on `at`; `rewind` definition | P1 |
-| 7 | [D05](#7--d05--retention-and-historical-discovery) | ok to go, needs impl (5.2 minimum decided) | Retention: what survives per read class, how far back, what a read past the window returns, how deleted terms/cells are discovered; history after snapshot sync | Service matrix; **`#minRetention` instance parameter; consensus path refuses beyond it on every node; surplus via an archival surface** (aligned with CS-5/DI-7); GC root = every `#roots` entry retained; discovery by scanning the history tables; no cursor lease; synced node exempt for one window | P06, D02 | D06, D12, D17 | yes — `retention()`; archival surface | P1 |
+| 7 | [D05](#7--d05--retention-and-historical-discovery) | DONE, with changes (see Outcome) | Retention: what survives per read class, how far back, what a read past the window returns, how deleted terms/cells are discovered; history after snapshot sync | Service matrix; **`#minRetention` instance parameter; consensus path refuses beyond it on every node; surplus via an archival surface** (aligned with CS-5/DI-7); GC root = every `#roots` entry retained; discovery by scanning the history tables; no cursor lease; synced node exempt for one window | P06, D02 | D06, D12, D17 | yes — `retention()`; archival surface | P1 |
 | 8 | [D06](#8--d06--proof-scope-and-the-non-inclusion-witness) | waiting, matthias tries to work on this next week | Which statements are provable, and how is absence of a virtual leaf witnessed? | Inclusion/non-inclusion of cells, bindings, terms, memberships; range completeness a non-goal; nested leaf preimage `Hash(0x00 ‖ key ‖ Hash(tag ‖ value))` with the inner hash stored beside `leaf_paths` | D05, P07 | D18, D09 | yes — proofs section | P1 |
 | 9 | [D09](#9--d09--normative-encoding-profile) | waiting  | The exact bytes an independent encoder must reproduce | 13 items pinned: Roaring portable 32-bit with `runOptimize` rule; pad nibble 0; `EMPTY_ROOT = Hash(0x07)`; reserved cells use grid types; zero-length = absent; decoders reject non-canonical; 10 vector sets | D01, D06 | S05, Epic 6 | — | P1 |
 | 10 | [D13](#10--d13--environment-assumptions) | waiting | What is assumed of MDBX, the filesystem and RAM, and who may reject on memory? | State `SYNC_DURABLE`, MVCC readers, no clock/randomness; engine imposes **no** node-local memory caps (they would fork consensus) — publishes the formula, host bounds via gas limit | — | D04, S06 | — | P2 |
@@ -794,7 +794,9 @@ W4  rewind past retention        rewind(to) with to's change-sets pruned → Pru
 
 _(architect fills in per sub-question 4.1, 4.2, 3.1, 3.2, 2.1–2.3)_
 
-- **2.1 (2026-09-30):** `rewind` is **not in v1**, as revised above. The API marks it so and the
+- **2.1 (2026-09-30):** `rewind` is **not in v1**, as revised above. **Condition (2026-10-01):** this
+  rests on the v1 assumption of no reorgs (single block producer, fixed validator set; D13). It must
+  be revisited if the producer model changes; under BFT / single-slot finality it is not needed. The API marks it so and the
   design's D02 row says so. 2.2 and 2.3 are still to decide.
 
 ---
@@ -961,10 +963,42 @@ H6  rewind across window       rewind(to) with to < earliest → Pruned, head un
 
 _(architect fills in per sub-question 5.2, 5.3, 5.5, 5.6)_
 
-- **5.2, minimum window (2026-10-01, with P06):** `#minRetention` (`u64`, commits) in `#params`; the
-  consensus-path API refuses reads before `head − #minRetention` on every node. Landed in design §1
-  property 5 and the §4 `#params` table. Still to decide: the archival surface above the minimum,
-  `retention()`, and 5.3–5.7.
+**Decided 2026-10-01, all sub-questions:**
+
+- **5.1** Service matrix: confirmed as written.
+- **5.2** `#minRetention` (`u64`, commits, in `#params`) is a **floor, not a ceiling**. Every node
+  retains at least `#minRetention` commits and must not prune inside that window. Operators may
+  retain more (node configuration, `≥ #minRetention`; `∞` = archival node) and serve it through the
+  **normal API**; no separate archival surface is needed. This departs from requirement DI-7's
+  uniform refusal (see the conflicts table at the end). Why a floor above 1 at all: block execution
+  reads only the head (history it needs lives in state, e.g. `#roots`), so consensus needs no
+  history. The floor is a service guarantee: a pinned paging session can be served by any node for
+  `#minRetention` commits (2 s per commit on Arkiv), plus recent proofs and RPC reads. Its size is
+  product question OQ2.
+- **5.3** GC rule as recommended: a stored trie node, bitmap node or container is collectable iff no
+  root within the node's own window reaches it; history and change-set rows go with their commit.
+  Implementation option: reference counting (handles content-addressed nodes that reappear).
+- **5.4** As recommended, under 5.2: `Pruned` iff `at` is before the node's earliest retained commit,
+  which is never inside the `#minRetention` window; `NotFound` = the item did not exist at `at`;
+  reads are never silently incomplete, because retention and collection are per commit, across all
+  structures together.
+- **5.5** Discovery, **corrected:** merge the live scan and the history scan over the same key range
+  (`Cell` ∪ `CellHistory`, `Index` ∪ `IndexHistory`), resolving each item at T. The brief's
+  history-only scan misses items unchanged since before the window, whose history rows GC has
+  removed. No new structure; cost ∝ items in range now plus items changed in range during the
+  window (a qualification for §13's cost table).
+- **5.6** No lease: a cursor beyond the node's window gets `Pruned`; an archival node never returns
+  `Pruned`.
+- **5.7 A:** snapshots carry the minimum window (history and change-set rows for commits
+  `≥ head − #minRetention`, plus the nodes reachable from the window's roots), so a joining node is
+  complete at once. An archival node needs history from genesis.
+- **`retention()`** added: unmetered, returns this node's `{ earliest, head }` (`[API]`, additive).
+
+**Text landed 2026-10-01:** design §7 *Retention* (new), §9 collection rule, §11 (shard marks,
+shard pruning, `Pruned`, per-segment retention), §13 *Pinned and Live*, §1 property 5, §4
+`#params`, Glossary; API *Commits*, `retention()` in *Introspection*, `Pruned`, *Pinned and live*.
+Fixtures H1–H6 are pending until `conformance/vectors/` exists. Requirement DI-7's rewording is
+proposed in [arkiv-source-of-truth#6](https://github.com/Arkiv-Network/arkiv-source-of-truth/pull/6) (tracked as `CHANGES.md` T05).
 
 ---
 
@@ -1235,6 +1269,12 @@ engine error other than `Io`/`MapFull` depends on machine configuration.
 ### Outcome
 
 _(architect fills in: 13.1 confirm/adjust; 13.2 A/B/C)_
+
+- **13.1 addition (2026-10-01):** v1 assumes **no reorgs**: Arkiv runs a single block producer
+  and a fixed validator set. A fork is an operational failure (e.g. a duplicated proposer key, the
+  consensus client's proposer re-org of late blocks left enabled, consensus and execution state
+  restored separately), recovered by restore and re-sync, not by `rewind`. The rest of 13.1 and
+  13.2 are still open.
 
 ---
 
@@ -1752,3 +1792,4 @@ reconciled; each affected brief carries an *Alignment* note.
 | D01 1.1/1.2 | negation only beside a positive literal; no match-all | live product has standalone `!=` / `!` (P08) | Revised to the live-set term if P08 confirms |
 | D01 1.1/1.2, D06 8.1 | — | open questions 6 and 10 ask exactly these; 10's option (a) is D06's non-goal | Consistent; the requirements' open questions should cross-reference the briefs |
 | D09 9.3 | history bitmaps not normative | decision log *Encodings*: "one pinned Roaring serialisation" | Consistent for `BitmapContainer`; the requirements do not distinguish the two Roaring uses — 9.3 makes the distinction explicit and should be reflected back |
+| D05 5.2 (2026-10-01) | `#minRetention` with a uniform refusal beyond it (from DI-7) | DI-7: beyond the minimum "the consensus-path API refuses on every node, whatever a node happens to retain"; longer retention via an archival surface | **Decided against the requirement's wording:** `#minRetention` is a floor; nodes may serve longer history through the normal API. Safe because block execution reads only the head. **DI-7 rewording proposed** in [arkiv-source-of-truth#6](https://github.com/Arkiv-Network/arkiv-source-of-truth/pull/6): only its "Beyond the window …" sentence changes; the glossary *Retention window* and the rest of DI-7 already match |
