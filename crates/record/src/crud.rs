@@ -42,10 +42,12 @@ impl<D: Database, H: HashProvider> Records<D, H> {
                     read_branch_record(cell_reader, key, projection)
                 })
                 .map_err(Into::into),
-            ReadTarget::Commit(requested) => {
+            ReadTarget::Head | ReadTarget::Commit(_) => {
                 let tx = self.branches.database().begin_read()?;
                 let head = read_head(&tx)?;
-                if requested != head {
+                if let ReadTarget::Commit(requested) = target
+                    && requested != head
+                {
                     return Err(RecordError::CommitUnavailable { requested, head });
                 }
                 read_committed_record(&CellReader::new(&tx), key, projection)
@@ -94,10 +96,10 @@ impl<D: Database, H: HashProvider> Records<D, H> {
                 }
                 cell_writer.put(
                     CellKey::new(id, reserved::KEY),
-                    CellValue::from_bytes32(key.0, false),
+                    CellValue::from_bytes32(key.0),
                 );
-                cell_writer.put(state::binding(key), CellValue::from_u64(id, false));
-                cell_writer.put(state::allocator_key(), CellValue::from_u64(next, false));
+                cell_writer.put(state::binding(key), CellValue::from_u64(id));
+                cell_writer.put(state::allocator_key(), CellValue::from_u64(next));
                 Ok(key)
             })
             .map_err(Into::into)

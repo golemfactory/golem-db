@@ -23,12 +23,18 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 - `crates/record` (package `golemdb-record`) — caller-keyed record CRUD, allocation,
   identity and bindings; branch work-in-progress and committed-head reads
   ([scope and usage](crates/record/README.md))
+- `crates/api` (package `golemdb-api`) — one public `Api` trait implemented by the
+  cloneable `GolemDb` facade, explicit input builders, projections, errors, and
+  atomic memory/MDBX opening from typed or YAML genesis
+  ([scope and usage](crates/api/README.md))
 
 ## Documentation
 
 - [Technical design](docs/golem-db-design.md): storage architecture, data model,
   commitments, history, and query design.
 - [API](docs/golem-db-api.md): the caller-facing interface and operation semantics.
+- [API implementation plan](docs/api-implementation-plan.md): iterations for the
+  public Rust facade, typed inputs, and database opening.
 
 ## Adding a crate
 

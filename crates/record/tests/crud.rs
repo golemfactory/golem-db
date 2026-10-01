@@ -11,6 +11,83 @@ use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const OTHER: RecordKey = RecordKey([0x43; 32]);
 
+// Publish after acquiring a snapshot to deterministically exercise a concurrent
+// head change during get, without timing-dependent thread scheduling.
+struct AdvancingReadDb {
+    db: MemoryDatabase,
+    after_snapshot: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Database for AdvancingReadDb {
+    type Read<'db> = <MemoryDatabase as Database>::Read<'db>;
+    type Write<'db> = <MemoryDatabase as Database>::Write<'db>;
+
+    fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let snapshot = self.db.begin_read()?;
+        let hook = self.after_snapshot.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        Ok(snapshot)
+    }
+
+    fn begin_write(&self) -> golemdb_storage::Result<Self::Write<'_>> {
+        self.db.begin_write()
+    }
+}
+
+#[test]
+fn head_selection_and_record_read_share_one_snapshot() {
+    use std::sync::atomic::Ordering;
+
+    let (db, branches, records) = setup();
+    let first = branches.begin().unwrap();
+    records.create(first, KEY, values("before")).unwrap();
+    branches.commit(first).unwrap();
+    let next = branches.begin().unwrap();
+    records
+        .patch(
+            next,
+            KEY,
+            [(name(b"name"), CellPatch::Set(text("after", true)))].into(),
+        )
+        .unwrap();
+    let reader_branches = Branches::new(
+        AdvancingReadDb {
+            db,
+            after_snapshot: std::sync::Mutex::new(None),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        },
+        Keccak256Hasher,
+    )
+    .unwrap();
+    let reader = Records::new(reader_branches.clone());
+    let writer = branches.clone();
+    *reader_branches.database().after_snapshot.lock().unwrap() = Some(Box::new(move || {
+        writer.commit(next).unwrap();
+    }));
+    reader_branches.database().reads.store(0, Ordering::SeqCst);
+    let snapshot = reader.get(ReadTarget::Head, KEY, None).unwrap();
+    assert_eq!(snapshot.cells[b"name".as_slice()].as_str(), Some("before"));
+    assert_eq!(reader_branches.database().reads.load(Ordering::SeqCst), 1);
+    assert_eq!(branches.head().unwrap(), 2);
+    let latest = reader.get(ReadTarget::Head, KEY, None).unwrap();
+    assert_eq!(latest.cells[b"name".as_slice()].as_str(), Some("after"));
+    assert!(matches!(
+        reader.get(ReadTarget::Commit(1), KEY, None),
+        Err(RecordError::CommitUnavailable {
+            requested: 1,
+            head: 2
+        })
+    ));
+    assert_eq!(
+        reader.get(ReadTarget::Commit(2), KEY, None).unwrap(),
+        latest
+    );
+}
+
 fn name(bytes: &[u8]) -> CellName {
     CellNameRef::raw(bytes).into()
 }

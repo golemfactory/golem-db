@@ -12,6 +12,7 @@
 //! writes, local parameter defaults, or parameter cache lives here.
 //!
 //! This iteration is unmetered: no budgets, receipts, debug options, or OCC.
+//! [`ReadTarget::Head`] selects and reads the current head in one snapshot.
 //! Commit-targeted reads support the head only and explicitly reject other
 //! commits until history is available. Deletes enumerate and tombstone every
 //! live cell; sealing derives index changes from the resulting cell diff.

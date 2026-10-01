@@ -208,8 +208,10 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     /// Success consumes the branch; competitors over the old head become stale.
     /// A failed seal leaves the branch open. A storage failure after sealing
     /// retains the sealed result for retry or discard, subject to head validation.
+    /// A live branch whose origin lost the race returns Conflict and is consumed.
+    /// Unknown or already invalidated/consumed handles return HandleInvalid.
     pub fn commit(&self, branch_id: BranchId) -> Result<CommitId> {
-        self.with_slot(branch_id, |slot, origin| {
+        self.with_slot(branch_id, BranchError::Conflict, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
             let sealed = state.seal(origin, &self.inner.hasher)?;
             let tx = self.inner.database.begin_write()?;
@@ -222,10 +224,10 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
                     let _ = self.remove(branch_id);
                     Ok(commit_id)
                 }
-                Err(BranchError::HandleInvalid) => {
+                Err(BranchError::Conflict) => {
                     *slot = None;
                     self.remove(branch_id)?;
-                    Err(BranchError::HandleInvalid)
+                    Err(BranchError::Conflict)
                 }
                 Err(error) => Err(error),
             }
@@ -235,7 +237,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     /// Consume a live branch without reverse replay. A stale or already
     /// discarded ID returns `HandleInvalid`; stale state is still released.
     pub fn discard(&self, branch_id: BranchId) -> Result<()> {
-        self.with_slot(branch_id, |slot, _| {
+        self.with_slot(branch_id, BranchError::HandleInvalid, |slot, _| {
             *slot = None;
         })?;
         self.remove(branch_id)
@@ -256,7 +258,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
         branch_id: BranchId,
         operation: impl FnOnce(&mut BranchState, &D::Read<'_>) -> T,
     ) -> Result<T> {
-        self.with_slot(branch_id, |slot, origin| {
+        self.with_slot(branch_id, BranchError::HandleInvalid, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
             Ok(operation(state, origin))
         })?
@@ -268,6 +270,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     fn with_slot<T>(
         &self,
         branch_id: BranchId,
+        stale_error: BranchError,
         operation: impl FnOnce(&mut Option<BranchState>, &D::Read<'_>) -> T,
     ) -> Result<T> {
         let entry = self
@@ -285,7 +288,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
         if read_head(&origin)? != commit_id {
             *slot = None;
             self.remove(branch_id)?;
-            return Err(BranchError::HandleInvalid);
+            return Err(stale_error);
         }
         // CellOverlay's write guard restores all partial mutations on unwind.
         // Unlock before resuming a callback panic so it cannot poison the lock.

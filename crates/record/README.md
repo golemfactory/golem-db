@@ -12,7 +12,8 @@ the manager, with no separate record state. See the crate rustdoc for a usage ex
 - Create updates user cells, the non-indexed bytes32 `#key`, the non-indexed u64
   binding in `#recordKeys`, and `#alloc.#nextRecordID` in one branch operation.
   Allocation starts at 64; exhaustion is checked before mutation.
-- `ReadTarget::Branch` sees uncommitted operations. `ReadTarget::Commit` accepts
+- `ReadTarget::Branch` sees uncommitted operations. `ReadTarget::Head` selects and
+  reads the current head in one snapshot. `ReadTarget::Commit` accepts
   only the head in the acquired snapshot. Older and future commits return
   `CommitUnavailable`. A concurrent commit cannot mix a lookup's binding,
   identity, and contents across snapshots. Committed reads use the storage

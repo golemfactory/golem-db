@@ -55,6 +55,15 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// Readers and their cursors remain usable while a writer is active or commits.
 /// Only writers serialize with other writers. Every backend must support this.
 pub trait Database {
+    /// Physical ceilings, independent of deployment admission policy.
+    /// Unbounded backends may keep these defaults; bounded adapters must override.
+    fn max_key_size(&self) -> usize {
+        usize::MAX
+    }
+    fn max_value_size(&self) -> usize {
+        usize::MAX
+    }
+
     type Read<'db>: ReadTransaction
     where
         Self: 'db;
@@ -105,6 +114,15 @@ pub trait ReadCursor {
 /// Implementations must discard pending changes and release the transaction
 /// when dropped without committing.
 pub trait WriteTransaction: ReadTransaction {
+    /// True only when no tables or rows exist in this writer's snapshot.
+    /// Initialization must make this check under the same writer as its writes.
+    /// Adapters that cannot inspect the catalogue must fail, never assume empty.
+    fn is_pristine(&self) -> Result<bool> {
+        Err(StorageError::Backend(
+            "backend cannot inspect its table catalogue".into(),
+        ))
+    }
+
     /// Insert or replace a row, creating the table transactionally if needed.
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()>;
     /// Insert only, creating the table transactionally if needed.
