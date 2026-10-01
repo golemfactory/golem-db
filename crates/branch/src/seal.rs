@@ -1,5 +1,6 @@
 use golemdb_cells::{
-    CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, CellsUpdate, tables,
+    CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, CellsUpdate,
+    system, tables,
 };
 use golemdb_index::{Index, IndexTerm, IndexUpdate, PostingChange, TermError};
 use golemdb_merkle::{Hash, HashProvider};
@@ -11,10 +12,6 @@ use crate::{
     head::read_head_state,
     overlay::CellOverlay,
 };
-
-/// Reserved `#roots` record in the database schema. If shared with the record
-/// layer later, move this definition to a common lower-level schema module.
-const ROOTS_RECORD_ID: u64 = 2;
 
 /// Computed next state, retained in memory until commit or discard.
 /// The commit number is provisional: sealing does not reserve or advance head.
@@ -46,7 +43,7 @@ pub(crate) fn compute(
     let cell_root = cells.reopen(origin, head.state_root)?;
     let index_root = index.reopen(origin, head.index_root)?;
     let roots_key = CellKey::new(
-        ROOTS_RECORD_ID,
+        system::ROOTS.id,
         CellNameRef::raw(&head.commit_id.to_be_bytes()),
     );
     if origin.get(tables::CELL, &roots_key.encode())?.is_some() {

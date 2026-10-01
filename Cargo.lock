@@ -555,6 +555,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "golemdb-record"
+version = "0.1.0"
+dependencies = [
+ "golemdb-branch",
+ "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
+ "golemdb-storage",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "golemdb-storage"
 version = "0.1.0"
 dependencies = [

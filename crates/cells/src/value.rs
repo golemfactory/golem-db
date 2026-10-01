@@ -24,6 +24,26 @@ pub struct CellValue {
 }
 
 impl CellValue {
+    /// Construct a u64 cell from a typed value. Every u64 has a valid encoding.
+    pub fn from_u64(value: u64, indexable: bool) -> Self {
+        CellValueRef {
+            ty: CellType::Uint(crate::Width::W8),
+            value: &value.to_be_bytes(),
+            indexable,
+        }
+        .into()
+    }
+
+    /// Construct a bytes32 cell; the array type guarantees the exact width.
+    pub fn from_bytes32(value: [u8; 32], indexable: bool) -> Self {
+        CellValueRef {
+            ty: CellType::FixedBytes(crate::Width::W32),
+            value: &value,
+            indexable,
+        }
+        .into()
+    }
+
     /// Validate once and take ownership of a complete encoded cell without
     /// copying its buffer. Deployment limits are checked separately at admission.
     pub fn parse(bytes: Vec<u8>) -> Result<Self, CellParseError> {

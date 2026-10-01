@@ -49,7 +49,7 @@ impl<'h, H: HashProvider> Cells<'h, H> {
     /// Read the snapshot's flat value. The owned result outlives the transaction.
     /// This is not a proof or an authenticated read against a supplied root.
     pub fn get(&self, tx: &impl ReadTransaction, key: &CellKey) -> Result<Option<CellValue>> {
-        read_value(tx, &key.encode())
+        CellReader::new(tx).get(key)
     }
 
     /// Scan one record lazily in name-byte order, including raw reserved names.
@@ -59,10 +59,7 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         tx: &'tx T,
         record_id: u64,
     ) -> Result<CellScan<T::Cursor<'tx>>> {
-        Ok(CellScan {
-            scan: scan_prefix(tx, tables::CELL, record_id.to_be_bytes().to_vec())?,
-            done: false,
-        })
+        CellReader::new(tx).scan_record(record_id)
     }
 
     /// Recover root metadata. Empty/singleton recovery uses the flat table from
@@ -126,6 +123,31 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         Ok(CellsUpdate {
             root,
             changed_cells,
+        })
+    }
+}
+
+/// Committed cell reads from a caller-owned snapshot, without a hash provider or
+/// branch overlay. Read any associated head metadata from the same transaction.
+pub struct CellReader<'tx, R: ReadTransaction> {
+    tx: &'tx R,
+}
+
+impl<'tx, R: ReadTransaction> CellReader<'tx, R> {
+    pub fn new(tx: &'tx R) -> Self {
+        Self { tx }
+    }
+
+    pub fn get(&self, key: &CellKey) -> Result<Option<CellValue>> {
+        read_value(self.tx, &key.encode())
+    }
+
+    /// Scan one record in name-byte order. Rows are owned; the iterator borrows
+    /// the snapshot and preserves raw reserved-record names.
+    pub fn scan_record(&self, record_id: u64) -> Result<CellScan<R::Cursor<'tx>>> {
+        Ok(CellScan {
+            scan: scan_prefix(self.tx, tables::CELL, record_id.to_be_bytes().to_vec())?,
+            done: false,
         })
     }
 }

@@ -32,8 +32,8 @@
 //!     let branches = Branches::new(database, Keccak256Hasher)?;
 //!     let branch = branches.begin()?;
 //!     let key = CellKey::new(64, CellNameRef::parse_user(b"status", 64)?);
-//!     branches.write(branch, |cells| {
-//!         cells.put(key.clone(), CellValue::parse(b"\x02ready".to_vec())?);
+//!     branches.write(branch, |cell_writer| {
+//!         cell_writer.put(key.clone(), CellValue::parse(b"\x02ready".to_vec())?);
 //!         Ok::<_, BranchError>(())
 //!     })?;
 //!     branches.checkpoint(branch)?;
@@ -41,10 +41,10 @@
 //!     assert_eq!(info.branch_id, branch);
 //!     assert_eq!(info.version, 1);
 //!     assert!(!info.sealed);
-//!     let value = branches.read(branch, |cells| cells.get(&key))?;
+//!     let value = branches.read(branch, |cell_reader| cell_reader.get(&key))?;
 //!     assert_eq!(value.unwrap().as_str(), Some("ready"));
-//!     let cells = branches.read(branch, |cells| {
-//!         cells.scan_prefix(&64u64.to_be_bytes())?.collect::<Result<Vec<_>, _>>()
+//!     let cells = branches.read(branch, |cell_reader| {
+//!         cell_reader.scan_prefix(&64u64.to_be_bytes())?.collect::<Result<Vec<_>, _>>()
 //!     })?;
 //!     assert_eq!(cells.len(), 1);
 //!     branches.discard(branch)?;
@@ -124,6 +124,7 @@ mod seal;
 mod types;
 
 pub use error::{BranchError, OperationError, Result};
+pub use head::read_head;
 pub use manager::Branches;
 pub use overlay::{CellRead, CellWrite};
 pub use scan::CellScan;

@@ -13,7 +13,9 @@ pub(crate) struct Head {
     pub index_root: Hash,
 }
 
-pub(crate) fn read_head(tx: &impl ReadTransaction) -> Result<CommitId> {
+/// Read the head commit ID from a caller-owned snapshot. To read its committed
+/// cells consistently, use this same transaction with the cell storage reader.
+pub fn read_head(tx: &impl ReadTransaction) -> Result<CommitId> {
     Ok(read_head_state(tx)?.commit_id)
 }
 
