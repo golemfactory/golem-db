@@ -33,7 +33,7 @@ their heading.
 | 8 | [D06](#8--d06--proof-scope-and-the-non-inclusion-witness) | waiting, matthias tries to work on this next week | Which statements are provable, and how is absence of a virtual leaf witnessed? | Inclusion/non-inclusion of cells, bindings, terms, memberships; range completeness a non-goal; nested leaf preimage `Hash(0x00 ‖ key ‖ Hash(tag ‖ value))` with the inner hash stored beside `leaf_paths` | D05, P07 | D18, D09 | yes — proofs section | P1 |
 | 9 | [D09](#9--d09--normative-encoding-profile) | waiting  | The exact bytes an independent encoder must reproduce | 13 items pinned: Roaring portable 32-bit with `runOptimize` rule; pad nibble 0; `EMPTY_ROOT = Hash(0x07)`; reserved cells use grid types; zero-length = absent; decoders reject non-canonical; 10 vector sets | D01, D06 | S05, Epic 6 | — | P1 |
 | 10 | [D13](#10--d13--environment-assumptions) | waiting | What is assumed of MDBX, the filesystem and RAM, and who may reject on memory? | State `SYNC_DURABLE`, MVCC readers, no clock/randomness; engine imposes **no** node-local memory caps (they would fork consensus) — publishes the formula, host bounds via gas limit | — | D04, S06 | — | P2 |
-| 11 | [D10](#11--d10--assumed-metering-shape-and-activation-semantics) | decided for proposal, needs impl | What metering shape does the design assume, and what does "activation at A" mean? | Import the API's cost contract as a premise; price by the commit being produced (fork semantics); `#minActivationDelay` in `#params`; check weight completeness at install, not at A | D01, D13 | §5/§10/§13 cost claims | yes — install-time check, `priced_at` | P2 |
+| 11 | [D10](#11--d10--assumed-metering-shape-and-activation-semantics) | DONE (see Outcome) | What metering shape does the design assume, and what does "activation at A" mean? | Import the API's cost contract as a premise; price by the commit being produced (fork semantics); `#minActivationDelay` in `#params`; check weight completeness at install, not at A | D01, D13 | §5/§10/§13 cost claims | yes — install-time check, `priced_at` | P2 |
 | 12 | [D14](#12--d14--cost-qualifications) | waiting, needs more reading, metering must not check caching situation | Which cost claims are lookup counts rather than totals? | Sort = N fetches + O(N log N) compares charged per record; warm cache: IDs only or IDs + keys, both stated; history bitmap growth and rewrite stated; quantities table | D10, D13 | — | — | P2 |
 | 13 | [D11](#13--d11--cursor-contract) | decided for proposal, waits for impl | Is the cursor deterministic, what does the fingerprint cover, what wins between cursor / offset / `at`? | Cursor is a pure function of (query, state, position) — `machineId` leaves the engine; same-sequence fingerprint as an exclusion list; cursor + offset = `InvalidQuery`; root check → `Stale` | D02 | — | yes — cursor fields, precedence | P2 |
 | 14 | [D12](#14--d12--live-paging-guarantee) | waiting, should be clear, needs check/re-reading | What does a cursor guarantee under live paging? | Freedom from position-shift anomalies only; membership and values may change; no retention lease — narrow the adjective, keep the mechanism | D05 | — | — | P2 |
@@ -1374,6 +1374,30 @@ head 99   install v2: @meteringModel[2] = A, @modelWeight[2‖*] complete; #minA
 ### Outcome
 
 _(architect fills in per 10.2, 10.3, 10.4)_
+
+**Decided 2026-10-01:**
+
+- **10.1** As proposed, with one change: the premise now points to `golem-db-metering.md`, which is in
+  this directory, instead of quoting the API.
+- **10.2 B.** The pricing model and its weights are read and validated when a branch begins. If a
+  model activates at the commit the branch produces (`base + 1`), that model prices the branch:
+  activation at `A` means commit `A` is priced by the new model, and `priced_at` = target. Weight
+  changes made by operations inside a branch take effect only from the following commit.
+- **10.3** `#minActivationDelay` (`u32`, commits) in `#params`, its value read from the genesis file
+  like every `#params` value. Guidance: weeks to months, since it gates coordinated model upgrades.
+  Emergency repricing uses weight tuning, a `patch` effective next commit, which needs no delay. A
+  per-version weight freeze (`tunableWeights`) was discussed and parked for mainnet preparation
+  (`CHANGES.md` T06).
+- **10.4 A.** Completeness is checked at install: an incomplete weight set fails the install call with
+  `InvalidArgument`, and nothing is committed. Validation at branch start stays as the backstop: an
+  invalid or incomplete active model makes `begin` fail, which can then only be a code bug.
+
+**Follow-ups in `golem-db-metering.md` D8:** the example "branch work based on head 99 that produces
+commit 100 still uses the old schedule" and the `priced_at` wording follow 10.2-B; "completeness is
+checked at activation" becomes "at install, re-checked at branch start"; add `#minActivationDelay`.
+**Text landed 2026-10-01:** design §1 *Assumed Metering Interface*, §4 `#params` and lifecycle
+rules 1 and 3; API *Administration* and `priced_at`; metering spec R12 and D8, including the example
+and the install-time check. The timeline fixture is pending until `conformance/vectors/` exists.
 
 ---
 

@@ -635,23 +635,27 @@ one `u64` per named weight per model version — and are what this API writes.
 
 Lifecycle rules — violations ⇒ `InvalidArgument`:
 
-1. **Install, then validate at activation.** `install_model` requires `version` > current,
-   `activation` > head, and parseable cells. **Completeness is checked at the activation commit**, not
-   at install — which is what preserves the upgrade window between the two.
+1. **Install complete, with a minimum window.** `install_model` requires `version` > current,
+   `activation ≥ head + 1 + #minActivationDelay` (a `#params` value from the genesis file), parseable
+   cells, and a **complete** weight set for that version's code. An incomplete set fails the install
+   with `InvalidArgument`, and nothing is committed. `#minActivationDelay` is the upgrade window.
 2. **The active model takes immediate patches only.** `set_weight` on it takes effect at the next
   committed head, after the admin commit succeeds, never before persistence or mid-branch.
   There is no scheduling for the current model. Future work is staged under the pending version.
-3. **Capture pricing once, never re-price in flight.** Branch calls use the schedule captured
-  at branch base. Calls without a branch capture current head's schedule at admission,
-  even when reading historical data. `priced_at` identifies the pricing commit, not the
-  data commit. Each query page captures pricing anew; pinning data does not pin prices.
+3. **Capture pricing once, never re-price in flight.** A branch captures its schedule at `begin`:
+  the model active at the commit the branch produces, with the weights committed at its base. A
+  model activating at commit A therefore prices the branch that produces A, and weight patches apply
+  from the following commit. An invalid or incomplete active model makes `begin` fail. Calls without
+  a branch capture the current head's schedule at admission, even when reading historical data.
+  `priced_at` identifies the pricing commit (for a branch, the commit it produces), not the data
+  commit. Each query page captures pricing anew; pinning data does not pin prices.
 4. **At most one pending model** at a time.
 
 Golem DB keeps the active model and complete weights in memory, reconstructing them from
 committed head and metering records when unavailable. It publishes head and the matching
 pricing snapshot together at commit boundaries; uncommitted changes do not affect prices.
-Activation at commit 100 applies once head reaches 100, not to branch work based on 99
-that produces commit 100. See [metering D8](golem-db-metering.md#d8-cost-schedules).
+Activation at commit 100 applies to the branch based on head 99 that produces commit 100,
+and to calls without a branch admitted at head 100 or later. See [metering D8](golem-db-metering.md#d8-cost-schedules).
 
 **Surface separation.** `open()` returns a **data handle** and an **admin handle**. Admin operations
 take no branch — each forms its own single-purpose commit — which makes commit homogeneity structural.
@@ -669,8 +673,8 @@ call the API.
 ## Common conventions
 
 - **Return shape.** A metered result is a value plus a cost receipt. Errors still report cost spent.
-- **Cost receipt.** `{ cost, priced_at, ledger? }` — the cost charged; the commit whose model and
-  weights priced the call; and, under `debug`, the per-op-class counts. For writes, the ledger
+- **Cost receipt.** `{ cost, priced_at, ledger? }` — the cost charged; the commit that priced the
+  call (for a branch call, the commit the branch produces; otherwise the head at admission); and, under `debug`, the per-op-class counts. For writes, the ledger
   includes the cell/index operation and byte counts specified by
   [metering D4](golem-db-metering.md#d4-storage-and-size-counting), excluding system cells
   from user-cell totals. Every implementation must support these opt-in write details and

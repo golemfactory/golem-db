@@ -9,9 +9,10 @@ until it has passed the acceptance checks in [CHANGES.md](CHANGES.md). Requireme
 (SE-1, CS-5 and others) refer to the Golem DB requirements document,
 `arkiv-source-of-truth/golem-db.md`, which is maintained outside this repository.
 
-One layer built on top of what is described here — **metering and cost** — is not yet decided and is
-deliberately absent. Where a chapter has to mention it, it does so in prose or points at the working
-draft.
+One layer built on top of what is described here — **metering and cost** — is specified separately, in
+[golem-db-metering.md](golem-db-metering.md). This document assumes its interface
+([Assumed Metering Interface](#assumed-metering-interface)) and states only the inputs each chapter
+contributes to it.
 
 A companion document, [golem-db-design-short.md](golem-db-design-short.md), carries the same chapter
 structure with the decisions alone: no explanation, no reasoning, no examples. It currently lags this
@@ -40,7 +41,6 @@ mechanism explains an observable rule.
 | **recorded** | Decided and written down. Not yet verified by conformance vectors and a reader pass; may still carry open items |
 | **open** | A decision listed in `CHANGES.md` bears on the chapter's contract; the chapter cannot be frozen until it lands |
 | **proposed** | Not adopted. Kept for the argument; adoption is a product decision |
-| **depends-on-metering** | Correct only under an assumed cost model that is not in this document |
 
 No chapter is **settled**. That word is reserved for a chapter with no open decision, passing
 vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
@@ -50,7 +50,7 @@ vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
 | [1. Fundamentals](#1-fundamentals) | recorded, open | D13 (environment assumptions) |
 | [2. System Schema](#2-system-schema) | recorded, open | D09 (Roaring profile, encoding canon); D13 (MDBX durability model) |
 | [3. Records and Cells](#3-records-and-cells) | recorded, open | D09 (`bool` byte forms, shipped type-id map) |
-| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D10 (model activation semantics); D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`);  |
+| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open | D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`);  |
 | [5. Indexing Cells for Filtering](#5-indexing-cells-for-filtering) | recorded, open | D01 (filter evaluation: predicate combination, bounds, cost shape); D14 |
 | [6. Merkleizing the Posting List](#6-merkleizing-the-posting-list-bitmaptrie) | recorded, open | D09 (odd-nibble padding, `EMPTY_ROOT`) |
 | [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D12 |
@@ -59,17 +59,18 @@ vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
 | [10. Write Branches and Checkpoint Frames](#10-write-branches-and-checkpoint-frames) | recorded, open | D02 (`rewind`: not in v1; semantics still to specify); D03 (crash recovery); D04 (concurrency contract); D07 (branch transitions); D15; D16 |
 | [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D02 (`rewind`: not in v1); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
 | [12. Sorting](#12-sorting) | recorded, open | D14 (cost qualifications) |
-| [13. Paging](#13-paging) | recorded, open, depends-on-metering | D11 (cursor contract, fingerprint scope); D12 (live-paging guarantee) |
+| [13. Paging](#13-paging) | recorded, open | D11 (cursor contract, fingerprint scope); D12 (live-paging guarantee) |
 | [Appendix A. Normative Surface](#appendix-a--normative-surface) | open | S05 (being assembled; the full list waits on D09) |
 
-The metering layer itself (property 7 in §1) is out of scope here: D10 records the shape this
-document assumes of it.
+The metering layer itself (property 7 in §1) is specified in [golem-db-metering.md](golem-db-metering.md);
+[Assumed Metering Interface](#assumed-metering-interface) states what this document assumes of it.
 
 ## Contents
 
 - **[Glossary](#glossary)**
 - **[1. Fundamentals](#1-fundamentals)**
   - [What Golem DB Is For](#what-golem-db-is-for)
+  - [Assumed Metering Interface](#assumed-metering-interface)
   - [Abstract Primitives to Physical MDBX Mapping](#abstract-primitives-to-physical-mdbx-mapping)
 - **[2. System Schema](#2-system-schema)**
   - [Table Dictionary](#table-dictionary)
@@ -233,8 +234,33 @@ on a key-value store.
 > and every byte under commitment. A disagreement between them is a defect, recorded in
 > [CHANGES.md](CHANGES.md), not a choice left to the reader.
 
-**Scope of this document.** Property 7 is a real commitment of the design, but the chapter specifying
-it — the cost model and its op classes — is not yet decided and is not part of this document.
+### Assumed Metering Interface
+
+Property 7 is specified by the metering model in [golem-db-metering.md](golem-db-metering.md),
+which holds the authoritative formulas. This document relies only on the following properties of
+it, stated here as a premise so that the cost arguments in later chapters are anchored:
+
+- **Deterministic and additive.** A call's cost is a sum of counted operations, each priced by a
+  named weight, plus byte terms. It depends only on the call, the state it runs against and the
+  active schedule, never on caches, timing or node configuration.
+- **Budget-bounded.** Exceeding the caller's budget aborts the call with `OutOfBudget{spent}` and no
+  partial results ([§10](#10-write-branches-and-checkpoint-frames)).
+- **Pre-paid commit.** `commit` is unmetered because its work is paid in advance by the operations
+  that cause it; `checkpoint` and `rollback` are unmetered.
+- **Model and weights.** The model (op classes, counting rules, weight names) is code identified by
+  a version; weights are committed data in `@meteringModel` / `@modelWeight`
+  ([§4](#meteringmodel-recordid-32)).
+
+What each chapter contributes is a set of **countable inputs**; the weights that price them belong to
+the metering model:
+
+| Chapter | Countable inputs |
+| --- | --- |
+| [§5](#5-indexing-cells-for-filtering) | filter evaluation: `Index` seeks, cursor steps over terms, `BitmapTrie` node reads, containers loaded, bitmap operations |
+| [§10](#10-write-branches-and-checkpoint-frames) | per-cell writes, per-index-term changes, bytes written |
+| [§11](#11-commit-immutable-data-segments) | rows and bytes appended to segments, rows read |
+| [§12](#12-sorting) | sort-value fetches per level |
+| [§13](#13-paging) | records materialised per page; for pinned pages, history lookups and discovery ([§7](#retention)) |
 
 ### Abstract Primitives to Physical MDBX Mapping
 
@@ -968,6 +994,7 @@ anything, roots before it can prove anything, and mappings last.
 | `#maxStrLen`      | `u32` (BE) | cap on `str` values (attribute values land in index keys) |
 | `#maxBytesLen`    | `u32` (BE) | cap on `bytes` values (field-only, never in an index key) |
 | `#maxCellNameLen` | `u32` (BE) | cap on user cell names                                    |
+| `#minActivationDelay` | `u32` (BE) | minimum commits between installing a metering model version and its activation: an install requires `A ≥ head + 1 + #minActivationDelay` ([lifecycle rule 1](#modelweight-recordid-33)) |
 | `#minRetention`   | `u64` (BE) | minimum retention window, in commits: every node retains at least the commits `≥ head − #minRetention` and never prunes inside them; operators may retain more ([§7](#retention)) |
 | `#shardSpan`      | `u64` (BE) | commits per segment shard file ([§11](#genesis-declaration)) |
 | `#immutableDataSegments` | layout open (D09) | segment declarations `(name, columns, compression)` ([§11](#genesis-declaration)) |
@@ -1043,7 +1070,8 @@ properties such a table could not offer:
 | `modelVersion`    | `activationCommitNr: u64` (BE) | when this model version takes effect |
 
 The activation index — tiny and append-only. The active model at commit `c` is the greatest version
-with `activation ≤ c`; at most one **pending** model (activation > head) may exist. Nothing executes
+with `activation ≤ c`, and a branch is priced by the model active at the commit it produces; at most
+one **pending** model (activation > head) may exist. Nothing executes
 at the activation commit: the flip is a pure boundary event, a consequence of commit numbering.
 
 **A model version is a code version.** Everything structural about a metering model — the op-class
@@ -1070,25 +1098,33 @@ trailing name):
   the engine's own history mechanism versions the weights and no explicit weight-version scheme is
   needed. The flip side, accepted deliberately: deep pricing audit is a _historical_ read, and past
   the retention window it becomes an archival-node service.
-- **Completeness is validated against the weight names the model's code expects** — at _activation_
-  for a new model, and on every patch of the active model (no removing or adding names the code does
-  not declare); violations ⇒ `InvalidArgument`.
+- **Completeness is validated against the weight names the model's code expects** — at _install_ for
+  a new model, again when a branch begins under it, and on every patch of the active model (no
+  removing or adding names the code does not declare); violations ⇒ `InvalidArgument`.
 
 **Lifecycle rules, spanning the two records:**
 
-1. **Install, then validate at activation.** Creating model `v+1` writes, in one admin commit, its
-   `@meteringModel` activation `A` > head and its `@modelWeight` set. At install, only what _any_
-   node can check is checked — `v+1` > current, `A` > head, cells parseable — because a node not yet
-   running `v+1` code cannot know the expected weight names. Completeness is checked at `A`: an
-   incomplete set fails the activation, deterministically for every node running `v+1` code; nodes
-   that are not halt at `A` regardless ("upgrade required"). Deferring the check is what preserves
-   the upgrade window between install and `A`.
+1. **Install complete, with a minimum window.** Creating model `v+1` writes, in one admin commit, its
+   `@meteringModel` activation `A` and its `@modelWeight` set. The install requires `v+1` > current,
+   `A ≥ head + 1 + #minActivationDelay` ([§4](#params-recordid-0)), parseable cells, and a
+   **complete** weight set. Completeness is checked by the installing node, which must run `v+1`
+   code to perform the upgrade; an incomplete set fails the install with `InvalidArgument`, and
+   nothing is committed. Nodes not yet running `v+1` code accept the admin commit after the checks
+   any node can make (version, window, parseable cells), and halt at `A` ("upgrade required").
+   `#minActivationDelay` is what guarantees the upgrade window between install and `A`; its value
+   comes from the genesis file, and weeks to months suit a chain. A branch beginning under the new
+   model re-validates it: an invalid or incomplete active model makes `begin` fail, which after the
+   install check can only be a code fault. Urgent repricing uses weight patches (rule 2), which
+   need no window.
 2. **Current model → immediate only.** Weight patches on the active model take effect at the next
    commit; there is no future scheduling for the current model, so no queue of pending tweaks can
    race or contradict. Future work is staged only under the pending model's prefix.
-3. **Priced at branch base, never re-priced.** An operation applies the model and weights live at its
-   branch's base commit, and the receipt records that commit. This keeps pricing deterministic for
-   branches in flight when a change lands.
+3. **Priced when the branch begins, never re-priced.** A branch captures its pricing at `begin`: the
+   model active at the commit it produces (`base + 1`), so a model activating at `A` prices commit
+   `A`, with the weights committed at its base, so weight patches take effect from the following
+   commit. The receipt records the commit the branch produces. Calls outside a branch are priced by
+   the head at admission. This keeps pricing deterministic for branches in flight when a change
+   lands.
 
 ### What the Engine Enforces
 
@@ -3399,7 +3435,6 @@ onto chapters.
 | D06 | Proof scope: which classes are proven (membership, non-inclusion; not range completeness); how the server obtains a mismatching virtual leaf's tagged value at head and historically; cost | §8 |
 | D07 | Branch transitions: delete visibility over real overlay values; the net diff with restored or no-op entries after rollback; history of cancelled changes; create-then-delete in one commit | §10 |
 | D09 | The normative encoding profile: Roaring version, container selection and run-opt rule; odd-nibble padding; `EMPTY_ROOT`; `typeTag` for reserved-record layouts; the absent pre-image encoding for `IndexChangeSet`; `bool` byte forms; the shipped type-id map; change-set key caps | §2, §3, §4, §6, §8 |
-| D10 | The metering shape this document assumes (op classes, byte term, budget abort, receipt); activation at `A` relative to producing vs. observing commit `A`; minimum install→activation window; behaviour on incomplete weights | §4, §5, §10, §13 |
 | D11 | Cursor contract: is the cursor in the receipt (then `machineId` must be deterministic); fingerprint scope — **same-sequence** (only what fixes membership and order, so `projection` and `limit` may vary) or **same-query** (everything but the paging position); whichever, expressed as an exclusion, not an enumeration; cursor + `offset` + `at` precedence. The argument is in [Open Question on Paging](#open-question-on-paging) | §13 |
 | D12 | Live paging guarantee: narrow "anomaly-free" to position-shift anomalies; membership and projection may still change; does a pinned cursor lease retention? | §13 |
 | D13 | Environment assumptions: MDBX durability and fsync model; who owns RAM caps for overlays, undo logs, sealed candidates, staged segment rows, warm sequences | §1, §2, §10 |
