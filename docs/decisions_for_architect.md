@@ -59,7 +59,7 @@ at the [end of this document](#product-decisions), after the spec decisions.
 
 ## 1 · D08 — `#recordKeys` on delete
 
-**Status:** waiting_on_additional_input — written up, awaiting the architect's choice. **Register:** `CHANGES.md` D08, P1, track L.
+**Status:** done. **Register:** `CHANGES.md` D08, P1, track L.
 **Bears on:** §4 `#recordKeys`, §10 change-set log and rollback, D07 (branch transitions), S10
 (per-operation table).
 
@@ -170,8 +170,10 @@ inclusion proof for the same path against root_1 yields R1, against root_3 yield
 
 ### Outcome
 
-_(architect fills in: A / B / C / variant, date, one line of reasoning if it departs from the
-recommendation)_
+**A, as recommended.** Recorded 2026-10-01. Text landed 2026-10-01: design §4 `#recordKeys` bullet
+rewritten (*Removed on delete, historised by time-travel*); §10 *Tombstones and the deleted-record
+set* states the binding tombstone; the §10 rollback row already restored the binding. The overlay
+consequence stays with D07. `CHANGES.md` D08 is closed.
 
 ---
 
