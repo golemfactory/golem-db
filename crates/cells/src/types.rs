@@ -1,6 +1,5 @@
 //! [`CellType`]: the 7-bit type-id space, decoded.
 
-use crate::MAX_VALUE_LEN;
 use crate::error::CellParseError;
 use crate::order::decode_float;
 
@@ -119,7 +118,7 @@ impl CellType {
         }
     }
 
-    /// The value width in bytes, or `None` for the length-prefixed `str` and
+    /// The value width in bytes, or `None` for the variable-width `str` and
     /// `bytes`.
     pub const fn width(self) -> Option<usize> {
         match self {
@@ -141,11 +140,6 @@ impl CellType {
                 return Err(CellParseError::LengthMismatch {
                     ty: self,
                     expected: n,
-                    actual: value.len(),
-                });
-            }
-            None if value.len() > MAX_VALUE_LEN => {
-                return Err(CellParseError::TooLong {
                     actual: value.len(),
                 });
             }

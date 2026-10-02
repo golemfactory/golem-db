@@ -1,4 +1,5 @@
-use golemdb_cells::{CellParseError, CellType, CellValue, FloatWidth};
+use crate::INDEX_LEAF_DOMAIN;
+use golemdb_cells::{CellParseError, CellType, CellValueRef, FloatWidth};
 use golemdb_merkle::{Hash, HashProvider};
 use std::{error::Error, fmt};
 
@@ -12,9 +13,22 @@ use std::{error::Error, fmt};
 pub struct IndexTerm(Vec<u8>);
 
 impl IndexTerm {
+    /// Construct from native value bytes: signed numbers are two's-complement
+    /// BE and floats are IEEE BE. This encodes their order once. For an already
+    /// encoded cell payload, use `from_cell` instead.
     pub fn new(name: &str, ty: CellType, value: &[u8]) -> Result<Self, TermError> {
         let mut bytes = Self::prefix(name, ty)?;
-        ty.validate(value).map_err(TermError::Value)?;
+        // Guard indexing/conversion below without interpreting native float
+        // bits as the stored ordered representation expected by validate().
+        if let Some(expected) = ty.width()
+            && value.len() != expected
+        {
+            return Err(TermError::Value(CellParseError::LengthMismatch {
+                ty,
+                expected,
+                actual: value.len(),
+            }));
+        }
         let mut ordered = value.to_vec();
         match ty {
             CellType::Int(_) | CellType::Decimal(_) | CellType::Date32 | CellType::Timestamp64 => {
@@ -32,18 +46,22 @@ impl IndexTerm {
             }
             _ => {} // Supported by prefix(): unsigned, bool, string, fixed bytes.
         }
+        ty.validate(&ordered).map_err(TermError::Value)?;
         bytes.extend_from_slice(&ordered);
         Ok(Self(bytes))
     }
 
     /// Fields, including reserved-record cells, produce no index term. Validate
     /// attribute names and types only after this check; system field keys may
-    /// use names that are not user identifiers.
-    pub fn from_cell(name: &str, cell: CellValue<'_>) -> Result<Option<Self>, TermError> {
+    /// use names that are not user identifiers. Cell values are already valid
+    /// and order-encoded: copy their payload verbatim without transforming it.
+    pub fn from_cell(name: &str, cell: CellValueRef<'_>) -> Result<Option<Self>, TermError> {
         if !cell.is_indexable() {
             return Ok(None);
         }
-        Self::new(name, cell.cell_type(), cell.value()).map(Some)
+        let mut bytes = Self::prefix(name, cell.cell_type())?;
+        bytes.extend_from_slice(cell.value());
+        Ok(Some(Self(bytes)))
     }
 
     /// Prefix that confines range/prefix scans to one attribute name and type.
@@ -74,30 +92,10 @@ impl IndexTerm {
         }
         let ty = CellType::from_id(tag & 0x7f).map_err(TermError::Value)?;
         supported(ty)?;
-        // Validate lengths before indexing a signed/float value. String and
-        // bool validation is unchanged by the ordered representation.
+        // Stored terms and cells share the same canonical ordered payload.
+        // Validate it directly, without decoding/re-encoding native numbers.
         ty.validate(value).map_err(TermError::Value)?;
-        let mut raw = value.to_vec();
-        match ty {
-            CellType::Int(_) | CellType::Decimal(_) | CellType::Date32 | CellType::Timestamp64 => {
-                raw[0] ^= 0x80
-            }
-            CellType::Float(_) => {
-                if raw[0] & 0x80 != 0 {
-                    raw[0] ^= 0x80;
-                } else {
-                    for byte in &mut raw {
-                        *byte = !*byte;
-                    }
-                }
-            }
-            _ => {}
-        }
-        let term = Self::new(name, ty, &raw)?;
-        if term.as_bytes() != bytes {
-            return Err(TermError::InvalidEncoding);
-        }
-        Ok(term)
+        Ok(Self(bytes.to_vec()))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -114,7 +112,11 @@ impl IndexTerm {
 
     /// `H(0x02 || complete_term_path || bitmap_root)`.
     pub fn leaf_hash(&self, bitmap_root: &Hash, hasher: &impl HashProvider) -> Hash {
-        hasher.hash_parts(&[&[0x02], &self.routing_path(hasher), bitmap_root])
+        hasher.hash_parts(&[
+            &[INDEX_LEAF_DOMAIN],
+            &self.routing_path(hasher),
+            bitmap_root,
+        ])
     }
 }
 

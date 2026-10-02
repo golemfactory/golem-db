@@ -69,6 +69,15 @@ pub const INDEX_TRIE_PATH_BYTES: usize = size_of::<golemdb_merkle::Hash>();
 /// A hexary path has two digits per byte, so its maximum depth is 12.
 pub const BITMAP_TRIE_PATH_BYTES: usize = PATH_BITS as usize / 8;
 
+/// Domain byte for index term leaf hashes.
+pub const INDEX_LEAF_DOMAIN: u8 = 0x02;
+/// Domain byte for IndexTrie branch hashes.
+pub const INDEX_BRANCH_DOMAIN: u8 = 0x03;
+/// Domain byte for bitmap container leaf hashes.
+pub const BITMAP_LEAF_DOMAIN: u8 = 0x04;
+/// Domain byte for BitmapTrie branch hashes.
+pub const BITMAP_BRANCH_DOMAIN: u8 = 0x05;
+
 pub(crate) const PATH_BITS: u8 = 48;
 pub(crate) const PATH_BYTE_OFFSET: usize = 8 - BITMAP_TRIE_PATH_BYTES;
 pub(crate) const MAX_PATH: u64 = (1 << PATH_BITS) - 1;

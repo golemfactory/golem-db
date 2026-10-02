@@ -1,4 +1,5 @@
 use crate::support::mdbx as fixture;
+use golemdb_index::INDEX_BRANCH_DOMAIN;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +10,7 @@ use golemdb_cells::CellType;
 use golemdb_index::{
     BitmapContainer, INDEX_TRIE_PATH_BYTES, Index, IndexError, IndexTerm, PostingChange, tables,
 };
-use golemdb_merkle::{BranchDomain, Hash, HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie};
+use golemdb_merkle::{Hash, HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie};
 use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, WriteTransaction, scan_prefix};
 use proptest::prelude::*;
 
@@ -74,7 +75,7 @@ fn assert_state(
     assert_eq!(actual_terms, expected.keys().cloned().collect::<Vec<_>>());
     // Independently verify that each flat row is committed in the top trie.
     let trie =
-        Trie::<_, INDEX_TRIE_PATH_BYTES>::new(tables::INDEX_TRIE, BranchDomain::Index, &HASH);
+        Trie::<_, INDEX_TRIE_PATH_BYTES>::new(tables::INDEX_TRIE, INDEX_BRANCH_DOMAIN, &HASH);
     let mut leaves = expected
         .keys()
         .map(|term| {

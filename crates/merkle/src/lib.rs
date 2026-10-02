@@ -1,6 +1,6 @@
 //! Shared branch-only Merkle tries over transactional key/value storage.
 //!
-//! Leaf payloads and their preimages belong to the owning crate. This crate
+//! Hash domain assignments, leaf payloads and their preimages belong to the owning crate. This crate
 //! supplies canonical compact branches, immutable trie mutation, traversal,
 //! and configurable hashing. Empty roots hash the empty byte string; singleton
 //! roots use their leaf digest directly. Owners retain [`RootRef`] metadata.
@@ -12,12 +12,12 @@
 //! preimage includes the full path; production owners supply their own codecs.
 //!
 //! ```
-//! use golemdb_merkle::{BranchDomain, Keccak256Hasher, HashProvider, LeafRef, RootRef, Trie};
+//! use golemdb_merkle::{Keccak256Hasher, HashProvider, LeafRef, RootRef, Trie};
 //! use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 //!
 //! let db = MemoryDatabase::new();
 //! let hash = Keccak256Hasher;
-//! let trie = Trie::<_, 6>::new(Table("ExampleBranches"), BranchDomain::Bitmap, &hash);
+//! let trie = Trie::<_, 6>::new(Table("ExampleBranches"), 0x05, &hash);
 //! let mut tx = db.begin_write()?;
 //! let mut root = RootRef::Empty;
 //! for path in [[0; 6], [1; 6]] {
@@ -41,5 +41,5 @@ mod trie;
 pub use config::{ConfigError, HashConfig};
 pub use error::{MerkleError, Result};
 pub use hash::{Blake3Hasher, Hash, HashAlgorithm, HashProvider, Keccak256Hasher};
-pub use node::{BranchDomain, BranchNodeCompact};
+pub use node::BranchNodeCompact;
 pub use trie::{LeafRef, RootRef, Trie, Walk};

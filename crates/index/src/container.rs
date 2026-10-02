@@ -1,3 +1,4 @@
+use crate::BITMAP_LEAF_DOMAIN;
 use golemdb_merkle::{Hash, HashProvider};
 use roaring::RoaringBitmap;
 
@@ -83,7 +84,7 @@ impl BitmapContainer {
     /// `H(0x04 || hi48_be || canonical_roaring)`. This is also the key of the
     /// persisted container row. Empty working chunks have no leaf hash.
     pub fn leaf_hash(&self, hasher: &impl HashProvider) -> Result<Hash, BitmapError> {
-        Ok(hasher.hash_parts(&[&[0x04], &self.canonical_bytes()?]))
+        Ok(hasher.hash_parts(&[&[BITMAP_LEAF_DOMAIN], &self.canonical_bytes()?]))
     }
 
     /// Decode only canonical persisted bytes, including the full path.

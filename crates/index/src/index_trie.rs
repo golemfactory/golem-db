@@ -1,4 +1,5 @@
-use golemdb_merkle::{BranchDomain, Hash, HashProvider, LeafRef, RootRef, Trie};
+use crate::INDEX_BRANCH_DOMAIN;
+use golemdb_merkle::{Hash, HashProvider, LeafRef, RootRef, Trie};
 use golemdb_storage::{ReadCursor, ReadTransaction, WriteTransaction};
 
 use crate::{INDEX_TRIE_PATH_BYTES, IndexError, IndexTerm, Result, tables};
@@ -11,7 +12,7 @@ pub(crate) struct IndexTrie<'h, H: HashProvider> {
 impl<'h, H: HashProvider> IndexTrie<'h, H> {
     pub(crate) fn new(hasher: &'h H) -> Self {
         Self {
-            trie: Trie::new(tables::INDEX_TRIE, BranchDomain::Index, hasher),
+            trie: Trie::new(tables::INDEX_TRIE, INDEX_BRANCH_DOMAIN, hasher),
             hasher,
         }
     }

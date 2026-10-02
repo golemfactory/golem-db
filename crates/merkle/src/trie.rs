@@ -1,4 +1,4 @@
-use crate::{BranchDomain, BranchNodeCompact, Hash, HashProvider, MerkleError, Result, path};
+use crate::{BranchNodeCompact, Hash, HashProvider, MerkleError, Result, path};
 use golemdb_storage::{ReadTransaction, StorageError, Table, WriteTransaction};
 
 /// The owner supplies a hash binding the complete path and its leaf payload.
@@ -38,25 +38,26 @@ impl<const N: usize> RootRef<N> {
 /// immutable branches may already have been inserted.
 pub struct Trie<'h, H: HashProvider, const N: usize> {
     table: Table,
-    domain: BranchDomain,
+    domain: u8,
     hasher: &'h H,
 }
 
 impl<'h, H: HashProvider, const N: usize> Trie<'h, H, N> {
+    /// The owner assigns `domain`, the byte prefixed to every branch hash.
     /// Configure a trie. Path widths outside 1..=32 bytes fail at compile time.
     ///
     /// ```compile_fail,E0080
-    /// use golemdb_merkle::{BranchDomain, Keccak256Hasher, Trie};
+    /// use golemdb_merkle::{Keccak256Hasher, Trie};
     /// use golemdb_storage::Table;
-    /// let _ = Trie::<_, 0>::new(Table("Branches"), BranchDomain::Index, &Keccak256Hasher);
+    /// let _ = Trie::<_, 0>::new(Table("Branches"), 0x03, &Keccak256Hasher);
     /// ```
     ///
     /// ```compile_fail,E0080
-    /// use golemdb_merkle::{BranchDomain, Keccak256Hasher, Trie};
+    /// use golemdb_merkle::{Keccak256Hasher, Trie};
     /// use golemdb_storage::Table;
-    /// let _ = Trie::<_, 33>::new(Table("Branches"), BranchDomain::Index, &Keccak256Hasher);
+    /// let _ = Trie::<_, 33>::new(Table("Branches"), 0x03, &Keccak256Hasher);
     /// ```
-    pub fn new(table: Table, domain: BranchDomain, hasher: &'h H) -> Self {
+    pub fn new(table: Table, domain: u8, hasher: &'h H) -> Self {
         const {
             assert!(
                 N >= 1 && N <= 32,

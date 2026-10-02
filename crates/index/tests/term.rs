@@ -1,4 +1,6 @@
-use golemdb_cells::{CellType as T, CellValue, FloatWidth as F, Width as W};
+use golemdb_cells::{
+    CellType as T, CellValueRef, FloatWidth as F, Width as W, encode_float, flip_sign,
+};
 use golemdb_index::{BitmapContainer, IndexTerm, TermError};
 use golemdb_merkle::{Hash, HashProvider, Keccak256Hasher};
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan, scan_prefix};
@@ -185,9 +187,9 @@ fn floats_reject_nan_and_normalize_zero() {
 #[test]
 fn field_filtering_names_and_unsupported_types() {
     let value = 0u64.to_be_bytes();
-    let field = CellValue::new(T::Uint(W::W8), &value, false).unwrap();
+    let field = CellValueRef::new(T::Uint(W::W8), &value, false).unwrap();
     assert_eq!(IndexTerm::from_cell("#nextRecordID", field).unwrap(), None);
-    let cell = CellValue::new(T::Bool, &[1], true).unwrap();
+    let cell = CellValueRef::new(T::Bool, &[1], true).unwrap();
     for name in [
         "Price",
         "$owner",
@@ -222,6 +224,7 @@ fn strict_term_decoding() {
         b"Name".to_vec(),
         b"Name\0".to_vec(),
         vec![b'A', 0, 1, 1],
+        vec![b'A', 0, 0x80],
         vec![b'A', 0, 0x85],
         vec![b'A', 0, 0x83],
         vec![b'A', 0, 0x81, 1, 1],
@@ -362,5 +365,124 @@ proptest! {
     #[test]
     fn arbitrary_decode_is_total_and_canonical(bytes in prop::collection::vec(any::<u8>(),0..512)) {
         if let Ok(term)=IndexTerm::decode(&bytes) { prop_assert_eq!(term.into_bytes(),bytes); }
+    }
+}
+
+/// Cell payloads already have the index's ordered representation. Constructing
+/// from a cell must agree with native input, preserve bytes, and remain readable.
+fn assert_cell_term(ty: T, native: &[u8], ordered: &[u8]) -> IndexTerm {
+    let cell = CellValueRef::new(ty, ordered, true).unwrap();
+    let term = IndexTerm::from_cell("Value", cell).unwrap().unwrap();
+    let expected = [b"Value\0".as_slice(), &[cell.metadata()], ordered].concat();
+    assert_eq!(term.as_bytes(), expected, "{ty:?}");
+    assert_eq!(IndexTerm::decode(&expected).unwrap(), term, "{ty:?}");
+    assert_eq!(IndexTerm::new("Value", ty, native).unwrap(), term, "{ty:?}");
+    term
+}
+
+#[test]
+fn cell_signed_decimal_and_time_values_are_not_encoded_twice() {
+    for width in [W::W4, W::W8, W::W16, W::W32] {
+        let size = width.bytes();
+        let mut min = vec![0; size];
+        min[0] = 0x80;
+        let mut max = vec![0xff; size];
+        max[0] = 0x7f;
+        for ty in [T::Int(width), T::Decimal(width)] {
+            let mut terms = Vec::new();
+            for raw in [&min, &vec![0xff; size], &vec![0; size], &max] {
+                let mut ordered = raw.clone();
+                ordered[0] ^= 0x80;
+                terms.push(assert_cell_term(ty, raw, &ordered));
+            }
+            assert!(terms.windows(2).all(|w| w[0] < w[1]));
+        }
+    }
+    for native in [i32::MIN, -1, 0, i32::MAX] {
+        assert_cell_term(
+            T::Date32,
+            &native.to_be_bytes(),
+            &flip_sign(native.to_be_bytes()),
+        );
+    }
+    for native in [i64::MIN, -1, 0, i64::MAX] {
+        assert_cell_term(
+            T::Timestamp64,
+            &native.to_be_bytes(),
+            &flip_sign(native.to_be_bytes()),
+        );
+    }
+}
+
+#[test]
+fn cell_float_values_are_not_encoded_twice() {
+    let mut terms = Vec::new();
+    for value in [
+        f32::NEG_INFINITY,
+        -f32::MAX,
+        -1.,
+        -f32::from_bits(1),
+        0.,
+        f32::from_bits(1),
+        1.,
+        f32::MAX,
+        f32::INFINITY,
+    ] {
+        terms.push(assert_cell_term(
+            T::Float(F::F32),
+            &value.to_be_bytes(),
+            &encode_float(value.to_be_bytes()),
+        ));
+    }
+    assert!(terms.windows(2).all(|w| w[0] < w[1]));
+    let mut terms = Vec::new();
+    for value in [
+        f64::NEG_INFINITY,
+        -f64::MAX,
+        -1.,
+        -f64::from_bits(1),
+        0.,
+        f64::from_bits(1),
+        1.,
+        f64::MAX,
+        f64::INFINITY,
+    ] {
+        terms.push(assert_cell_term(
+            T::Float(F::F64),
+            &value.to_be_bytes(),
+            &encode_float(value.to_be_bytes()),
+        ));
+    }
+    assert!(terms.windows(2).all(|w| w[0] < w[1]));
+    assert_cell_term(
+        T::Float(F::F32),
+        &(-0.0f32).to_be_bytes(),
+        &encode_float((-0.0f32).to_be_bytes()),
+    );
+    assert_cell_term(
+        T::Float(F::F64),
+        &(-0.0f64).to_be_bytes(),
+        &encode_float((-0.0f64).to_be_bytes()),
+    );
+}
+
+#[test]
+fn cell_plain_values_preserve_their_bytes_and_fields_are_omitted() {
+    for (ty, bytes) in [(T::Bool, &b"\x01"[..]), (T::Str, b"a\0b"), (T::Str, b"")] {
+        assert_cell_term(ty, bytes, bytes);
+    }
+    assert_cell_term(T::Bytes20, &[0xab; 20], &[0xab; 20]);
+    for width in [W::W4, W::W8, W::W16, W::W32] {
+        let bytes = vec![0x7f; width.bytes()];
+        for ty in [T::Uint(width), T::FixedBytes(width)] {
+            assert_cell_term(ty, &bytes, &bytes);
+        }
+    }
+    for (ty, bytes) in [
+        (T::Bytes, &b"\xff\0"[..]),
+        (T::Int(W::W4), &b"\x7f\xff\xff\xff"[..]),
+    ] {
+        let field = CellValueRef::new(ty, bytes, false).unwrap();
+        assert_eq!(IndexTerm::from_cell("#key", field).unwrap(), None);
     }
 }

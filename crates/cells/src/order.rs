@@ -30,10 +30,13 @@ pub fn flip_sign<const N: usize>(mut bytes: [u8; N]) -> [u8; N] {
 ///  1.0  3F 80 00 00  →  BF 80 00 00
 /// ```
 ///
-/// NaN and `-0.0` encode to bytes that
-/// [`CellType::validate`](crate::CellType::validate) rejects.
+/// Negative zero normalizes to positive zero. NaN encodes to bytes that
+/// [`CellType::validate`](crate::CellType::validate) rejects. Persisted bytes
+/// are decoded and validated directly, never normalized on read.
 pub fn encode_float<const N: usize>(be: [u8; N]) -> [u8; N] {
-    if be[0] & 0x80 == 0 {
+    if be[0] == 0x80 && be[1..].iter().all(|&b| b == 0) {
+        flip_sign([0; N])
+    } else if be[0] & 0x80 == 0 {
         flip_sign(be)
     } else {
         be.map(|b| !b)

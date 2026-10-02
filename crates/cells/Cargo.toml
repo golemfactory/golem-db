@@ -4,12 +4,20 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+[dependencies]
+serde.workspace = true
+golemdb-storage.workspace = true
+golemdb-merkle.workspace = true
+thiserror.workspace = true
 
-
+[features]
+default = []
+mdbx = ["golemdb-storage/mdbx"]
 
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+tempfile = "3"
 
 [[bench]]
 name = "cells"

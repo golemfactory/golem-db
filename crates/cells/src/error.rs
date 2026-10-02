@@ -12,21 +12,12 @@ pub enum CellParseError {
     AbsentTag,
     /// A type id the spec reserves.
     ReservedType(u8),
-    /// A `str`/`bytes` cell that ends inside its 4-byte length prefix.
-    MissingLength,
     /// A fixed-width value of the wrong width.
     LengthMismatch {
         ty: CellType,
         expected: usize,
         actual: usize,
     },
-    /// A length prefix declaring more bytes than follow.
-    Truncated { declared: usize, actual: usize },
-    /// Bytes after the cell. [`CellValue::parse_prefix`](crate::CellValue::parse_prefix)
-    /// walks packed cells.
-    TrailingBytes { extra: usize },
-    /// A `str`/`bytes` value longer than [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN).
-    TooLong { actual: usize },
     /// A `bool` byte other than 0 or 1.
     InvalidBool(u8),
     /// A `str` that stops being UTF-8 at byte `valid_up_to`.
@@ -45,24 +36,11 @@ impl fmt::Display for CellParseError {
             Self::Empty => write!(f, "cell is empty"),
             Self::AbsentTag => write!(f, "type id 0 is the absent marker, not a type"),
             Self::ReservedType(id) => write!(f, "type id {id} is reserved"),
-            Self::MissingLength => write!(f, "cell is missing its length prefix"),
             Self::LengthMismatch {
                 ty,
                 expected,
                 actual,
             } => write!(f, "{ty:?} expects {expected} value bytes, got {actual}"),
-            Self::Truncated { declared, actual } => {
-                write!(
-                    f,
-                    "cell declares {declared} value bytes but carries {actual}"
-                )
-            }
-            Self::TrailingBytes { extra } => write!(f, "{extra} bytes left over after the cell"),
-            Self::TooLong { actual } => write!(
-                f,
-                "value is {actual} bytes, the maximum is {}",
-                crate::MAX_VALUE_LEN
-            ),
             Self::InvalidBool(b) => write!(f, "bool byte must be 0 or 1, got {b}"),
             Self::InvalidUtf8 { valid_up_to } => {
                 write!(f, "str is not valid UTF-8 at byte {valid_up_to}")
@@ -75,3 +53,21 @@ impl fmt::Display for CellParseError {
 }
 
 impl core::error::Error for CellParseError {}
+
+/// Failures reading or updating cell state. Mutation errors require aborting
+/// the caller's write transaction; previously applied changes are not undone.
+#[derive(Debug, thiserror::Error)]
+pub enum CellError {
+    #[error(transparent)]
+    Storage(#[from] golemdb_storage::StorageError),
+    #[error(transparent)]
+    Merkle(#[from] golemdb_merkle::MerkleError),
+    #[error("invalid stored cell key: {0}")]
+    Key(#[from] crate::CellKeyError),
+    #[error("invalid stored cell value: {0}")]
+    Value(#[from] CellParseError),
+    #[error("cell state does not match the supplied root")]
+    RootMismatch,
+}
+
+pub type Result<T> = std::result::Result<T, CellError>;

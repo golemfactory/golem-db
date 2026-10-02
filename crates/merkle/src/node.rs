@@ -1,14 +1,5 @@
 use crate::{Hash, HashProvider, LeafRef, MerkleError, Result, RootRef, path};
 
-/// Architecture-assigned branch domains. Leaf domains belong to the owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum BranchDomain {
-    Cell = 0x01,
-    Index = 0x03,
-    Bitmap = 0x05,
-}
-
 /// Canonical compact branch. Leaf paths are stored routing metadata and are
 /// excluded from the hash; the owner must bind each full path in its leaf hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,8 +105,9 @@ impl<const N: usize> BranchNodeCompact<N> {
         bytes
     }
 
-    pub fn hash(&self, domain: BranchDomain, hasher: &impl HashProvider) -> Hash {
-        hasher.hash_parts(&[&[domain as u8], &self.hash_payload()])
+    /// Hash with the branch domain byte assigned by the owning crate.
+    pub fn hash(&self, domain: u8, hasher: &impl HashProvider) -> Hash {
+        hasher.hash_parts(&[&[domain], &self.hash_payload()])
     }
 
     pub fn encode(&self) -> Vec<u8> {

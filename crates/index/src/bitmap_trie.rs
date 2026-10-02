@@ -1,4 +1,5 @@
-use golemdb_merkle::{BranchDomain, Hash, HashProvider, LeafRef, RootRef, Trie};
+use crate::{BITMAP_BRANCH_DOMAIN, BITMAP_LEAF_DOMAIN};
+use golemdb_merkle::{Hash, HashProvider, LeafRef, RootRef, Trie};
 use golemdb_storage::{ReadTransaction, StorageError, WriteTransaction};
 
 use crate::{BITMAP_TRIE_PATH_BYTES, Bitmap, BitmapContainer, IndexError, Result, path, tables};
@@ -11,13 +12,13 @@ pub(crate) struct BitmapTrie<'h, H: HashProvider> {
 impl<'h, H: HashProvider> BitmapTrie<'h, H> {
     pub(crate) fn new(hasher: &'h H) -> Self {
         Self {
-            trie: Trie::new(tables::BITMAP_TRIE, BranchDomain::Bitmap, hasher),
+            trie: Trie::new(tables::BITMAP_TRIE, BITMAP_BRANCH_DOMAIN, hasher),
             hasher,
         }
     }
 
     fn decode(&self, hash: Hash, bytes: &[u8]) -> Result<BitmapContainer> {
-        if self.hasher.hash_parts(&[&[0x04], bytes]) != hash {
+        if self.hasher.hash_parts(&[&[BITMAP_LEAF_DOMAIN], bytes]) != hash {
             return Err(IndexError::Corruption("container hash mismatch"));
         }
         Ok(BitmapContainer::decode(bytes)?)
@@ -117,7 +118,7 @@ impl<'h, H: HashProvider> BitmapTrie<'h, H> {
                 root = self.trie.remove(tx, root, &path)?;
             } else {
                 let bytes = container.canonical_bytes()?;
-                let hash = self.hasher.hash_parts(&[&[0x04], &bytes]);
+                let hash = self.hasher.hash_parts(&[&[BITMAP_LEAF_DOMAIN], &bytes]);
                 match tx.insert(tables::BITMAP_CONTAINER, &hash, &bytes) {
                     Ok(()) => (),
                     Err(StorageError::AlreadyExists) => {

@@ -1,4 +1,5 @@
-//! [`CellValue`]: a parsed cell and its typed accessors.
+//! [`CellValue`] owns encoded bytes; [`CellValueRef`] borrows their payload.
+//! Both expose the same metadata and typed accessors.
 
 use crate::INDEXABLE_BIT;
 use crate::error::CellParseError;
@@ -8,13 +9,198 @@ use crate::types::{CellType, FloatWidth, Width};
 /// A cell: a type, its stored value bytes, and whether it is indexable.
 /// Borrows the value straight out of the storage buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CellValue<'a> {
+pub struct CellValueRef<'a> {
     ty: CellType,
     value: &'a [u8],
     indexable: bool,
 }
 
-impl<'a> CellValue<'a> {
+/// A validated, owned `typeTag ‖ value` buffer for storage and CRUD results.
+/// Borrow with `as_view` while inspecting, indexing or hashing the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellValue {
+    bytes: Vec<u8>,
+    ty: CellType,
+}
+
+impl CellValue {
+    /// Validate once and take ownership of a complete encoded cell without
+    /// copying its buffer. Deployment limits are checked separately at admission.
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, CellParseError> {
+        let ty = CellValueRef::parse(&bytes)?.cell_type();
+        Ok(Self { bytes, ty })
+    }
+
+    /// A borrowed view, without allocation or revalidation of the payload.
+    pub fn as_view(&self) -> CellValueRef<'_> {
+        CellValueRef {
+            ty: self.ty,
+            value: &self.bytes[1..],
+            indexable: self.bytes[0] & INDEXABLE_BIT != 0,
+        }
+    }
+
+    /// The indexable bit over the type id.
+    pub fn metadata(&self) -> u8 {
+        self.bytes[0]
+    }
+
+    pub const fn cell_type(&self) -> CellType {
+        self.ty
+    }
+
+    /// The ordered payload bytes, without the type tag.
+    pub fn value(&self) -> &[u8] {
+        &self.bytes[1..]
+    }
+
+    pub fn is_indexable(&self) -> bool {
+        self.bytes[0] & INDEXABLE_BIT != 0
+    }
+
+    /// See [`CellValueRef::as_bool`]. Returns `None` for other cell types.
+    pub fn as_bool(&self) -> Option<bool> {
+        self.as_view().as_bool()
+    }
+
+    /// See [`CellValueRef::as_str`]. Returns `None` for other cell types.
+    pub fn as_str(&self) -> Option<&str> {
+        self.as_view().as_str()
+    }
+
+    /// See [`CellValueRef::as_bytes`]. Returns `None` for other cell types.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        self.as_view().as_bytes()
+    }
+
+    /// See [`CellValueRef::as_bytes4`]. Returns `None` for other cell types.
+    pub fn as_bytes4(&self) -> Option<[u8; 4]> {
+        self.as_view().as_bytes4()
+    }
+
+    /// See [`CellValueRef::as_bytes8`]. Returns `None` for other cell types.
+    pub fn as_bytes8(&self) -> Option<[u8; 8]> {
+        self.as_view().as_bytes8()
+    }
+
+    /// See [`CellValueRef::as_bytes16`]. Returns `None` for other cell types.
+    pub fn as_bytes16(&self) -> Option<[u8; 16]> {
+        self.as_view().as_bytes16()
+    }
+
+    /// See [`CellValueRef::as_bytes20`]. Returns `None` for other cell types.
+    pub fn as_bytes20(&self) -> Option<[u8; 20]> {
+        self.as_view().as_bytes20()
+    }
+
+    /// See [`CellValueRef::as_bytes32`]. Returns `None` for other cell types.
+    pub fn as_bytes32(&self) -> Option<[u8; 32]> {
+        self.as_view().as_bytes32()
+    }
+
+    /// See [`CellValueRef::as_u32`]. Returns `None` for other cell types.
+    pub fn as_u32(&self) -> Option<u32> {
+        self.as_view().as_u32()
+    }
+
+    /// See [`CellValueRef::as_u64`]. Returns `None` for other cell types.
+    pub fn as_u64(&self) -> Option<u64> {
+        self.as_view().as_u64()
+    }
+
+    /// See [`CellValueRef::as_u128`]. Returns `None` for other cell types.
+    pub fn as_u128(&self) -> Option<u128> {
+        self.as_view().as_u128()
+    }
+
+    /// See [`CellValueRef::as_u256_be`]. Returns `None` for other cell types.
+    pub fn as_u256_be(&self) -> Option<[u8; 32]> {
+        self.as_view().as_u256_be()
+    }
+
+    /// See [`CellValueRef::as_i32`]. Returns `None` for other cell types.
+    pub fn as_i32(&self) -> Option<i32> {
+        self.as_view().as_i32()
+    }
+
+    /// See [`CellValueRef::as_i64`]. Returns `None` for other cell types.
+    pub fn as_i64(&self) -> Option<i64> {
+        self.as_view().as_i64()
+    }
+
+    /// See [`CellValueRef::as_i128`]. Returns `None` for other cell types.
+    pub fn as_i128(&self) -> Option<i128> {
+        self.as_view().as_i128()
+    }
+
+    /// See [`CellValueRef::as_i256_be`]. Returns `None` for other cell types.
+    pub fn as_i256_be(&self) -> Option<[u8; 32]> {
+        self.as_view().as_i256_be()
+    }
+
+    /// See [`CellValueRef::as_dec32_unscaled`]. Returns `None` for other cell types.
+    pub fn as_dec32_unscaled(&self) -> Option<i32> {
+        self.as_view().as_dec32_unscaled()
+    }
+
+    /// See [`CellValueRef::as_dec64_unscaled`]. Returns `None` for other cell types.
+    pub fn as_dec64_unscaled(&self) -> Option<i64> {
+        self.as_view().as_dec64_unscaled()
+    }
+
+    /// See [`CellValueRef::as_dec128_unscaled`]. Returns `None` for other cell types.
+    pub fn as_dec128_unscaled(&self) -> Option<i128> {
+        self.as_view().as_dec128_unscaled()
+    }
+
+    /// See [`CellValueRef::as_dec256_unscaled_be`]. Returns `None` for other cell types.
+    pub fn as_dec256_unscaled_be(&self) -> Option<[u8; 32]> {
+        self.as_view().as_dec256_unscaled_be()
+    }
+
+    /// See [`CellValueRef::as_f32`]. Returns `None` for other cell types.
+    pub fn as_f32(&self) -> Option<f32> {
+        self.as_view().as_f32()
+    }
+
+    /// See [`CellValueRef::as_f64`]. Returns `None` for other cell types.
+    pub fn as_f64(&self) -> Option<f64> {
+        self.as_view().as_f64()
+    }
+
+    /// See [`CellValueRef::as_date32`]. Returns `None` for other cell types.
+    pub fn as_date32(&self) -> Option<i32> {
+        self.as_view().as_date32()
+    }
+
+    /// See [`CellValueRef::as_timestamp64`]. Returns `None` for other cell types.
+    pub fn as_timestamp64(&self) -> Option<i64> {
+        self.as_view().as_timestamp64()
+    }
+
+    /// The complete storage encoding, including the type tag.
+    /// Use `value()` for the payload or `as_bytes()` for a typed bytes value.
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Transfer ownership of the complete storage encoding, including its tag.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl From<CellValueRef<'_>> for CellValue {
+    /// Copy a borrowed value into an independently owned encoded buffer.
+    fn from(cell: CellValueRef<'_>) -> Self {
+        Self {
+            bytes: cell.encode(),
+            ty: cell.ty,
+        }
+    }
+}
+
+impl<'a> CellValueRef<'a> {
     /// Build a cell from a stored value, validating it.
     pub fn new(ty: CellType, value: &'a [u8], indexable: bool) -> Result<Self, CellParseError> {
         if indexable && ty == CellType::Bytes {
@@ -28,56 +214,23 @@ impl<'a> CellValue<'a> {
         })
     }
 
-    /// Decode exactly one cell; leftover bytes are an error.
+    /// Decode one complete cell buffer. Strings and bytes consume the entire
+    /// remainder; fixed-width types require exactly their declared width.
+    /// The surrounding storage row or slice supplies the cell boundary.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, CellParseError> {
-        match Self::parse_prefix(bytes)? {
-            (cell, []) => Ok(cell),
-            (_, rest) => Err(CellParseError::TrailingBytes { extra: rest.len() }),
-        }
-    }
-
-    /// Decode the cell at the front of `bytes`, returning it and the rest.
-    pub fn parse_prefix(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), CellParseError> {
-        let (&metadata, rest) = bytes.split_first().ok_or(CellParseError::Empty)?;
+        let (&metadata, value) = bytes.split_first().ok_or(CellParseError::Empty)?;
         let ty = CellType::from_id(metadata & !INDEXABLE_BIT)?;
-        let (value, rest) = match ty.width() {
-            Some(n) if rest.len() < n => {
-                return Err(CellParseError::LengthMismatch {
-                    ty,
-                    expected: n,
-                    actual: rest.len(),
-                });
-            }
-            Some(n) => rest.split_at(n),
-            None => {
-                let (len, rest) = rest
-                    .split_first_chunk::<4>()
-                    .ok_or(CellParseError::MissingLength)?;
-                let len = u32::from_be_bytes(*len) as usize;
-                if rest.len() < len {
-                    return Err(CellParseError::Truncated {
-                        declared: len,
-                        actual: rest.len(),
-                    });
-                }
-                rest.split_at(len)
-            }
-        };
-        Ok((Self::new(ty, value, metadata & INDEXABLE_BIT != 0)?, rest))
+        Self::new(ty, value, metadata & INDEXABLE_BIT != 0)
     }
 
     /// Append this cell's wire bytes to `out`.
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.metadata());
-        if self.ty.width().is_none() {
-            // `new` caps the value at MAX_VALUE_LEN, so this fits.
-            out.extend_from_slice(&(self.value.len() as u32).to_be_bytes());
-        }
         out.extend_from_slice(self.value);
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(1 + self.value.len());
         self.encode_into(&mut out);
         out
     }

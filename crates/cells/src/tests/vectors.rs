@@ -27,12 +27,12 @@ pub(super) const VECTORS: &[Vector] = &[
     // name             wire bytes                                        idx    type                              value
     ("bool false",      &[0x01, 0x00],                                    false, CellType::Bool,                   &[0x00]),
     ("bool true, idx",  &[0x81, 0x01],                                    true,  CellType::Bool,                   &[0x01]),
-    ("str empty",       &[0x02, 0x00, 0x00, 0x00, 0x00],                  false, CellType::Str,                    &[]),
-    ("str ascii",       &[0x02, 0x00, 0x00, 0x00, 0x02, b'h', b'i'],      false, CellType::Str,                    b"hi"),
-    ("str 4-byte, idx", &[0x82, 0x00, 0x00, 0x00, 0x04, 0xF0, 0x9F, 0xA6, 0x80], true, CellType::Str,              &[0xF0, 0x9F, 0xA6, 0x80]),
-    ("str with a NUL",  &[0x02, 0x00, 0x00, 0x00, 0x03, b'a', 0x00, b'b'], false, CellType::Str,                   &[b'a', 0x00, b'b']),
-    ("bytes empty",     &[0x03, 0x00, 0x00, 0x00, 0x00],                  false, CellType::Bytes,                  &[]),
-    ("bytes 2",         &[0x03, 0x00, 0x00, 0x00, 0x02, 0xDE, 0xAD],      false, CellType::Bytes,                  &[0xDE, 0xAD]),
+    ("str empty",       &[0x02],                  false, CellType::Str,                    &[]),
+    ("str ascii",       &[0x02, b'h', b'i'],      false, CellType::Str,                    b"hi"),
+    ("str 4-byte, idx", &[0x82, 0xF0, 0x9F, 0xA6, 0x80], true, CellType::Str,              &[0xF0, 0x9F, 0xA6, 0x80]),
+    ("str with a NUL",  &[0x02, b'a', 0x00, b'b'], false, CellType::Str,                   &[b'a', 0x00, b'b']),
+    ("bytes empty",     &[0x03],                  false, CellType::Bytes,                  &[]),
+    ("bytes 2",         &[0x03, 0xDE, 0xAD],      false, CellType::Bytes,                  &[0xDE, 0xAD]),
     ("bytes20",         &zero_cell::<21>(CellType::Bytes20),              false, CellType::Bytes20,                &[0; 20]),
     ("bytes4",          &[0x08, 1, 2, 3, 4],                              false, CellType::FixedBytes(Width::W4),  &[1, 2, 3, 4]),
     ("bytes8, idx",     &[0x89, 1, 2, 3, 4, 5, 6, 7, 8],                  true,  CellType::FixedBytes(Width::W8),  &[1, 2, 3, 4, 5, 6, 7, 8]),
@@ -72,15 +72,12 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
 
     ("bytes20 too short",      &[0x04, 0, 0],                            CellParseError::LengthMismatch { ty: CellType::Bytes20, expected: 20, actual: 2 }),
     ("u64 empty",              &[0x0D],                                  CellParseError::LengthMismatch { ty: CellType::Uint(Width::W8), expected: 8, actual: 0 }),
-    ("bool, spare byte",       &[0x01, 1, 9],                            CellParseError::TrailingBytes { extra: 1 }),
-    ("str, partial length",    &[0x02, 0x00, 0x00],                      CellParseError::MissingLength),
-    ("str cut short",          &[0x02, 0x00, 0x00, 0x00, 4, b'h', b'i'], CellParseError::Truncated { declared: 4, actual: 2 }),
-    ("bytes, extra past end",  &[0x03, 0x00, 0x00, 0x00, 1, 1, 9, 9],    CellParseError::TrailingBytes { extra: 2 }),
+    ("bool, spare byte",       &[0x01, 1, 9],                            CellParseError::LengthMismatch { ty: CellType::Bool, expected: 1, actual: 2 }),
 
     ("bool byte 2",            &[0x01, 2],                               CellParseError::InvalidBool(2)),
-    ("str, bad byte mid-way",  &[0x02, 0x00, 0x00, 0x00, 3, b'h', 0x80, b'i'], CellParseError::InvalidUtf8 { valid_up_to: 1 }),
-    // The length is right for the framing but cuts `é` (C3 A9) in half.
-    ("str, len splits a char", &[0x02, 0x00, 0x00, 0x00, 1, 0xC3, 0xA9], CellParseError::InvalidUtf8 { valid_up_to: 0 }),
+    ("str, bad byte mid-way",  &[0x02, b'h', 0x80, b'i'], CellParseError::InvalidUtf8 { valid_up_to: 1 }),
+    // An incomplete UTF-8 code point is still rejected without framing.
+    ("str, incomplete char", &[0x02, 0xC3], CellParseError::InvalidUtf8 { valid_up_to: 0 }),
 
     // Stored forms: NaN 7FC00000 flips to FFC00000; -0.0 80000000 inverts to 7FFFFFFF.
     ("f32 NaN",                &[0x18, 0xFF, 0xC0, 0, 0],                CellParseError::FloatNaN),
@@ -88,5 +85,5 @@ pub(super) const BAD_VECTORS: &[BadVector] = &[
     ("f64 negative NaN",       &[0x19, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], CellParseError::FloatNaN),
     ("f64 -0.0",               &[0x19, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], CellParseError::NegativeZero),
 
-    ("bytes, idx bit",         &[0x83, 0x00, 0x00, 0x00, 0x00],          CellParseError::NotIndexable),
+    ("bytes, idx bit",         &[0x83],          CellParseError::NotIndexable),
 ];

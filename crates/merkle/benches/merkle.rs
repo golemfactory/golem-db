@@ -2,8 +2,7 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use golemdb_merkle::{
-    Blake3Hasher, BranchDomain, BranchNodeCompact, HashProvider, Keccak256Hasher, LeafRef, RootRef,
-    Trie,
+    Blake3Hasher, BranchNodeCompact, HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie,
 };
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 
@@ -51,7 +50,7 @@ fn branches(c: &mut Criterion) {
                 hasher: &H,
             ) {
                 group.bench_function(BenchmarkId::new(format!("hash/{name}"), parameter), |b| {
-                    b.iter(|| black_box(node).hash(BranchDomain::Index, hasher))
+                    b.iter(|| black_box(node).hash(0x03, hasher))
                 });
             }
             hash_node(
@@ -86,7 +85,7 @@ fn tries<const N: usize>(c: &mut Criterion, algorithm: &str, hasher: &impl HashP
     for count in [64, 1024] {
         for clustered in [false, true] {
             let db = MemoryDatabase::new();
-            let trie = Trie::<_, N>::new(TABLE, BranchDomain::Bitmap, hasher);
+            let trie = Trie::<_, N>::new(TABLE, 0x05, hasher);
             let mut tx = db.begin_write().unwrap();
             let mut root = RootRef::Empty;
             for i in 0..count {

@@ -1,6 +1,7 @@
 //! Unit tests: [`vectors`] holds the accept/reject tables, [`properties`] the
 //! generated-input checks, [`order`] stored-form ordering, [`keys`] cell names.
 
+mod foundation;
 mod keys;
 mod order;
 mod properties;
@@ -12,7 +13,7 @@ use vectors::*;
 #[test]
 fn vectors_decode_and_re_encode() {
     for (name, bytes, indexable, ty, value) in VECTORS {
-        let cell = CellValue::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let cell = CellValueRef::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(cell.cell_type(), *ty, "{name}");
         assert_eq!(cell.value(), *value, "{name}");
         assert_eq!(cell.is_indexable(), *indexable, "{name}");
@@ -35,7 +36,7 @@ fn vectors_cover_every_type() {
 #[test]
 fn bad_vectors_are_rejected_for_the_stated_reason() {
     for (name, bytes, expected) in BAD_VECTORS {
-        assert_eq!(CellValue::parse(bytes).err(), Some(*expected), "{name}");
+        assert_eq!(CellValueRef::parse(bytes).err(), Some(*expected), "{name}");
     }
 }
 
@@ -56,8 +57,7 @@ fn id_space_matches_the_spec() {
 /// and whatever parses re-encodes to the same bytes.
 #[test]
 fn every_metadata_byte_and_length() {
-    // `00 00 00 01` is a length prefix of 1 for `str`/`bytes`, followed by
-    // `01`s, which are valid content for every type but floats.
+    // Payload bytes are content only; the slice supplies the boundary.
     let mut payload = vec![0x00, 0x00, 0x00, 0x01];
     payload.extend([0x01; 36]);
     for metadata in 0..=u8::MAX {
@@ -68,10 +68,10 @@ fn every_metadata_byte_and_length() {
                 Ok(CellType::Bytes) if metadata & INDEXABLE_BIT != 0 => false,
                 Ok(ty) => match ty.width() {
                     Some(n) => len == n && ty.validate(&payload[..n]).is_ok(),
-                    None => len == 5,
+                    None => true,
                 },
             };
-            match CellValue::parse(&bytes) {
+            match CellValueRef::parse(&bytes) {
                 Ok(cell) => {
                     assert!(accepted, "{metadata:#04x} len {len}: should fail");
                     assert_eq!(cell.encode(), bytes, "{metadata:#04x} len {len}");
@@ -82,29 +82,29 @@ fn every_metadata_byte_and_length() {
     }
 }
 
-/// `0x00` is not a type, so a tombstone is `Option<CellValue>::None`, which
+/// `0x00` is not a type, so a tombstone is `Option<CellValueRef>::None`, which
 /// costs no space.
 #[test]
 fn absence_is_a_free_option() {
     assert_eq!(
-        size_of::<Option<CellValue<'_>>>(),
-        size_of::<CellValue<'_>>()
+        size_of::<Option<CellValueRef<'_>>>(),
+        size_of::<CellValueRef<'_>>()
     );
 }
 
 #[test]
 fn accessors_decode_their_rust_equivalents() {
-    fn parse(bytes: &[u8]) -> CellValue<'_> {
-        CellValue::parse(bytes).unwrap()
+    fn parse(bytes: &[u8]) -> CellValue {
+        CellValue::parse(bytes.to_vec()).unwrap()
     }
     fn cell(id: u8, value: &[u8]) -> Vec<u8> {
         [&[id][..], value].concat()
     }
 
     assert_eq!(parse(&[0x01, 1]).as_bool(), Some(true));
-    assert_eq!(parse(&[0x02, 0, 0, 0, 2, b'h', b'i']).as_str(), Some("hi"));
+    assert_eq!(parse(&[0x02, b'h', b'i']).as_str(), Some("hi"));
     assert_eq!(
-        parse(&[0x03, 0, 0, 0, 2, 0xDE, 0xAD]).as_bytes(),
+        parse(&[0x03, 0xDE, 0xAD]).as_bytes(),
         Some(&[0xDE, 0xAD][..])
     );
     assert_eq!(parse(&[0x08, 1, 2, 3, 4]).as_bytes4(), Some([1, 2, 3, 4]));
@@ -150,7 +150,7 @@ fn accessors_are_exclusive() {
     let payload = [0x80, 0, 0, 0, 0, 0, 0, 1];
     for id in [0x09, 0x0D, 0x11, 0x15, 0x19, 0x1D] {
         let bytes = [&[id][..], &payload].concat();
-        let cell = CellValue::parse(&bytes).unwrap();
+        let cell = CellValue::parse(bytes).unwrap();
         let hits = [
             cell.as_bytes8().is_some(),
             cell.as_u64().is_some(),
@@ -171,53 +171,8 @@ fn bytes_accepts_what_str_rejects() {
     for (name, bytes, expected) in BAD_VECTORS {
         if let CellParseError::InvalidUtf8 { .. } = expected {
             let as_bytes = [&[CellType::Bytes.id()][..], &bytes[1..]].concat();
-            let (cell, _) =
-                CellValue::parse_prefix(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let cell = CellValueRef::parse(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(cell.cell_type(), CellType::Bytes, "{name}");
         }
-    }
-}
-
-#[test]
-fn over_long_values_cannot_be_built() {
-    let too_long = [b'a'; MAX_VALUE_LEN + 1];
-    for ty in [CellType::Str, CellType::Bytes] {
-        assert_eq!(
-            CellValue::new(ty, &too_long, false),
-            Err(CellParseError::TooLong {
-                actual: MAX_VALUE_LEN + 1
-            })
-        );
-    }
-    assert!(CellValue::new(CellType::Bytes, &[0; MAX_VALUE_LEN], false).is_ok());
-}
-
-/// Packed cells walk back unchanged, and cutting the run anywhere is caught
-/// rather than read as a shorter valid run.
-#[test]
-fn packed_cells_walk_and_truncation_is_caught() {
-    let seven = 7u64.to_be_bytes();
-    let cells = [
-        CellValue::new(CellType::Str, b"hi", true).unwrap(),
-        CellValue::new(CellType::Uint(Width::W8), &seven, false).unwrap(),
-        CellValue::new(CellType::Bytes, &[0xDE, 0xAD], false).unwrap(),
-        CellValue::new(CellType::Bool, &[1], false).unwrap(),
-    ];
-    let mut packed = Vec::new();
-    for cell in &cells {
-        cell.encode_into(&mut packed);
-    }
-
-    let walk = |mut rest: &[u8]| {
-        let mut walked = 0;
-        while let Ok((_, tail)) = CellValue::parse_prefix(rest) {
-            walked += 1;
-            rest = tail;
-        }
-        (walked, rest.is_empty())
-    };
-    assert_eq!(walk(&packed), (cells.len(), true));
-    for cut in 1..packed.len() {
-        assert_ne!(walk(&packed[..cut]), (cells.len(), true), "cut at {cut}");
     }
 }
