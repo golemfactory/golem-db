@@ -95,7 +95,7 @@
 //! [`Cells`] reads owned values, scans a record, and applies a net batch to both
 //! the flat `Cell` table and its branch-only `CellTrie`. The caller supplies the
 //! matching root and owns the transaction; it can write history and the head in
-//! the same transaction. Deployment admission and index updates are engine work.
+//! the same transaction. Deployment admission and index updates belong to the layers above.
 //! Enable `mdbx` for persistent storage through the same interface.
 //!
 //! ```

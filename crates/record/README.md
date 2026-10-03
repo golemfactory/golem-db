@@ -47,9 +47,9 @@ u32 `#params` limits, and the u64 allocator. System cells are non-indexed fields
 Initialize the cell trie and head consistently and validate limits against the
 store's physical ceilings. This crate provides no defaults or lazy initialization.
 
-Engine-assigned keys, historical reads, budgets, receipts, debug options, record
+Generated keys, historical reads, budgets, receipts, debug options, record
 versions, and metering administration are deferred. Root history belongs to commit
 machinery; the shared `#rootIndex` entry does not implement its future updates.
 
-Raw branch cell access is trusted engine access and can bypass record invariants.
+Raw branch cell access is trusted library access and can bypass record invariants.
 The higher-level data API should expose records, not unrestricted cell writes.

@@ -1,6 +1,6 @@
 //! Shared reserved-record catalogue. Values are schema constants, not admission policy.
 
-/// User record IDs begin here; all lower IDs belong to the engine.
+/// User record IDs begin here; all lower IDs are reserved.
 pub const FIRST_USER_RECORD_ID: u64 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

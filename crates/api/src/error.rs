@@ -6,7 +6,7 @@ use golemdb_record::RecordError;
 
 use crate::CommitId;
 
-/// Public failures, independent of how the engine nests its internal errors.
+/// Public failures, independent of how the layers below nest their errors.
 /// Sources retain detailed diagnostics without requiring consumers to match them.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

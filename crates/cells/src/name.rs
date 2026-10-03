@@ -8,7 +8,7 @@
 //!
 //! ASCII only and case-sensitive (`Price` ≠ `price`). No `0x00`, so the index
 //! key's `0x00` separator is unambiguous. A leading `$` is ordinary user
-//! syntax; `#` and `@` are reserved for engine names.
+//! syntax; `#` and `@` mark reserved names.
 
 use core::borrow::Borrow;
 use core::fmt;
@@ -66,7 +66,7 @@ fn check(name: &[u8], base: usize) -> Result<(), CellNameError> {
     }
 }
 
-/// A borrowed within-record name. User and named engine constructors validate
+/// A borrowed within-record name. User and reserved-name constructors validate
 /// their grammar; `raw` preserves arbitrary reserved-record keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellNameRef<'a>(&'a [u8]);
@@ -88,9 +88,9 @@ impl<'a> CellNameRef<'a> {
         Ok(Self(name))
     }
 
-    /// An engine name: `#` or `@`, then the grammar. No cap; engine names are
+    /// A reserved name: `#` or `@`, then the grammar. No cap; reserved names are
     /// constants.
-    pub fn parse_engine(name: &'a [u8]) -> Result<Self, CellNameError> {
+    pub fn parse_reserved(name: &'a [u8]) -> Result<Self, CellNameError> {
         match name {
             [] => Err(CellNameError::Empty),
             [b'#' | b'@', rest @ ..] => check(rest, 1).map(|()| Self(name)),
@@ -99,7 +99,7 @@ impl<'a> CellNameRef<'a> {
     }
 
     /// A reserved record's key (§4), which is itself a value such as a
-    /// `commitNr`, so no grammar applies. Engine-internal.
+    /// `commitNr`, so no grammar applies. Internal use only.
     pub const fn raw(bytes: &'a [u8]) -> Self {
         Self(bytes)
     }
@@ -151,7 +151,7 @@ impl From<CellNameRef<'_>> for CellName {
     }
 }
 
-/// The engine's reserved cell names (§3, §4).
+/// Reserved cell names (§3, §4).
 pub mod reserved {
     use super::CellNameRef;
 

@@ -85,7 +85,7 @@ pub trait Api {
     /// Delete the record and its binding without reclaiming the internal ID.
     fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()>;
 
-    // Branch lifecycle. IDs are valid only for their issuing engine.
+    // Branch lifecycle. IDs are valid only for the database that issued them.
     fn head(&self) -> Result<CommitId>;
     fn begin(&self) -> Result<BranchId>;
     fn branch_info(&self, branch: BranchId) -> Result<BranchInfo>;

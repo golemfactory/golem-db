@@ -8,11 +8,11 @@ use crate::{CELL_TRIE_PATH_BYTES, CellKey, CellValue, Result, cell_trie::CellTri
 /// Cell storage and commitment over caller-owned transactions.
 ///
 /// Use one hash provider and a root matching the transaction's flat cell state.
-/// `apply` belongs at seal/commit, after the engine has formed a net batch. Seal
+/// `apply` belongs at seal/commit, after the branch layer has formed a net batch. Seal
 /// requires a staged transaction; this interface does not create an overlay.
 /// Abort the transaction after any mutation error and publish roots only after
 /// commit. This layer does not update the index, history or head, enforce record
-/// lifecycle rules, or apply deployment limits: those belong to the engine.
+/// lifecycle rules, or apply deployment limits: those belong to the layers above this crate.
 pub struct Cells<'h, H: HashProvider> {
     trie: CellTrie<'h, H>,
 }

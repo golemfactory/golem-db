@@ -3,7 +3,7 @@
 //! Caller-assigned keys only. Each mutation is one atomic branch operation,
 //! including allocator and binding changes. Checkpoints, rollback and commit
 //! remain on the shared [`Branches`](golemdb_branch::Branches) manager supplied to [`Records::new`].
-//! Direct low-level cell writes are trusted engine operations and can bypass
+//! Direct low-level cell writes are trusted library operations and can bypass
 //! these invariants; expose Records, not raw branch writes, to data clients.
 //!
 //! Opening/initialization belongs to the caller: required `#params` cells,

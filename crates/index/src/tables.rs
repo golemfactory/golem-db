@@ -1,4 +1,4 @@
-//! Physical table names shared with the engine. Writes belong to one transaction.
+//! Physical table names shared with the layers above. Writes belong to one transaction.
 use golemdb_storage::Table;
 
 pub const INDEX: Table = Table("Index");

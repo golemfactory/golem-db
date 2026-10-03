@@ -13,7 +13,7 @@ use std::{error::Error, fmt, path::Path};
 /// ```
 /// use golemdb_merkle::{Blake3Hasher, Hash, HashAlgorithm, HashConfig, HashProvider, Keccak256Hasher};
 ///
-/// // The future engine's processing loop belongs inside this generic function.
+/// // The caller's processing loop belongs inside this generic function.
 /// fn run<H: HashProvider>(hasher: H) -> Hash {
 ///     hasher.hash(b"example")
 /// }

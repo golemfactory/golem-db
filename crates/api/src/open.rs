@@ -28,7 +28,7 @@ impl OpenInfo {
     }
 }
 
-/// Validated storage ready for engine construction. This setup boundary is for
+/// A validated store, ready to open as a database. This setup boundary is for
 /// trusted library code; ordinary data consumers use Database's constructors.
 /// Consume this handle with into_database to connect it to the public facade.
 pub struct OpenedStore<S> {
@@ -44,14 +44,15 @@ impl<S> OpenedStore<S> {
     pub fn genesis(&self) -> &GenesisConfig {
         &self.genesis
     }
-    /// Hand initialized storage to the engine; low-level writes remain trusted.
+    /// Return the validated store for trusted library code. Writes through it
+    /// bypass all record and reserved-record checks.
     pub fn into_store(self) -> S {
         self.store
     }
 }
 
 impl<S: Store + Send + Sync + 'static> OpenedStore<S> {
-    /// Construct one engine using the validated hash selection. The returned
+    /// Open one database using the validated hash selection. The returned
     /// facade's clones share its branch registry and storage lifetime.
     pub fn into_database(self) -> OpenResult<crate::Database> {
         crate::Database::from_opened(self)

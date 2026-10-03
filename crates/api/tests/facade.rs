@@ -334,7 +334,7 @@ fn competing_commits_and_cross_thread_clones_use_one_registry() {
 }
 
 #[test]
-fn opening_setup_conversion_and_separate_engines_do_not_share_branch_handles() {
+fn opening_setup_conversion_and_separate_databases_do_not_share_branch_handles() {
     let cfg = config(HashAlgorithm::Blake3);
     let storage = MemoryStore::new();
     let setup = open_store(storage.clone(), &cfg).unwrap();

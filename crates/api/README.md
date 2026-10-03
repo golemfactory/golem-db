@@ -10,8 +10,8 @@ impose threading bounds; consumers add them when needed. Adding required methods
 requires updating concrete implementations and mocks.
 
 `Database` implements `Api` and hides store and hash-provider types. Clones share
-one engine and branch registry, so handles work across clones and threads. The
-hash is selected on opening and stays a concrete type within the engine. Import
+one branch registry, so handles work across clones and threads. The hash is
+selected on opening and stays a concrete type within the database. Import
 `Api` to use its methods on `Database`.
 
 The examples use persistent MDBX storage. Enable the `mdbx` feature on
@@ -41,8 +41,9 @@ assert_eq!(db.get(ReadTarget::Head, key, Projection::All)?, pending);
 ```
 
 Only `commit` publishes changes. Dropping the last clone discards pending work;
-committed MDBX state survives reopening. Handles belong to one engine: separate
-opens over shared storage have separate registries. Use `clone` to share handles.
+committed MDBX state survives reopening. Handles belong to one open database:
+separate opens over a shared store have separate registries. Use `clone` to share
+handles.
 
 ## Inputs and reads
 
@@ -277,7 +278,7 @@ hash, Roaring, genesis identity, and head metadata before publishing commit 0.
 The two metering records have identities and bindings only; metering is deferred.
 
 The opener validates physical store ceilings, including complete cell/index
-keys and value tags. Format 1 also requires room for 16 KiB engine values, covering
+keys and value tags. Format 1 also requires room for 16 KiB internal values, covering
 trie nodes and canonical bitmap containers. Limits are user-cell admission policy;
 system root-history bytes do not consume the configured user bytes allowance.
 
@@ -295,7 +296,7 @@ live head, or `get(ReadTarget::Head, ...)` for a consistent current record read.
 The free opening functions remain lower-level setup helpers returning
 `OpenedStore`: `open_database` accepts an MDBX path, while `open_store`
 accepts a store instance. Use `into_database()` to consume one as a facade, or
-`into_store()` to hand validated storage to trusted engine code. Ordinary
+`into_store()` to hand the validated store to trusted library code. Ordinary
 consumers use the associated `Database` constructors and the `Api` methods.
 
 ## Current scope

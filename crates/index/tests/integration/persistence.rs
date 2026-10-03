@@ -110,7 +110,7 @@ fn persistence_worker() {
     );
 
     // Old immutable trees remain walkable through the latest read transaction.
-    // This is structural history; reopening old flat term state is engine work.
+    // This is structural history; reopening old flat term state belongs to the layers above.
     let bitmap_trie =
         Trie::<_, BITMAP_TRIE_PATH_BYTES>::new(tables::BITMAP_TRIE, BITMAP_BRANCH_DOMAIN, &HASH);
     let old_bitmap = hash(&read, b"old_bitmap");

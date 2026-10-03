@@ -23,7 +23,7 @@
 //! let update = index.apply(&mut tx, RootRef::Empty, [
 //!     PostingChange::Add { term: term.clone(), record_id: 42 },
 //! ])?;
-//! // The engine can write its head and history in this same transaction.
+//! // The caller can write its head and history in this same transaction.
 //! tx.commit()?;
 //! let read = db.begin_read()?;
 //! assert!(index.bitmap(&read, &term)?.unwrap().treemap().contains(42));
