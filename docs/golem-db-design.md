@@ -818,8 +818,12 @@ anything, roots before it can prove anything, and mappings last.
 - **One meta cell, `#key`,** carrying that key — the same cell every user record has
   ([§3](#record-identity-the-key-cell)), so record identity stays committed uniformly across all
   three classes. It is also what makes the database self-describing: an ordinary `get` of record 0's
-  `#key` returns `"#alloc"`, so the catalogue is provable rather than conventional, and the class
+  `#key` returns `"#params"`, so the catalogue is provable rather than conventional, and the class
   character (`#` or `@`) lives in the key itself rather than in a separate display cell.
+- **A binding in `#recordKeys`,** written at genesis, so a reserved record resolves by its key
+  exactly like a user record: `get` on `"#params"` takes the same path as `get` on any user key,
+  and "`#params` is record 0" is provable by the same inclusion proof. Reserved records are never
+  deleted, so their bindings never change.
 - **Cell keys come in two forms.** Named system cells carry `#` (`#nextRecordID`); named admin
   configuration cells use `@`. Every record's structural `#key` remains a system cell, including
   on admin records. These cannot collide with caller names, which may start with neither prefix
@@ -895,7 +899,8 @@ never patched (change-set pre-image `null`, history bitmap one entry), and they 
 
 The `recordKey → recordID` lookup is a `Cell` point read at
 `recordID(#recordKeys) ‖ recordKey` — the same cost as a dedicated side table, with three
-properties such a table could not offer:
+properties such a table could not offer. Every system and admin record is bound at genesis, and
+those bindings are permanent; bindings of user records follow the record's lifecycle.
 
 - **Historised re-creation.** The binding is an ordinary cell: re-creating a deleted key `patch`es it
   to the new `recordID`, the old incarnation's ID lands in the change-set, and historical
@@ -1047,8 +1052,8 @@ Ergonomics that make the invariants easy to honour — not security boundaries:
 
 **Genesis (commit 0)** performs, in order: `Superblock` format rows written; every assigned reserved
 record created with its `#key` cell; `#params` written from the genesis file and
-validated against the physical ceilings; `#alloc` initialized (`#nextRecordID = 64`); `#roots` and
-`#recordKeys` empty; model version 1 installed complete (`@meteringModel` activation 0, full
+validated against the physical ceilings; `#alloc` initialized (`#nextRecordID = 64`); `#roots`
+empty; `#recordKeys` holds one binding per system and admin record; model version 1 installed complete (`@meteringModel` activation 0, full
 `@modelWeight` set); `head = (0, SR_0, IR_0)`.
 
 **Worked example — root history as cells.** State of the world just after commit **100** is sealed:
