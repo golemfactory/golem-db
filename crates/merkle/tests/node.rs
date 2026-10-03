@@ -1,7 +1,7 @@
 use golemdb_merkle::{
     BranchNodeCompact, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef, Trie,
 };
-use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction};
+use golemdb_storage::{MemoryStore, ReadTransaction, Store, Table, WriteTransaction};
 use proptest::prelude::*;
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
@@ -117,7 +117,7 @@ proptest! {
 
 #[test]
 fn corrupt_hash_and_leaf_routing_fail_on_reads_and_mutations() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     let trie = Trie::<_, 6>::new(TABLE, 0x05, &HASH);
     let mut tx = db.begin_write().unwrap();
     let node = node();
@@ -157,7 +157,7 @@ fn corrupt_hash_and_leaf_routing_fail_on_reads_and_mutations() {
 
 #[test]
 fn collisions_check_complete_stored_bytes_and_never_overwrite() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     let trie = Trie::<_, 6>::new(TABLE, 0x05, &HASH);
     let node = node();
     let hash = node.hash(0x05, &HASH);
@@ -182,7 +182,7 @@ fn collisions_check_complete_stored_bytes_and_never_overwrite() {
 
 #[test]
 fn branch_depth_is_checked_in_context() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     let trie = Trie::<_, 6>::new(TABLE, 0x05, &HASH);
     let mut tx = db.begin_write().unwrap();
     let child =

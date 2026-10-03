@@ -22,10 +22,10 @@
 //! use golemdb_cells::{CellNameRef, CellType, CellValueRef};
 //! use golemdb_merkle::HashProvider;
 //! use golemdb_record::{ReadTarget, RecordKey, Records};
-//! use golemdb_storage::Database;
+//! use golemdb_storage::Store;
 //!
 //! // The connection layer has already initialized the database and parameters.
-//! fn example<D: Database, H: HashProvider>(branches: Branches<D, H>)
+//! fn example<S: Store, H: HashProvider>(branches: Branches<S, H>)
 //!     -> Result<(), Box<dyn std::error::Error>>
 //! {
 //!     let records = Records::new(branches.clone());

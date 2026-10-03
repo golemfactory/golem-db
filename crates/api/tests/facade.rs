@@ -2,7 +2,7 @@ use std::sync::{Arc, Barrier};
 
 use golemdb_api::*;
 use golemdb_cells::system;
-use golemdb_storage::MemoryDatabase;
+use golemdb_storage::MemoryStore;
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const MISSING: RecordKey = RecordKey([0x43; 32]);
@@ -336,7 +336,7 @@ fn competing_commits_and_cross_thread_clones_use_one_registry() {
 #[test]
 fn opening_setup_conversion_and_separate_engines_do_not_share_branch_handles() {
     let cfg = config(HashAlgorithm::Blake3);
-    let storage = MemoryDatabase::new();
+    let storage = MemoryStore::new();
     let setup = open_backend(storage.clone(), &cfg).unwrap();
     let info = *setup.info();
     let first = setup.into_golem_db().unwrap();

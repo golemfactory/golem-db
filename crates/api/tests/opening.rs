@@ -5,9 +5,7 @@ use golemdb_branch::Branches;
 use golemdb_cells::{CellKey, CellReader, reserved, system, tables};
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
 use golemdb_record::Records;
-use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
-};
+use golemdb_storage::{MemoryStore, ReadTransaction, Store, Table, WriteTransaction, scan_prefix};
 
 const SUPERBLOCK: Table = Table("Superblock");
 const KEY: RecordKey = RecordKey([0x42; 32]);
@@ -17,7 +15,7 @@ fn config() -> OpenConfig {
     OpenConfig::new(GenesisConfig::from_yaml(YAML).unwrap())
 }
 
-fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
+fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     [
         SUPERBLOCK,
@@ -77,8 +75,8 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
     ));
 }
 
-fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
-    db: D,
+fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
+    db: S,
     config: OpenConfig,
     hasher: H,
 ) -> OpenInfo {
@@ -175,15 +173,15 @@ fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
 
 #[test]
 fn memory_genesis_and_committed_reopen_support_both_hash_algorithms() {
-    let keccak = lifecycle(MemoryDatabase::new(), config(), Keccak256Hasher);
+    let keccak = lifecycle(MemoryStore::new(), config(), Keccak256Hasher);
     let mut blake = config();
     blake.genesis.hash_function = HashAlgorithm::Blake3;
-    let blake = lifecycle(MemoryDatabase::new(), blake, Blake3Hasher);
+    let blake = lifecycle(MemoryStore::new(), blake, Blake3Hasher);
     assert_ne!(keccak.genesis_id, blake.genesis_id);
     assert_ne!(keccak.state_root, blake.state_root);
 }
 
-fn modes(db: impl Database + Clone) {
+fn modes(db: impl Store + Clone) {
     let config = config();
     assert!(matches!(
         open_backend(
@@ -234,7 +232,7 @@ fn modes(db: impl Database + Clone) {
 
 #[test]
 fn opening_modes_and_genesis_mismatch_do_not_change_memory_state() {
-    modes(MemoryDatabase::new());
+    modes(MemoryStore::new());
 }
 
 #[test]
@@ -246,7 +244,7 @@ fn partial_or_foreign_state_is_never_initialized() {
         Table("Foreign"),
     ] {
         for delete in [false, true] {
-            let db = MemoryDatabase::new();
+            let db = MemoryStore::new();
             let mut tx = db.begin_write().unwrap();
             tx.put(table, b"key", b"partial").unwrap();
             if delete {
@@ -354,7 +352,7 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
     assert!(open_backend(db, &config()).is_err());
 }
 
-fn concurrent(db: impl Database + Clone + Send + Sync, mode: OpenMode, different: bool) {
+fn concurrent(db: impl Store + Clone + Send + Sync, mode: OpenMode, different: bool) {
     let mut a = config();
     a.mode = mode;
     let mut b = a;
@@ -410,7 +408,7 @@ fn memory_initializers_serialize_and_compare_genesis() {
         (OpenMode::CreateNew, false),
         (OpenMode::CreateIfMissing, true),
     ] {
-        concurrent(MemoryDatabase::new(), mode, different);
+        concurrent(MemoryStore::new(), mode, different);
     }
 }
 
@@ -426,7 +424,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
             let db = open(dir.path(), &cfg).unwrap();
             assert_eq!(db.info(), &memory);
         }
-        let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+        let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
         let branches = match hash {
             HashAlgorithm::Keccak256 => {
                 let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
@@ -488,7 +486,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
 #[test]
 fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let dir = tempfile::tempdir().unwrap();
-    modes(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    modes(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
     for (mode, different) in [
         (OpenMode::CreateIfMissing, false),
         (OpenMode::CreateNew, false),
@@ -496,7 +494,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         concurrent(
-            golemdb_storage::MdbxDatabase::open(dir.path()).unwrap(),
+            golemdb_storage::MdbxStore::open(dir.path()).unwrap(),
             mode,
             different,
         );
@@ -514,7 +512,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
         Err(OpenError::NotInitialized)
     ));
     assert!(!missing.exists());
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
     let mut cfg = config();
     // Name + separator + tag + value must fit, not just the string by itself.
     cfg.genesis.cell_limits.max_str_len = db.max_key_size() as u32;
@@ -544,7 +542,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
 fn mdbx_foreign_tables_even_when_empty_are_not_pristine_storage() {
     for delete in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+        let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         tx.put(Table("Foreign"), b"key", b"value").unwrap();
         if delete {

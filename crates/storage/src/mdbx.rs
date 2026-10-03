@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use libmdbx::{NoWriteMap, RO, RW, TableFlags, TransactionKind, WriteFlags};
 
 use crate::{
-    Database, Entry, ReadCursor, ReadTransaction, Result, StorageError, Table, WriteTransaction,
+    Entry, ReadCursor, ReadTransaction, Result, StorageError, Store, Table, WriteTransaction,
 };
 
 /// Backend capacity settings, not table declarations or logical storage quotas.
@@ -31,9 +31,9 @@ impl Default for MdbxOptions {
 /// byte ordering and unique keys (no external integer/reverse/DUPSORT tables).
 ///
 /// ```
-/// use golemdb_storage::{Database, MdbxDatabase, ReadTransaction, Table, WriteTransaction};
+/// use golemdb_storage::{Store, MdbxStore, ReadTransaction, Table, WriteTransaction};
 /// let dir = tempfile::tempdir()?;
-/// let db = MdbxDatabase::open(dir.path())?;
+/// let db = MdbxStore::open(dir.path())?;
 /// let mut tx = db.begin_write()?;
 /// tx.put(Table("Example"), b"key", b"value")?;
 /// tx.commit()?;
@@ -41,7 +41,7 @@ impl Default for MdbxOptions {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone)]
-pub struct MdbxDatabase {
+pub struct MdbxStore {
     inner: Arc<libmdbx::Database<NoWriteMap>>,
     limits: Limits,
 }
@@ -64,7 +64,7 @@ impl Limits {
     }
 }
 
-impl MdbxDatabase {
+impl MdbxStore {
     /// Create the directory if needed and open a durable read/write environment.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, MdbxOptions::default())
@@ -144,7 +144,7 @@ pub struct MdbxTransaction<'db, K: TransactionKind> {
 pub type MdbxReadTransaction<'db> = MdbxTransaction<'db, RO>;
 pub type MdbxWriteTransaction<'db> = MdbxTransaction<'db, RW>;
 
-impl Database for MdbxDatabase {
+impl Store for MdbxStore {
     fn max_key_size(&self) -> usize {
         self.limits.key
     }

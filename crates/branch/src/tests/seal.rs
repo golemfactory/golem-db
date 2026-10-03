@@ -4,7 +4,7 @@ use golemdb_cells::{
 };
 use golemdb_index::{Index, IndexTerm, PostingChange};
 use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher, RootRef};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan_prefix};
+use golemdb_storage::{MemoryStore, Store, Table, WriteTransaction, scan_prefix};
 use std::{
     collections::BTreeMap,
     panic::AssertUnwindSafe,
@@ -40,7 +40,7 @@ fn head(tx: &mut impl WriteTransaction, id: u64, state: Hash, index: Hash) {
     )
     .unwrap();
 }
-fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
+fn seed(db: &impl Store, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
     let mut tx = db.begin_write().unwrap();
     let cells = Cells::new(hash)
         .apply(
@@ -70,7 +70,7 @@ fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey,
     head(&mut tx, id, cells.root.hash(hash), index.root.hash(hash));
     tx.commit().unwrap();
 }
-fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
+fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
         .iter()
@@ -84,7 +84,7 @@ fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
 }
 // Test-only replay proves the retained rows are sufficient; this is not the
 // production commit API and deliberately does not update head.
-fn replay(db: &impl Database, sealed: &SealedCommit) {
+fn replay(db: &impl Store, sealed: &SealedCommit) {
     let mut tx = db.begin_write().unwrap();
     for (table, rows) in &sealed.writes {
         for (key, value) in rows {
@@ -100,25 +100,25 @@ fn replay(db: &impl Database, sealed: &SealedCommit) {
 }
 
 // Seal must never acquire a backend writer, even temporarily.
-struct ReadOnly<D>(D);
-impl<D: Database> Database for ReadOnly<D> {
+struct ReadOnly<S>(S);
+impl<S: Store> Store for ReadOnly<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = D::Write<'a>
+        = S::Write<'a>
     where
         Self: 'a;
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         self.0.begin_read()
     }
     fn begin_write(&self) -> golemdb_storage::Result<Self::Write<'_>> {
-        panic!("seal opened a database writer")
+        panic!("seal opened a store writer")
     }
 }
 
-fn compare_with_rebuild(db: impl Database + Clone + 'static, hash: impl HashProvider + Copy) {
+fn compare_with_rebuild(db: impl Store + Clone + 'static, hash: impl HashProvider + Copy) {
     let initial = vec![
         (key(64, b"name"), value("old", true)),
         (key(65, b"name"), value("old", true)),
@@ -195,7 +195,7 @@ fn compare_with_rebuild(db: impl Database + Clone + 'static, hash: impl HashProv
             }
         }
     }
-    let expected = MemoryDatabase::new();
+    let expected = MemoryStore::new();
     verify_rebuild(&db, &expected, &sealed, final_rows, &hash);
     branches.discard(branch).unwrap();
     assert!(matches!(
@@ -205,8 +205,8 @@ fn compare_with_rebuild(db: impl Database + Clone + 'static, hash: impl HashProv
 }
 
 fn verify_rebuild(
-    db: &impl Database,
-    expected: &MemoryDatabase,
+    db: &impl Store,
+    expected: &MemoryStore,
     sealed: &SealedCommit,
     rows: BTreeMap<CellKey, CellValue>,
     hash: &impl HashProvider,
@@ -253,20 +253,20 @@ fn verify_rebuild(
 
 #[test]
 fn memory_seal_matches_full_rebuild_without_storage_writes() {
-    compare_with_rebuild(MemoryDatabase::new(), Keccak256Hasher);
+    compare_with_rebuild(MemoryStore::new(), Keccak256Hasher);
 }
 
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_seal_matches_full_rebuild_without_storage_writes() {
     let dir = tempfile::tempdir().unwrap();
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
     compare_with_rebuild(db, Keccak256Hasher);
 }
 
 #[test]
 fn empty_seal_adds_only_lag_one_roots_and_supports_blake3() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     let hash = Blake3Hasher;
     seed(&db, &hash, 0, &[]);
     let before = snapshot(&db);
@@ -297,7 +297,7 @@ fn empty_seal_adds_only_lag_one_roots_and_supports_blake3() {
 
 #[test]
 fn invalid_attribute_failure_keeps_overlay_and_frames_retryable() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let before = snapshot(&db);
     let branches = Branches::new(ReadOnly(db.clone()), Keccak256Hasher).unwrap();
@@ -338,7 +338,7 @@ impl HashProvider for PanicHasher {
 }
 #[test]
 fn panicking_seal_does_not_freeze_or_poison_the_branch() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let fail = Arc::new(AtomicBool::new(true));
     let branches = Branches::new(ReadOnly(db), PanicHasher(fail.clone())).unwrap();
@@ -351,7 +351,7 @@ fn panicking_seal_does_not_freeze_or_poison_the_branch() {
 
 #[test]
 fn stale_sealed_branches_and_commit_number_overflow_are_rejected() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let branches = Branches::new(ReadOnly(db.clone()), Keccak256Hasher).unwrap();
     let branch = branches.begin().unwrap();
@@ -384,7 +384,7 @@ fn stale_sealed_branches_and_commit_number_overflow_are_rejected() {
 
 #[derive(Clone)]
 struct FaultReads {
-    db: MemoryDatabase,
+    db: MemoryStore,
     fail: Arc<AtomicBool>,
 }
 struct FaultSnapshot<R> {
@@ -408,9 +408,9 @@ impl<R: golemdb_storage::ReadTransaction> golemdb_storage::ReadTransaction for F
         self.origin.cursor(table, key)
     }
 }
-impl Database for FaultReads {
-    type Read<'a> = FaultSnapshot<<MemoryDatabase as Database>::Read<'a>>;
-    type Write<'a> = <MemoryDatabase as Database>::Write<'a>;
+impl Store for FaultReads {
+    type Read<'a> = FaultSnapshot<<MemoryStore as Store>::Read<'a>>;
+    type Write<'a> = <MemoryStore as Store>::Write<'a>;
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         Ok(FaultSnapshot {
             origin: self.db.begin_read()?,
@@ -423,7 +423,7 @@ impl Database for FaultReads {
 }
 #[test]
 fn index_failure_after_cell_apply_discards_buffer_and_allows_retry() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(
         &db,
         &Keccak256Hasher,
@@ -460,14 +460,14 @@ fn index_failure_after_cell_apply_discards_buffer_and_allows_retry() {
 
 #[test]
 fn wrong_roots_and_duplicate_lag_one_cell_fail_without_freezing() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Blake3Hasher, 0, &[]);
     let branches = Branches::new(ReadOnly(db), Keccak256Hasher).unwrap();
     let branch = branches.begin().unwrap();
     assert!(matches!(branches.seal(branch), Err(BranchError::Cells(_))));
     assert!(!branches.branch_info(branch).unwrap().sealed);
 
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(
         &db,
         &Keccak256Hasher,
@@ -485,5 +485,5 @@ fn wrong_roots_and_duplicate_lag_one_cell_fail_without_freezing() {
 
 #[test]
 fn blake3_seal_matches_full_rebuild() {
-    compare_with_rebuild(MemoryDatabase::new(), Blake3Hasher);
+    compare_with_rebuild(MemoryStore::new(), Blake3Hasher);
 }

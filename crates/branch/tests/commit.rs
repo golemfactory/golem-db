@@ -3,7 +3,7 @@ use golemdb_cells::{CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cel
 use golemdb_index::{Index, IndexTerm};
 use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher};
 use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, StorageError, Table, WriteTransaction, scan_prefix,
+    MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction, scan_prefix,
 };
 use std::{
     panic::AssertUnwindSafe,
@@ -31,7 +31,7 @@ fn value(text: &str) -> CellValue {
         .unwrap()
         .into()
 }
-fn genesis(db: &impl Database, hash: &impl HashProvider) {
+fn genesis(db: &impl Store, hash: &impl HashProvider) {
     let empty = hash.hash(&[]);
     let mut tx = db.begin_write().unwrap();
     tx.put(
@@ -42,7 +42,7 @@ fn genesis(db: &impl Database, hash: &impl HashProvider) {
     .unwrap();
     tx.commit().unwrap();
 }
-fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
+fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
         .iter()
@@ -54,7 +54,7 @@ fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
         })
         .collect()
 }
-fn stage<D: Database, H: HashProvider>(branches: &Branches<D, H>, text: &str) -> u64 {
+fn stage<S: Store, H: HashProvider>(branches: &Branches<S, H>, text: &str) -> u64 {
     let branch = branches.begin().unwrap();
     branches
         .write(branch, |cells| {
@@ -67,7 +67,7 @@ fn stage<D: Database, H: HashProvider>(branches: &Branches<D, H>, text: &str) ->
 
 #[test]
 fn stale_commit_conflicts_unless_another_operation_already_invalidated_it() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     genesis(&db, &Keccak256Hasher);
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let winner = stage(&branches, "winner");
@@ -89,7 +89,7 @@ fn stale_commit_conflicts_unless_another_operation_already_invalidated_it() {
         Err(BranchError::HandleInvalid)
     ));
 }
-fn lifecycle(db: impl Database + Clone, hash: impl HashProvider + Copy) {
+fn lifecycle(db: impl Store + Clone, hash: impl HashProvider + Copy) {
     genesis(&db, &hash);
     let branches = Branches::new(db.clone(), hash).unwrap();
     let old_reader = db.begin_read().unwrap();
@@ -188,11 +188,11 @@ fn lifecycle(db: impl Database + Clone, hash: impl HashProvider + Copy) {
 }
 #[test]
 fn memory_commit_publishes_cells_index_roots_and_head_atomically() {
-    lifecycle(MemoryDatabase::new(), Keccak256Hasher);
+    lifecycle(MemoryStore::new(), Keccak256Hasher);
 }
 #[test]
 fn blake3_commit() {
-    lifecycle(MemoryDatabase::new(), Blake3Hasher);
+    lifecycle(MemoryStore::new(), Blake3Hasher);
 }
 #[cfg(feature = "mdbx")]
 #[test]
@@ -200,11 +200,11 @@ fn mdbx_commit_survives_reopen() {
     let dir = tempfile::tempdir().unwrap();
     {
         lifecycle(
-            golemdb_storage::MdbxDatabase::open(dir.path()).unwrap(),
+            golemdb_storage::MdbxStore::open(dir.path()).unwrap(),
             Keccak256Hasher,
         );
     }
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     assert_eq!(branches.head().unwrap(), 2);
     let branch = branches.begin().unwrap();
@@ -223,14 +223,14 @@ enum Fault {
     Panic(usize),
 }
 #[derive(Clone)]
-struct Controlled<D> {
-    inner: D,
+struct Controlled<S> {
+    inner: S,
     fault: Arc<Mutex<Fault>>,
     barrier: Option<Arc<Barrier>>,
     mutations: Arc<AtomicUsize>,
 }
-impl<D> Controlled<D> {
-    fn new(inner: D) -> Self {
+impl<S> Controlled<S> {
+    fn new(inner: S) -> Self {
         Self {
             inner,
             fault: Arc::new(Mutex::new(Fault::None)),
@@ -248,13 +248,13 @@ struct ControlledWrite<W> {
     step: usize,
     mutations: Arc<AtomicUsize>,
 }
-impl<D: Database> Database for Controlled<D> {
+impl<S: Store> Store for Controlled<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = ControlledWrite<D::Write<'a>>
+        = ControlledWrite<S::Write<'a>>
     where
         Self: 'a;
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
@@ -327,7 +327,7 @@ impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
         self.inner.commit()
     }
 }
-fn failure_recovery(db: impl Database + Clone + 'static) {
+fn failure_recovery(db: impl Store + Clone + 'static) {
     genesis(&db, &Keccak256Hasher);
     let init = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     init.commit(stage(&init, "original")).unwrap();
@@ -380,16 +380,16 @@ fn failure_recovery(db: impl Database + Clone + 'static) {
 }
 #[test]
 fn memory_failures_abort_all_rows_and_allow_retry() {
-    failure_recovery(MemoryDatabase::new());
+    failure_recovery(MemoryStore::new());
 }
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_failures_abort_all_rows_and_allow_retry() {
     let dir = tempfile::tempdir().unwrap();
-    failure_recovery(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    failure_recovery(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }
 
-fn race(db: impl Database + Clone + Send + Sync + 'static) {
+fn race(db: impl Store + Clone + Send + Sync + 'static) {
     genesis(&db, &Keccak256Hasher);
     let mut controlled = Controlled::new(db.clone());
     controlled.barrier = Some(Arc::new(Barrier::new(2)));
@@ -444,13 +444,13 @@ fn race(db: impl Database + Clone + Send + Sync + 'static) {
 }
 #[test]
 fn simultaneous_commits_recheck_head_inside_memory_writer() {
-    race(MemoryDatabase::new());
+    race(MemoryStore::new());
 }
 #[cfg(feature = "mdbx")]
 #[test]
 fn simultaneous_commits_recheck_head_inside_mdbx_writer() {
     let dir = tempfile::tempdir().unwrap();
-    race(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    race(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }
 
 struct SwitchHash(Arc<AtomicBool>);
@@ -465,7 +465,7 @@ impl HashProvider for SwitchHash {
 }
 #[test]
 fn explicit_seal_is_not_recomputed_by_commit() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     genesis(&db, &Keccak256Hasher);
     let fail = Arc::new(AtomicBool::new(false));
     let branches = Branches::new(db, SwitchHash(fail.clone())).unwrap();
@@ -477,7 +477,7 @@ fn explicit_seal_is_not_recomputed_by_commit() {
 
 #[test]
 fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     genesis(&db, &Keccak256Hasher);
     let controlled = Controlled::new(db);
     *controlled.fault.lock().unwrap() = Fault::Open;
@@ -500,7 +500,7 @@ fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
 fn implicit_and_explicit_seal_publish_identical_state() {
     let mut results = Vec::new();
     for explicit in [false, true] {
-        let db = MemoryDatabase::new();
+        let db = MemoryStore::new();
         genesis(&db, &Keccak256Hasher);
         let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
         let branch = stage(&branches, "final");
@@ -523,7 +523,7 @@ fn implicit_and_explicit_seal_publish_identical_state() {
 
 #[test]
 fn concurrent_commits_of_one_branch_publish_only_once() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     genesis(&db, &Keccak256Hasher);
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let branch = stage(&branches, "once");
@@ -552,7 +552,7 @@ fn concurrent_commits_of_one_branch_publish_only_once() {
 #[test]
 fn mdbx_key_limit_during_implicit_seal_leaves_branch_open() {
     let dir = tempfile::tempdir().unwrap();
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
     genesis(&db, &Keccak256Hasher);
     let before = snapshot(&db);
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();

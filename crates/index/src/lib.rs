@@ -13,9 +13,9 @@
 //! use golemdb_cells::CellType;
 //! use golemdb_index::{Index, IndexTerm, PostingChange};
 //! use golemdb_merkle::{Keccak256Hasher, RootRef};
-//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hasher = Keccak256Hasher;
 //! let index = Index::new(&hasher);
 //! let term = IndexTerm::new("color", CellType::Str, b"blue")?;

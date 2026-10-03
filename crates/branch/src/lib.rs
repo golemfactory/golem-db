@@ -18,18 +18,18 @@
 //!
 //! # Guarded branch access
 //!
-//! The database must already have an initialized `Superblock/head`. This layer
+//! The store must already have an initialized `Superblock/head`. This layer
 //! never fabricates genesis. Reads return owned values or collect scans inside
 //! the callback so they cannot outlive the head check's snapshot.
 //!
 //! ```
 //! use golemdb_branch::{Branches, BranchError};
 //! use golemdb_cells::{CellKey, CellNameRef, CellValue};
-//! use golemdb_storage::Database;
+//! use golemdb_storage::Store;
 //! use golemdb_merkle::Keccak256Hasher;
 //!
-//! fn edit<D: Database>(database: D) -> Result<(), Box<dyn std::error::Error>> {
-//!     let branches = Branches::new(database, Keccak256Hasher)?;
+//! fn edit<S: Store>(store: S) -> Result<(), Box<dyn std::error::Error>> {
+//!     let branches = Branches::new(store, Keccak256Hasher)?;
 //!     let branch = branches.begin()?;
 //!     let key = CellKey::new(64, CellNameRef::parse_user(b"status", 64)?);
 //!     branches.write(branch, |cell_writer| {
@@ -50,8 +50,8 @@
 //!     branches.discard(branch)?;
 //!     Ok(())
 //! }
-//! # use golemdb_storage::{MemoryDatabase, Table, WriteTransaction};
-//! # let db = MemoryDatabase::new();
+//! # use golemdb_storage::{MemoryStore, Table, WriteTransaction};
+//! # let db = MemoryStore::new();
 //! # let mut tx = db.begin_write()?;
 //! # // Minimal head fixture, not a production genesis initializer.
 //! # tx.put(Table("Superblock"), b"head", &[0; 72])?;
@@ -66,15 +66,15 @@
 //! Supply the deployment's hash provider when constructing the manager. A seal
 //! reopens both roots from the validated origin, adds the previous commit's
 //! `#roots` cell, applies cells, derives postings from actual before/after values,
-//! and applies the index. No database writer is opened. History is deferred.
+//! and applies the index. No store writer is opened. History is deferred.
 //! The result retains both updates and physical rows for commit.
 //!
 //! ```
 //! use golemdb_branch::Branches;
 //! use golemdb_merkle::{HashProvider, Keccak256Hasher};
-//! use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, Table, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hash = Keccak256Hasher;
 //! // Minimal empty-head fixture, not a production genesis initializer.
 //! let mut tx = db.begin_write()?;

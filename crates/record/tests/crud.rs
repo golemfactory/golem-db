@@ -6,22 +6,22 @@ use golemdb_cells::{
 use golemdb_index::{Index, IndexTerm};
 use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
 use golemdb_record::{CellPatch, ReadTarget, RecordCells, RecordError, RecordKey, Records};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+use golemdb_storage::{MemoryStore, Store, Table, WriteTransaction};
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const OTHER: RecordKey = RecordKey([0x43; 32]);
 
 // Publish after acquiring a snapshot to deterministically exercise a concurrent
 // head change during get, without timing-dependent thread scheduling.
-struct AdvancingReadDb {
-    db: MemoryDatabase,
+struct AdvancingReadStore {
+    db: MemoryStore,
     after_snapshot: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     reads: std::sync::atomic::AtomicUsize,
 }
 
-impl Database for AdvancingReadDb {
-    type Read<'db> = <MemoryDatabase as Database>::Read<'db>;
-    type Write<'db> = <MemoryDatabase as Database>::Write<'db>;
+impl Store for AdvancingReadStore {
+    type Read<'db> = <MemoryStore as Store>::Read<'db>;
+    type Write<'db> = <MemoryStore as Store>::Write<'db>;
 
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -55,7 +55,7 @@ fn head_selection_and_record_read_share_one_snapshot() {
         )
         .unwrap();
     let reader_branches = Branches::new(
-        AdvancingReadDb {
+        AdvancingReadStore {
             db,
             after_snapshot: std::sync::Mutex::new(None),
             reads: std::sync::atomic::AtomicUsize::new(0),
@@ -65,13 +65,13 @@ fn head_selection_and_record_read_share_one_snapshot() {
     .unwrap();
     let reader = Records::new(reader_branches.clone());
     let writer = branches.clone();
-    *reader_branches.database().after_snapshot.lock().unwrap() = Some(Box::new(move || {
+    *reader_branches.store().after_snapshot.lock().unwrap() = Some(Box::new(move || {
         writer.commit(next).unwrap();
     }));
-    reader_branches.database().reads.store(0, Ordering::SeqCst);
+    reader_branches.store().reads.store(0, Ordering::SeqCst);
     let snapshot = reader.get(ReadTarget::Head, KEY, None).unwrap();
     assert_eq!(snapshot.cells[b"name".as_slice()].as_str(), Some("before"));
-    assert_eq!(reader_branches.database().reads.load(Ordering::SeqCst), 1);
+    assert_eq!(reader_branches.store().reads.load(Ordering::SeqCst), 1);
     assert_eq!(branches.head().unwrap(), 2);
     let latest = reader.get(ReadTarget::Head, KEY, None).unwrap();
     assert_eq!(latest.cells[b"name".as_slice()].as_str(), Some("after"));
@@ -111,7 +111,7 @@ fn binding(key: RecordKey) -> CellKey {
 
 // Explicit initialized state, as supplied by the future connection/genesis layer.
 // Build the real cell trie so seal/commit exercise production root updates.
-fn initialize(db: &impl Database) {
+fn initialize(db: &impl Store) {
     let mut changes = Vec::new();
     let mut put = |id, name: CellNameRef<'_>, value| {
         changes.push(CellChange::Put {
@@ -163,18 +163,18 @@ fn initialize(db: &impl Database) {
 }
 
 fn setup() -> (
-    MemoryDatabase,
-    Branches<MemoryDatabase, Keccak256Hasher>,
-    Records<MemoryDatabase, Keccak256Hasher>,
+    MemoryStore,
+    Branches<MemoryStore, Keccak256Hasher>,
+    Records<MemoryStore, Keccak256Hasher>,
 ) {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     initialize(&db);
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     (db, branches, records)
 }
-fn snapshot<D: Database>(
-    branches: &Branches<D, Keccak256Hasher>,
+fn snapshot<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
     b: u64,
 ) -> Vec<(CellKey, CellValue)> {
     branches
@@ -185,7 +185,7 @@ fn snapshot<D: Database>(
         })
         .unwrap()
 }
-fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u64 {
+fn allocated<S: Store>(branches: &Branches<S, Keccak256Hasher>, b: u64) -> u64 {
     branches
         .read(b, |cell_reader| {
             cell_reader.get(&CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID))
@@ -195,7 +195,7 @@ fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u6
         .as_u64()
         .unwrap()
 }
-fn id<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64, key: RecordKey) -> u64 {
+fn id<S: Store>(branches: &Branches<S, Keccak256Hasher>, b: u64, key: RecordKey) -> u64 {
     branches
         .read(b, |cell_reader| cell_reader.get(&binding(key)))
         .unwrap()
@@ -425,7 +425,7 @@ fn rollback_restores_records_bindings_allocator_and_incarnations() {
     assert_eq!(id(&branches, b, OTHER), 64);
 }
 
-fn lifecycle(db: impl Database + Clone) {
+fn lifecycle(db: impl Store + Clone) {
     initialize(&db);
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
@@ -559,15 +559,15 @@ fn lifecycle(db: impl Database + Clone) {
 
 #[test]
 fn memory_commit_reopen_and_index_lifecycle() {
-    lifecycle(MemoryDatabase::new());
+    lifecycle(MemoryStore::new());
 }
 
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_commit_and_database_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    lifecycle(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
+    lifecycle(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
+    let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     let b = branches.begin().unwrap();

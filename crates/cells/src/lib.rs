@@ -101,9 +101,9 @@
 //! ```
 //! use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells};
 //! use golemdb_merkle::{Keccak256Hasher, RootRef};
-//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hasher = Keccak256Hasher;
 //! let cells = Cells::new(&hasher);
 //! let key = CellKey::new(42, CellNameRef::parse_user(b"status", 64)?);

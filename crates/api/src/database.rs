@@ -3,7 +3,7 @@ use std::sync::Arc;
 use golemdb_branch::Branches;
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
 use golemdb_record::Records;
-use golemdb_storage::Database;
+use golemdb_storage::Store;
 
 use crate::{
     Api, ApiError, BranchId, BranchInfo, CommitId, GenesisConfig, HashAlgorithm,
@@ -35,11 +35,11 @@ impl GolemDb {
 
     /// Initialize or validate a caller-supplied backend and construct one engine.
     /// Separate calls create separate branch registries, even over shared storage.
-    pub fn from_backend<D: Database + Send + Sync + 'static>(
-        database: D,
+    pub fn from_backend<S: Store + Send + Sync + 'static>(
+        store: S,
         config: &OpenConfig,
     ) -> OpenResult<Self> {
-        crate::open_backend(database, config)?.into_golem_db()
+        crate::open_backend(store, config)?.into_golem_db()
     }
 
     /// Open durable storage. Close all handles before independently reopening the
@@ -78,15 +78,15 @@ impl GolemDb {
         &self.info
     }
 
-    pub(crate) fn from_opened<D: Database + Send + Sync + 'static>(
-        opened: OpenedDatabase<D>,
+    pub(crate) fn from_opened<S: Store + Send + Sync + 'static>(
+        opened: OpenedDatabase<S>,
     ) -> OpenResult<Self> {
         let genesis = *opened.genesis();
         let info = *opened.info();
-        let database = opened.into_database();
+        let store = opened.into_database();
         let engine: Arc<dyn Api + Send + Sync> = match genesis.hash_function {
-            HashAlgorithm::Keccak256 => Arc::new(Engine::new(database, Keccak256Hasher)?),
-            HashAlgorithm::Blake3 => Arc::new(Engine::new(database, Blake3Hasher)?),
+            HashAlgorithm::Keccak256 => Arc::new(Engine::new(store, Keccak256Hasher)?),
+            HashAlgorithm::Blake3 => Arc::new(Engine::new(store, Blake3Hasher)?),
         };
         Ok(Self {
             engine,
@@ -168,20 +168,20 @@ impl Api for GolemDb {
 
 /// Both layers reference the same branch registry. Business rules, locking, and
 /// transaction boundaries remain in record and branch, not in this adapter.
-struct Engine<D, H> {
-    branches: Branches<D, H>,
-    records: Records<D, H>,
+struct Engine<S, H> {
+    branches: Branches<S, H>,
+    records: Records<S, H>,
 }
 
-impl<D: Database, H: HashProvider> Engine<D, H> {
-    fn new(database: D, hasher: H) -> OpenResult<Self> {
-        let branches = Branches::new(database, hasher)?;
+impl<S: Store, H: HashProvider> Engine<S, H> {
+    fn new(store: S, hasher: H) -> OpenResult<Self> {
+        let branches = Branches::new(store, hasher)?;
         let records = Records::new(branches.clone());
         Ok(Self { branches, records })
     }
 }
 
-impl<D: Database, H: HashProvider> Api for Engine<D, H> {
+impl<S: Store, H: HashProvider> Api for Engine<S, H> {
     fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
         self.records
             .create(branch, key, cells.into_cells())

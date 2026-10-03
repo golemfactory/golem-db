@@ -7,9 +7,7 @@ use std::{
 };
 
 use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_backend};
-use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, StorageError, Table, WriteTransaction,
-};
+use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
 fn config() -> OpenConfig {
     OpenConfig::new(GenesisConfig {
@@ -31,16 +29,16 @@ enum Fault {
     Read,
 }
 
-struct Controlled<D> {
-    inner: D,
+struct Controlled<S> {
+    inner: S,
     fault: Fault,
     mutations: Arc<AtomicUsize>,
     max_key: usize,
     max_value: usize,
 }
 
-impl<D: Database> Controlled<D> {
-    fn new(inner: D, fault: Fault) -> Self {
+impl<S: Store> Controlled<S> {
+    fn new(inner: S, fault: Fault) -> Self {
         let max_key = inner.max_key_size();
         let max_value = inner.max_value_size();
         Self {
@@ -59,13 +57,13 @@ struct ControlledWrite<W> {
     mutations: Arc<AtomicUsize>,
 }
 
-impl<D: Database> Database for Controlled<D> {
+impl<S: Store> Store for Controlled<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = ControlledWrite<D::Write<'a>>
+        = ControlledWrite<S::Write<'a>>
     where
         Self: 'a;
     fn max_key_size(&self) -> usize {
@@ -143,8 +141,8 @@ impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
     }
 }
 
-fn failures(db: impl Database + Clone) {
-    let baseline = Controlled::new(MemoryDatabase::new(), Fault::None);
+fn failures(db: impl Store + Clone) {
+    let baseline = Controlled::new(MemoryStore::new(), Fault::None);
     let count = baseline.mutations.clone();
     let expected = *open_backend(baseline, &config()).unwrap().info();
     let writes = count.load(Ordering::SeqCst);
@@ -170,7 +168,7 @@ fn failures(db: impl Database + Clone) {
             )))
             .is_err()
         );
-        // No partial rows or poisoned MemoryDatabase writer remain after panic.
+        // No partial rows or poisoned MemoryStore writer remain after panic.
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
     }
     assert_eq!(
@@ -187,14 +185,14 @@ fn failures(db: impl Database + Clone) {
 
 #[test]
 fn memory_genesis_is_atomic_at_every_write_and_reopen_is_read_only() {
-    failures(MemoryDatabase::new());
+    failures(MemoryStore::new());
 }
 
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_genesis_is_atomic_at_every_write_and_reopen_is_read_only() {
     let dir = tempfile::tempdir().unwrap();
-    failures(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    failures(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }
 
 #[test]
@@ -213,7 +211,7 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
             max_str_len: string,
             max_bytes_len: bytes,
         };
-        let db = MemoryDatabase::new();
+        let db = MemoryStore::new();
         let mut bounded = Controlled::new(db.clone(), Fault::None);
         bounded.max_key = max_key;
         bounded.max_value = max_value;
@@ -223,7 +221,7 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
         ));
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
     }
-    let mut bounded = Controlled::new(MemoryDatabase::new(), Fault::None);
+    let mut bounded = Controlled::new(MemoryStore::new(), Fault::None);
     bounded.max_key = 98;
     bounded.max_value = 16384;
     assert!(open_backend(bounded, &config()).is_ok());
