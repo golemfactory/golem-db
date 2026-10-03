@@ -95,15 +95,15 @@
 //! [`Cells`] reads owned values, scans a record, and applies a net batch to both
 //! the flat `Cell` table and its branch-only `CellTrie`. The caller supplies the
 //! matching root and owns the transaction; it can write history and the head in
-//! the same transaction. Deployment admission and index updates are engine work.
+//! the same transaction. Deployment admission and index updates belong to the layers above.
 //! Enable `mdbx` for persistent storage through the same interface.
 //!
 //! ```
 //! use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells};
 //! use golemdb_merkle::{Keccak256Hasher, RootRef};
-//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hasher = Keccak256Hasher;
 //! let cells = Cells::new(&hasher);
 //! let key = CellKey::new(42, CellNameRef::parse_user(b"status", 64)?);

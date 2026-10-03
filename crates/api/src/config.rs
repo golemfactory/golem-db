@@ -38,17 +38,17 @@ impl GenesisConfig {
         let key = (name + 8)
             .max(name + 2 + u64::from(limits.max_str_len).max(32))
             .max(40);
-        // Format 1 reserves 16 KiB for fixed engine values: trie nodes, metadata,
+        // Format 1 reserves 16 KiB for fixed internal values: trie nodes, metadata,
         // root pairs, and canonical single-u16-domain Roaring containers.
         let value = (1 + u64::from(limits.max_bytes_len.max(limits.max_str_len))).max(16 * 1024);
         if key > max_key as u64 {
             return Err(OpenError::InvalidConfig(format!(
-                "configured cells/index terms need {key}-byte keys; backend supports {max_key}"
+                "configured cells/index terms need {key}-byte keys; store supports {max_key}"
             )));
         }
         if value > max_value as u64 {
             return Err(OpenError::InvalidConfig(format!(
-                "configured cells and engine rows need {value}-byte values; backend supports {max_value}"
+                "configured cells and internal rows need {value}-byte values; store supports {max_value}"
             )));
         }
         Ok(())

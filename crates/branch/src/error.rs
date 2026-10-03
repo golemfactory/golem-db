@@ -17,7 +17,7 @@ pub enum BranchError {
     Index(#[from] golemdb_index::IndexError),
     #[error(transparent)]
     Term(#[from] golemdb_index::TermError),
-    #[error("database has no Superblock/head row; initialize genesis before opening branches")]
+    #[error("store has no Superblock/head row; initialize genesis before opening branches")]
     MissingHead,
     #[error("Superblock/head must be 72 bytes, got {actual}")]
     InvalidHead { actual: usize },

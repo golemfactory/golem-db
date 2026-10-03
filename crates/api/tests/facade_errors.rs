@@ -7,45 +7,45 @@ use std::{
 };
 
 use golemdb_api::*;
-use golemdb_storage::{Database, MemoryDatabase, StorageError};
+use golemdb_storage::{MemoryStore, StorageError, Store};
 
-struct FailingDatabase<D> {
-    database: D,
+struct FailingStore<S> {
+    store: S,
     fail_reads: Arc<AtomicBool>,
     fail_writes: Arc<AtomicBool>,
 }
 
-impl<D: Database> Database for FailingDatabase<D> {
+impl<S: Store> Store for FailingStore<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = D::Write<'a>
+        = S::Write<'a>
     where
         Self: 'a;
     fn max_key_size(&self) -> usize {
-        self.database.max_key_size()
+        self.store.max_key_size()
     }
     fn max_value_size(&self) -> usize {
-        self.database.max_value_size()
+        self.store.max_value_size()
     }
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         if self.fail_reads.load(Ordering::SeqCst) {
             return Err(injected());
         }
-        self.database.begin_read()
+        self.store.begin_read()
     }
     fn begin_write(&self) -> golemdb_storage::Result<Self::Write<'_>> {
         if self.fail_writes.load(Ordering::SeqCst) {
             return Err(injected());
         }
-        self.database.begin_write()
+        self.store.begin_write()
     }
 }
 
 fn injected() -> StorageError {
-    StorageError::Backend(std::io::Error::other("injected facade storage failure").into())
+    StorageError::Implementation(std::io::Error::other("injected facade storage failure").into())
 }
 
 fn diagnostic(error: ApiError) {
@@ -62,10 +62,10 @@ fn diagnostic(error: ApiError) {
         }
         source = cause.source();
     }
-    panic!("the backend diagnostic must survive the facade's error conversion");
+    panic!("the store diagnostic must survive the facade's error conversion");
 }
 
-fn failure_contract(database: impl Database + Send + Sync + 'static) {
+fn failure_contract(store: impl Store + Send + Sync + 'static) {
     let fail_reads = Arc::new(AtomicBool::new(false));
     let fail_writes = Arc::new(AtomicBool::new(false));
     let config = OpenConfig::new(GenesisConfig {
@@ -76,9 +76,9 @@ fn failure_contract(database: impl Database + Send + Sync + 'static) {
             max_bytes_len: 128,
         },
     });
-    let db = GolemDb::from_backend(
-        FailingDatabase {
-            database,
+    let db = Database::from_store(
+        FailingStore {
+            store,
             fail_reads: fail_reads.clone(),
             fail_writes: fail_writes.clone(),
         },
@@ -129,12 +129,12 @@ fn failure_contract(database: impl Database + Send + Sync + 'static) {
 
 #[test]
 fn memory_facade_retains_error_sources_and_can_retry_failed_commit() {
-    failure_contract(MemoryDatabase::new());
+    failure_contract(MemoryStore::new());
 }
 
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_facade_retains_error_sources_and_can_retry_failed_commit() {
     let dir = tempfile::tempdir().unwrap();
-    failure_contract(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    failure_contract(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }

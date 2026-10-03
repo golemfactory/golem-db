@@ -9,21 +9,19 @@ use golemdb_cells::{
 };
 use golemdb_merkle::Keccak256Hasher;
 use golemdb_record::{CellPatch, RecordKey, Records};
-use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, StorageError, Table, WriteTransaction,
-};
+use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
-struct FaultDatabase {
-    inner: MemoryDatabase,
+struct FaultStore {
+    inner: MemoryStore,
     fail: Arc<AtomicBool>,
 }
 struct FaultRead<R> {
     inner: R,
     fail: Arc<AtomicBool>,
 }
-impl Database for FaultDatabase {
-    type Read<'a> = FaultRead<<MemoryDatabase as Database>::Read<'a>>;
-    type Write<'a> = <MemoryDatabase as Database>::Write<'a>;
+impl Store for FaultStore {
+    type Read<'a> = FaultRead<<MemoryStore as Store>::Read<'a>>;
+    type Write<'a> = <MemoryStore as Store>::Write<'a>;
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         Ok(FaultRead {
             inner: self.inner.begin_read()?,
@@ -44,7 +42,7 @@ impl<R: ReadTransaction> ReadTransaction for FaultRead<R> {
             && table == tables::CELL
             && key == CellKey::new(64, CellNameRef::raw(b"z")).encode()
         {
-            return Err(StorageError::Backend(
+            return Err(StorageError::Implementation(
                 "injected late patch read failure".into(),
             ));
         }
@@ -61,7 +59,7 @@ fn value(ty: CellType, bytes: &[u8]) -> CellValue {
 
 #[test]
 fn late_storage_failure_restores_earlier_patch_writes_and_checkpoint_state() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     // Minimal read-only origin fixture; this test never seals or commits it.
     let mut tx = db.begin_write().unwrap();
     tx.put(Table("Superblock"), b"head", &[0; 72]).unwrap();
@@ -99,7 +97,7 @@ fn late_storage_failure_restores_earlier_patch_writes_and_checkpoint_state() {
 
     let fail = Arc::new(AtomicBool::new(false));
     let branches = Branches::new(
-        FaultDatabase {
+        FaultStore {
             inner: db,
             fail: fail.clone(),
         },

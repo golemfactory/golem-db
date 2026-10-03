@@ -13,9 +13,9 @@
 //! use golemdb_cells::CellType;
 //! use golemdb_index::{Index, IndexTerm, PostingChange};
 //! use golemdb_merkle::{Keccak256Hasher, RootRef};
-//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hasher = Keccak256Hasher;
 //! let index = Index::new(&hasher);
 //! let term = IndexTerm::new("color", CellType::Str, b"blue")?;
@@ -23,7 +23,7 @@
 //! let update = index.apply(&mut tx, RootRef::Empty, [
 //!     PostingChange::Add { term: term.clone(), record_id: 42 },
 //! ])?;
-//! // The engine can write its head and history in this same transaction.
+//! // The caller can write its head and history in this same transaction.
 //! tx.commit()?;
 //! let read = db.begin_read()?;
 //! assert!(index.bitmap(&read, &term)?.unwrap().treemap().contains(42));

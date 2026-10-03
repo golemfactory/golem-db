@@ -11,7 +11,7 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 - `crates/cells` (package `golemdb-cells`) — the wire format for "Cells",
   GolemDB's typed value encoding
 - `crates/storage` (package `golemdb-storage`) — transactional ordered key/value
-  traits, bidirectional cursors, range scans, memory and optional MDBX backends
+  traits, bidirectional cursors, range scans, memory and optional MDBX store implementations
 - `crates/index` (package `golemdb-index`) — transactional posting updates across
   bitmap/index tries, ordered terms and scans, canonical chunks, and query bitmaps
 - `crates/merkle` (package `golemdb-merkle`) — branch-only persistent Merkle trie,
@@ -24,7 +24,7 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   identity and bindings; branch work-in-progress and committed-head reads
   ([scope and usage](crates/record/README.md))
 - `crates/api` (package `golemdb-api`) — one public `Api` trait implemented by the
-  cloneable `GolemDb` facade, explicit input builders, projections, errors, and
+  cloneable `Database` facade, explicit input builders, projections, errors, and
   atomic memory/MDBX opening from typed or YAML genesis
   ([scope and usage](crates/api/README.md))
 

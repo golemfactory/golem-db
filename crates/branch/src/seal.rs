@@ -55,7 +55,7 @@ pub(crate) fn compute(
         false,
     )?
     .into();
-    // The engine's system write is last and authoritative if a low-level caller
+    // The #roots system write is last and authoritative if a low-level caller
     // staged this key. Record-layer authorization remains outside branch.
     let changes = overlay.changes().chain([CellChange::Put {
         key: roots_key,

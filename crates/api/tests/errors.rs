@@ -69,7 +69,7 @@ fn invalid_input_and_internal_failures_keep_diagnostic_sources() {
             .is_some()
     );
     let error = ApiError::from(BranchError::Storage(
-        golemdb_storage::StorageError::Backend("disk error".into()),
+        golemdb_storage::StorageError::Implementation("disk error".into()),
     ));
     assert!(matches!(&error, ApiError::Internal { .. }));
     assert!(error.to_string().contains("disk error"));

@@ -2,7 +2,7 @@ use std::sync::{Arc, Barrier};
 
 use golemdb_api::*;
 use golemdb_cells::system;
-use golemdb_storage::MemoryDatabase;
+use golemdb_storage::MemoryStore;
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const MISSING: RecordKey = RecordKey([0x43; 32]);
@@ -27,14 +27,14 @@ fn input(price: i32) -> RecordInput {
 }
 
 // Every contract is exercised through the same public handle on both hashes
-// and both backends. A directory remains alive until all facade clones drop.
-fn each_backend(contract: fn(GolemDb)) {
+// and both stores. A directory remains alive until all facade clones drop.
+fn each_store(contract: fn(Database)) {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
-        contract(GolemDb::open_memory(&config(hash)).unwrap());
+        contract(Database::open_memory(&config(hash)).unwrap());
         #[cfg(feature = "mdbx")]
         {
             let dir = tempfile::tempdir().unwrap();
-            contract(GolemDb::open_database(dir.path(), &config(hash)).unwrap());
+            contract(Database::open_database(dir.path(), &config(hash)).unwrap());
         }
     }
 }
@@ -57,7 +57,7 @@ fn allocator(api: &dyn Api, target: ReadTarget) -> u64 {
 
 #[test]
 fn crud_pending_reads_projections_and_recreation() {
-    each_backend(|db| {
+    each_store(|db| {
         let api: Arc<dyn Api + Send + Sync> = Arc::new(db.clone());
         assert_eq!(api.head().unwrap(), 0);
         let branch = api.begin().unwrap();
@@ -167,7 +167,7 @@ fn crud_pending_reads_projections_and_recreation() {
 
 #[test]
 fn checkpoints_rollback_seal_and_discard_share_state_across_clones() {
-    each_backend(|db| {
+    each_store(|db| {
         let clone = db.clone();
         let branch = db.begin().unwrap();
         clone.create(branch, KEY, input(50)).unwrap();
@@ -226,7 +226,7 @@ fn checkpoints_rollback_seal_and_discard_share_state_across_clones() {
 
 #[test]
 fn reserved_records_limits_and_failed_mutations_preserve_state() {
-    each_backend(|db| {
+    each_store(|db| {
         let branch = db.begin().unwrap();
         let original = db.branch_info(branch).unwrap();
         for system in system::ALL {
@@ -298,7 +298,7 @@ fn reserved_records_limits_and_failed_mutations_preserve_state() {
 
 #[test]
 fn competing_commits_and_cross_thread_clones_use_one_registry() {
-    each_backend(|db| {
+    each_store(|db| {
         let first = db.begin().unwrap();
         let clone = db.clone();
         std::thread::spawn(move || clone.create(first, KEY, input(10)).unwrap())
@@ -334,16 +334,16 @@ fn competing_commits_and_cross_thread_clones_use_one_registry() {
 }
 
 #[test]
-fn opening_setup_conversion_and_separate_engines_do_not_share_branch_handles() {
+fn opening_setup_conversion_and_separate_databases_do_not_share_branch_handles() {
     let cfg = config(HashAlgorithm::Blake3);
-    let storage = MemoryDatabase::new();
-    let setup = open_backend(storage.clone(), &cfg).unwrap();
+    let storage = MemoryStore::new();
+    let setup = open_store(storage.clone(), &cfg).unwrap();
     let info = *setup.info();
-    let first = setup.into_golem_db().unwrap();
+    let first = setup.into_database().unwrap();
     assert_eq!(first.info(), &info);
     let branch = first.begin().unwrap();
     first.create(branch, KEY, input(50)).unwrap();
-    let second = GolemDb::from_backend(storage, &cfg).unwrap();
+    let second = Database::from_store(storage, &cfg).unwrap();
     assert!(matches!(
         second.branch_info(branch),
         Err(ApiError::HandleInvalid)
@@ -366,7 +366,7 @@ fn durable_facade_reopens_committed_state_and_discards_pending_work() {
         let cfg = config(hash);
         let dir = tempfile::tempdir().unwrap();
         let (sealed, pending, genesis_id) = {
-            let db = GolemDb::open_with_options(dir.path(), &cfg, MdbxOptions::default()).unwrap();
+            let db = Database::open_with_options(dir.path(), &cfg, MdbxOptions::default()).unwrap();
             let branch = db.begin().unwrap();
             db.create(branch, KEY, input(50)).unwrap();
             let sealed = db.seal(branch).unwrap();
@@ -375,7 +375,7 @@ fn durable_facade_reopens_committed_state_and_discards_pending_work() {
             db.delete(pending, KEY).unwrap();
             (sealed, pending, db.info().genesis_id)
         };
-        let db = GolemDb::open_database(
+        let db = Database::open_database(
             dir.path(),
             &OpenConfig {
                 mode: OpenMode::ExistingOnly,

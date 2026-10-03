@@ -39,7 +39,7 @@ pub fn read_head_state(tx: &impl ReadTransaction) -> Result<Head> {
 }
 
 /// Stage head metadata in the same transaction as its cells and trie writes.
-/// This is a trusted engine operation, not a public data API operation.
+/// This is a trusted library operation, not a public data API operation.
 pub fn write_head(tx: &mut impl WriteTransaction, head: &Head) -> Result<()> {
     let mut bytes = [0; HEAD_BYTES];
     bytes[..8].copy_from_slice(&head.commit_id.to_be_bytes());

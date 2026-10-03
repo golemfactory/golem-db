@@ -8,7 +8,7 @@ use std::{error::Error, fmt};
 /// Strings have no length prefix. Signed numbers flip the sign bit; floats use
 /// the sortable IEEE transform after rejecting NaNs and normalizing zero.
 /// Ordering is meaningful within one name/type prefix. Name/value size policies
-/// beyond the cell codec belong to the engine, which knows deployment limits.
+/// beyond the cell codec belong to the record layer, which knows deployment limits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IndexTerm(Vec<u8>);
 

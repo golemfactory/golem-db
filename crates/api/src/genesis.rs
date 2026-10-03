@@ -53,7 +53,7 @@ fn allocator_key() -> CellKey {
     CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID)
 }
 
-/// Identity is independent of YAML formatting, field order, paths, and backend
+/// Identity is independent of YAML formatting, field order, paths, and store
 /// options. It commits to format IDs and all sorted, length-framed genesis cells.
 fn identity(
     config: &GenesisConfig,

@@ -1,5 +1,5 @@
 //! Immutable segment addressing. Storage is not implemented yet: every operation
-//! on GolemDb returns ApiError::NotImplemented without inspecting or changing state.
+//! on Database returns ApiError::NotImplemented without inspecting or changing state.
 
 /// Dense, segment-local append position. An append's result is provisional until
 /// its sealed branch commits; losing or discarded branches publish no position.

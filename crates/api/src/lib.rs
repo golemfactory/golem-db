@@ -4,15 +4,15 @@
 //! Consumers can use `Arc<dyn Api + Send + Sync>`; builders accept explicit cell values.
 //! All results own their data and expose no storage transaction or cell writer.
 //!
-//! [`GolemDb`] implements Api on a cloneable handle with a shared branch registry.
+//! [`Database`] implements Api on a cloneable handle with a shared branch registry.
 //! Its constructors initialize or validate genesis and select the configured hash.
 //! These contracts are unmetered: no budget, receipt, debug flag, or record version.
 //! Current record storage supports branch reads and committed-head reads only.
-//! Immutable-data types and methods are exposed, but every such GolemDb call
+//! Immutable-data types and methods are exposed, but every such Database call
 //! returns [`ApiError::NotImplemented`] immediately without I/O or state changes.
 //!
 //! ```
-//! use golemdb_api::{Api, CellLimits, CellValue, GenesisConfig, GolemDb,
+//! use golemdb_api::{Api, CellLimits, CellValue, Database, GenesisConfig,
 //!     HashAlgorithm, OpenConfig, ReadTarget, RecordInput, RecordKey, Projection};
 //!
 //! let config = OpenConfig::new(GenesisConfig {
@@ -21,7 +21,7 @@
 //!         max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
 //!     },
 //! });
-//! let db = GolemDb::open_memory(&config)?;
+//! let db = Database::open_memory(&config)?;
 //! let branch = db.begin()?;
 //! let key = RecordKey([0x42; 32]);
 //! db.create(branch, key, RecordInput::new()
@@ -46,7 +46,7 @@ mod open_error;
 mod types;
 
 pub use config::{GenesisConfig, OpenConfig, OpenMode};
-pub use database::GolemDb;
+pub use database::Database;
 pub use error::{ApiError, Result};
 pub use golemdb_cells::CellLimits;
 pub use golemdb_merkle::HashAlgorithm;
@@ -56,7 +56,7 @@ pub use immutable_data::{
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow,
 };
 pub use input::{PatchInput, RecordInput};
-pub use open::{OpenInfo, OpenedDatabase, open_backend, open_memory};
+pub use open::{OpenInfo, OpenedStore, open_memory, open_store};
 #[cfg(feature = "mdbx")]
 pub use open::{open, open_database, open_with_options};
 pub use open_error::{OpenError, OpenResult};
@@ -85,7 +85,7 @@ pub trait Api {
     /// Delete the record and its binding without reclaiming the internal ID.
     fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()>;
 
-    // Branch lifecycle. IDs are valid only for their issuing engine.
+    // Branch lifecycle. IDs are valid only for the database that issued them.
     fn head(&self) -> Result<CommitId>;
     fn begin(&self) -> Result<BranchId>;
     fn branch_info(&self, branch: BranchId) -> Result<BranchInfo>;

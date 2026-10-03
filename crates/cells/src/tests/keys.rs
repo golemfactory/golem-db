@@ -1,5 +1,5 @@
 //! The cell-name tables and the assertions over them: the §3 grammar, the
-//! engine `#`/`@` names, and the unvalidated `raw` keys.
+//! reserved `#`/`@` names, and the unvalidated `raw` keys.
 
 use std::collections::BTreeMap;
 
@@ -39,8 +39,8 @@ const REJECT: &[(&str, &[u8], CellNameError)] = &[
     ("empty",            b"",        CellNameError::Empty),
     ("leading digit",    b"9lives",  CellNameError::NotAlphaFirst(b'9')),
     ("leading separator", b"_private", CellNameError::NotAlphaFirst(b'_')),
-    // Engine prefixes cannot be user names.
-    ("engine sigil #",   b"#key",    CellNameError::NotAlphaFirst(b'#')),
+    // Reserved prefixes cannot be user names.
+    ("system sigil #",   b"#key",    CellNameError::NotAlphaFirst(b'#')),
     ("admin sigil @",    b"@admin",  CellNameError::NotAlphaFirst(b'@')),
     ("dollar alone",     b"$",       CellNameError::Empty),
     ("double dollar",    b"$$x",     CellNameError::NotAlphaFirst(b'$')),
@@ -101,10 +101,10 @@ fn length_cap_comes_from_the_caller() {
 }
 
 #[test]
-fn engine_names_take_a_sigil_then_the_grammar() {
+fn reserved_names_take_a_sigil_then_the_grammar() {
     for key in reserved::ALL {
         assert_eq!(
-            CellNameRef::parse_engine(key.as_bytes()).map(|k| k.as_bytes()),
+            CellNameRef::parse_reserved(key.as_bytes()).map(|k| k.as_bytes()),
             Ok(key.as_bytes()),
             "{key}"
         );
@@ -115,24 +115,24 @@ fn engine_names_take_a_sigil_then_the_grammar() {
         );
     }
 
-    assert!(CellNameRef::parse_engine(b"@admin").is_ok());
-    assert!(CellNameRef::parse_engine(b"$owner").is_err());
+    assert!(CellNameRef::parse_reserved(b"@admin").is_ok());
+    assert!(CellNameRef::parse_reserved(b"$owner").is_err());
     // The name behind the sigil obeys the same rules, offsets included.
-    assert_eq!(CellNameRef::parse_engine(b"#"), Err(CellNameError::Empty));
+    assert_eq!(CellNameRef::parse_reserved(b"#"), Err(CellNameError::Empty));
     assert_eq!(
-        CellNameRef::parse_engine(b"#9lives"),
+        CellNameRef::parse_reserved(b"#9lives"),
         Err(CellNameError::NotAlphaFirst(b'9'))
     );
     assert_eq!(
-        CellNameRef::parse_engine(b"#max Len"),
+        CellNameRef::parse_reserved(b"#max Len"),
         Err(CellNameError::InvalidByte { at: 4, byte: b' ' })
     );
-    // A sigil is required; a plain user name is not an engine name.
+    // A sigil is required; a plain user name is not a reserved name.
     assert_eq!(
-        CellNameRef::parse_engine(b"price"),
+        CellNameRef::parse_reserved(b"price"),
         Err(CellNameError::InvalidByte { at: 0, byte: b'p' })
     );
-    assert_eq!(CellNameRef::parse_engine(b""), Err(CellNameError::Empty));
+    assert_eq!(CellNameRef::parse_reserved(b""), Err(CellNameError::Empty));
 }
 
 /// The reserved constants are spelled as §3/§4 spell them.
@@ -214,11 +214,11 @@ proptest! {
         }
     }
 
-    /// An engine name is a sigil plus a name that would be valid on its own,
+    /// A reserved name is a sigil plus a name that would be valid on its own,
     /// and never collides with the user name space.
     #[test]
-    fn engine_names_are_a_sigil_plus_a_user_name(name in prop::collection::vec(any::<u8>(), 0..80)) {
-        if let Ok(key) = CellNameRef::parse_engine(&name) {
+    fn reserved_names_are_a_sigil_plus_a_user_name(name in prop::collection::vec(any::<u8>(), 0..80)) {
+        if let Ok(key) = CellNameRef::parse_reserved(&name) {
             let bytes = key.as_bytes();
             prop_assert!(matches!(bytes[0], b'#' | b'@'));
             prop_assert!(CellNameRef::parse_user(&bytes[1..], bytes.len()).is_ok());

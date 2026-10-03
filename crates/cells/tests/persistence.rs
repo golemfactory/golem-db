@@ -2,7 +2,7 @@
 
 use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells, tables};
 use golemdb_merkle::{Hash, Keccak256Hasher, RootRef};
-use golemdb_storage::{Database, MdbxDatabase, ReadTransaction, Table, WriteTransaction};
+use golemdb_storage::{MdbxStore, ReadTransaction, Store, Table, WriteTransaction};
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
 const HEAD: Table = Table("TestHead");
@@ -24,7 +24,7 @@ fn empty_singleton_and_branch_roots_survive_environment_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let cells = Cells::new(&HASH);
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = cells
             .apply(&mut tx, RootRef::Empty, [put(b"a")])
@@ -34,7 +34,7 @@ fn empty_singleton_and_branch_roots_survive_environment_reopen() {
         tx.commit().unwrap();
     }
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = cells.reopen(&tx, saved_root(&tx)).unwrap();
         assert!(matches!(root, RootRef::Leaf(_)));
@@ -45,7 +45,7 @@ fn empty_singleton_and_branch_roots_survive_environment_reopen() {
         tx.commit().unwrap();
     }
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = cells.reopen(&tx, saved_root(&tx)).unwrap();
         assert!(matches!(root, RootRef::Branch(_)));
@@ -58,7 +58,7 @@ fn empty_singleton_and_branch_roots_survive_environment_reopen() {
         tx.commit().unwrap();
     }
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = cells.reopen(&tx, saved_root(&tx)).unwrap();
         assert!(matches!(root, RootRef::Leaf(_)));
@@ -77,7 +77,7 @@ fn empty_singleton_and_branch_roots_survive_environment_reopen() {
         tx.put(HEAD, b"root", &discarded.hash(&HASH)).unwrap();
         // Drop leaves the empty committed state and its head intact.
     }
-    let db = MdbxDatabase::open(dir.path()).unwrap();
+    let db = MdbxStore::open(dir.path()).unwrap();
     let tx = db.begin_read().unwrap();
     assert_eq!(cells.reopen(&tx, saved_root(&tx)).unwrap(), RootRef::Empty);
     assert!(cells.scan_record(&tx, 42).unwrap().next().is_none());

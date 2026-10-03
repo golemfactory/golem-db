@@ -7,41 +7,41 @@ use std::{
 };
 
 use golemdb_api::*;
-use golemdb_storage::{Database, MemoryDatabase};
+use golemdb_storage::{MemoryStore, Store};
 
-struct Guarded<D> {
-    database: D,
+struct Guarded<S> {
+    store: S,
     forbid_io: Arc<AtomicBool>,
 }
 
-impl<D: Database> Database for Guarded<D> {
+impl<S: Store> Store for Guarded<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = D::Write<'a>
+        = S::Write<'a>
     where
         Self: 'a;
     fn max_key_size(&self) -> usize {
-        self.database.max_key_size()
+        self.store.max_key_size()
     }
     fn max_value_size(&self) -> usize {
-        self.database.max_value_size()
+        self.store.max_value_size()
     }
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         assert!(
             !self.forbid_io.load(Ordering::SeqCst),
             "stub must not read storage"
         );
-        self.database.begin_read()
+        self.store.begin_read()
     }
     fn begin_write(&self) -> golemdb_storage::Result<Self::Write<'_>> {
         assert!(
             !self.forbid_io.load(Ordering::SeqCst),
             "stub must not write storage"
         );
-        self.database.begin_write()
+        self.store.begin_write()
     }
 }
 
@@ -85,7 +85,7 @@ fn check(api: &dyn Api, branch: BranchId) {
     }
 }
 
-fn contract(database: impl Database + Send + Sync + 'static, hash_function: HashAlgorithm) {
+fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgorithm) {
     let forbid_io = Arc::new(AtomicBool::new(false));
     let config = OpenConfig::new(GenesisConfig {
         hash_function,
@@ -95,9 +95,9 @@ fn contract(database: impl Database + Send + Sync + 'static, hash_function: Hash
             max_bytes_len: 128,
         },
     });
-    let db = GolemDb::from_backend(
+    let db = Database::from_store(
         Guarded {
-            database,
+            store,
             forbid_io: forbid_io.clone(),
         },
         &config,
@@ -150,7 +150,7 @@ fn contract(database: impl Database + Send + Sync + 'static, hash_function: Hash
 #[test]
 fn memory_stubs_return_explicit_errors_without_io_or_state_changes() {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
-        contract(MemoryDatabase::new(), hash);
+        contract(MemoryStore::new(), hash);
     }
 }
 
@@ -160,7 +160,7 @@ fn mdbx_stubs_return_explicit_errors_without_io_or_state_changes() {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
         let directory = tempfile::tempdir().unwrap();
         contract(
-            golemdb_storage::MdbxDatabase::open(directory.path()).unwrap(),
+            golemdb_storage::MdbxStore::open(directory.path()).unwrap(),
             hash,
         );
     }

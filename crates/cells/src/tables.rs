@@ -1,4 +1,4 @@
-//! Physical tables shared with the engine, updated in its transaction.
+//! Physical tables shared with the layers above, updated in their transaction.
 
 use golemdb_storage::Table;
 

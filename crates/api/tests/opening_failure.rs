@@ -6,10 +6,8 @@ use std::{
     },
 };
 
-use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_backend};
-use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, StorageError, Table, WriteTransaction,
-};
+use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_store};
+use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
 fn config() -> OpenConfig {
     OpenConfig::new(GenesisConfig {
@@ -31,16 +29,16 @@ enum Fault {
     Read,
 }
 
-struct Controlled<D> {
-    inner: D,
+struct Controlled<S> {
+    inner: S,
     fault: Fault,
     mutations: Arc<AtomicUsize>,
     max_key: usize,
     max_value: usize,
 }
 
-impl<D: Database> Controlled<D> {
-    fn new(inner: D, fault: Fault) -> Self {
+impl<S: Store> Controlled<S> {
+    fn new(inner: S, fault: Fault) -> Self {
         let max_key = inner.max_key_size();
         let max_value = inner.max_value_size();
         Self {
@@ -59,13 +57,13 @@ struct ControlledWrite<W> {
     mutations: Arc<AtomicUsize>,
 }
 
-impl<D: Database> Database for Controlled<D> {
+impl<S: Store> Store for Controlled<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = ControlledWrite<D::Write<'a>>
+        = ControlledWrite<S::Write<'a>>
     where
         Self: 'a;
     fn max_key_size(&self) -> usize {
@@ -87,7 +85,7 @@ impl<D: Database> Database for Controlled<D> {
 }
 
 fn injected() -> StorageError {
-    StorageError::Backend("injected opening failure".into())
+    StorageError::Implementation("injected opening failure".into())
 }
 
 impl<W: ReadTransaction> ReadTransaction for ControlledWrite<W> {
@@ -143,17 +141,17 @@ impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
     }
 }
 
-fn failures(db: impl Database + Clone) {
-    let baseline = Controlled::new(MemoryDatabase::new(), Fault::None);
+fn failures(db: impl Store + Clone) {
+    let baseline = Controlled::new(MemoryStore::new(), Fault::None);
     let count = baseline.mutations.clone();
-    let expected = *open_backend(baseline, &config()).unwrap().info();
+    let expected = *open_store(baseline, &config()).unwrap().info();
     let writes = count.load(Ordering::SeqCst);
     assert!(writes > 10);
     for fault in (1..=writes)
         .map(Fault::Write)
         .chain([Fault::Commit, Fault::Read])
     {
-        let error = open_backend(Controlled::new(db.clone(), fault), &config())
+        let error = open_store(Controlled::new(db.clone(), fault), &config())
             .err()
             .expect("injected failure must abort opening");
         assert!(
@@ -164,37 +162,34 @@ fn failures(db: impl Database + Clone) {
     }
     for step in [1, writes / 2, writes] {
         assert!(
-            std::panic::catch_unwind(AssertUnwindSafe(|| open_backend(
+            std::panic::catch_unwind(AssertUnwindSafe(|| open_store(
                 Controlled::new(db.clone(), Fault::Panic(step)),
                 &config()
             )))
             .is_err()
         );
-        // No partial rows or poisoned MemoryDatabase writer remain after panic.
+        // No partial rows or poisoned MemoryStore writer remain after panic.
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
     }
-    assert_eq!(
-        *open_backend(db.clone(), &config()).unwrap().info(),
-        expected
-    );
+    assert_eq!(*open_store(db.clone(), &config()).unwrap().info(), expected);
     for fault in [Fault::Write(1), Fault::Commit] {
         let observed = Controlled::new(db.clone(), fault);
         let count = observed.mutations.clone();
-        assert!(!open_backend(observed, &config()).unwrap().info().created);
+        assert!(!open_store(observed, &config()).unwrap().info().created);
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 }
 
 #[test]
 fn memory_genesis_is_atomic_at_every_write_and_reopen_is_read_only() {
-    failures(MemoryDatabase::new());
+    failures(MemoryStore::new());
 }
 
 #[cfg(feature = "mdbx")]
 #[test]
 fn mdbx_genesis_is_atomic_at_every_write_and_reopen_is_read_only() {
     let dir = tempfile::tempdir().unwrap();
-    failures(golemdb_storage::MdbxDatabase::open(dir.path()).unwrap());
+    failures(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }
 
 #[test]
@@ -205,7 +200,7 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
         (32, 64, 128, 97, usize::MAX), // index needs 32 + 2 + 64
         (32, 0, 128, 65, usize::MAX),  // u256 needs 32 bytes even with zero string cap
         (32, 64, 16384, 98, 16384),    // cell tag needs one more byte
-        (32, 64, 128, 98, 16383),      // engine rows need their own allowance
+        (32, 64, 128, 98, 16383),      // internal rows need their own allowance
         (u32::MAX, u32::MAX, u32::MAX, u32::MAX as usize, usize::MAX),
     ] {
         cfg.genesis.cell_limits = CellLimits {
@@ -213,18 +208,18 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
             max_str_len: string,
             max_bytes_len: bytes,
         };
-        let db = MemoryDatabase::new();
+        let db = MemoryStore::new();
         let mut bounded = Controlled::new(db.clone(), Fault::None);
         bounded.max_key = max_key;
         bounded.max_value = max_value;
         assert!(matches!(
-            open_backend(bounded, &cfg),
+            open_store(bounded, &cfg),
             Err(OpenError::InvalidConfig(_))
         ));
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
     }
-    let mut bounded = Controlled::new(MemoryDatabase::new(), Fault::None);
+    let mut bounded = Controlled::new(MemoryStore::new(), Fault::None);
     bounded.max_key = 98;
     bounded.max_value = 16384;
-    assert!(open_backend(bounded, &config()).is_ok());
+    assert!(open_store(bounded, &config()).is_ok());
 }

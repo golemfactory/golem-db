@@ -13,9 +13,9 @@
 //!
 //! ```
 //! use golemdb_merkle::{Keccak256Hasher, HashProvider, LeafRef, RootRef, Trie};
-//! use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, Table, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let db = MemoryStore::new();
 //! let hash = Keccak256Hasher;
 //! let trie = Trie::<_, 6>::new(Table("ExampleBranches"), 0x05, &hash);
 //! let mut tx = db.begin_write()?;

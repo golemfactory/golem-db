@@ -1,18 +1,18 @@
 use golemdb_branch::{BranchId, Branches, CellRead, read_head};
 use golemdb_cells::{CellKey, CellLimits, CellName, CellReader, CellValue, reserved, system};
 use golemdb_merkle::HashProvider;
-use golemdb_storage::{Database, ReadTransaction};
+use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
     CellPatch, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordPatch, Result, state,
 };
 
 /// Cloneable record facade; clones share the supplied branch manager.
-pub struct Records<D, H> {
-    branches: Branches<D, H>,
+pub struct Records<S, H> {
+    branches: Branches<S, H>,
 }
 
-impl<D, H> Clone for Records<D, H> {
+impl<S, H> Clone for Records<S, H> {
     fn clone(&self) -> Self {
         Self {
             branches: self.branches.clone(),
@@ -20,8 +20,8 @@ impl<D, H> Clone for Records<D, H> {
     }
 }
 
-impl<D: Database, H: HashProvider> Records<D, H> {
-    pub fn new(branches: Branches<D, H>) -> Self {
+impl<S: Store, H: HashProvider> Records<S, H> {
+    pub fn new(branches: Branches<S, H>) -> Self {
         Self { branches }
     }
 
@@ -43,7 +43,7 @@ impl<D: Database, H: HashProvider> Records<D, H> {
                 })
                 .map_err(Into::into),
             ReadTarget::Head | ReadTarget::Commit(_) => {
-                let tx = self.branches.database().begin_read()?;
+                let tx = self.branches.store().begin_read()?;
                 let head = read_head(&tx)?;
                 if let ReadTarget::Commit(requested) = target
                     && requested != head

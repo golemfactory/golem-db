@@ -2,7 +2,7 @@ use crate::{Result, StorageError};
 
 /// Logical table name, created on the first `put` or `insert`.
 ///
-/// Backends may use native tables or isolated key prefixes. Names must be
+/// Store implementations may use native tables or isolated key prefixes. Names must be
 /// nonempty and contain no NUL bytes. Constants need no registration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Table(pub &'static str);

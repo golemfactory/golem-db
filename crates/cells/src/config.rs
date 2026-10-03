@@ -9,8 +9,8 @@ use crate::{CellNameError, CellNameRef, CellType, CellValueRef};
 /// Deployment policy in bytes, independent of the canonical cell codec.
 ///
 /// All fields are explicit: no local default may silently change admission.
-/// The engine must persist these values at genesis and validate them against
-/// backend ceilings, including the full attribute index key size.
+/// The database must persist these values at genesis and validate them against
+/// store ceilings, including the full attribute index key size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CellLimits {

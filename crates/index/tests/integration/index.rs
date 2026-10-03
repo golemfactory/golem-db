@@ -11,7 +11,7 @@ use golemdb_index::{
     BitmapContainer, INDEX_TRIE_PATH_BYTES, Index, IndexError, IndexTerm, PostingChange, tables,
 };
 use golemdb_merkle::{Hash, HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie};
-use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, WriteTransaction, scan_prefix};
+use golemdb_storage::{MemoryStore, ReadTransaction, Store, WriteTransaction, scan_prefix};
 use proptest::prelude::*;
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
@@ -49,7 +49,7 @@ fn assert_state(
     expected: &BTreeMap<IndexTerm, BTreeSet<u64>>,
 ) {
     let index = Index::new(&HASH);
-    let rebuilt_db = MemoryDatabase::new();
+    let rebuilt_db = MemoryStore::new();
     let mut rebuilt_tx = rebuilt_db.begin_write().unwrap();
     let mut rebuilt_root = RootRef::Empty;
     for (term, ids) in expected {

@@ -1,4 +1,4 @@
-//! Storage writes staged over a committed read snapshot, never a database writer.
+//! Storage writes staged over a committed read snapshot, never a store writer.
 use golemdb_storage::{
     Entry, ReadCursor, ReadTransaction, Result, StorageError, Table, WriteTransaction,
 };
@@ -84,7 +84,9 @@ impl<R: ReadTransaction> WriteTransaction for Buffered<'_, R> {
         Ok(existed)
     }
     fn commit(self) -> Result<()> {
-        Err(StorageError::Backend("a seal buffer cannot commit".into()))
+        Err(StorageError::Implementation(
+            "a seal buffer cannot commit".into(),
+        ))
     }
 }
 

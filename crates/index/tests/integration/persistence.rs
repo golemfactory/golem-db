@@ -5,7 +5,7 @@ use golemdb_index::{
     PostingChange, tables,
 };
 use golemdb_merkle::{Hash, Keccak256Hasher, LeafRef, RootRef, Trie};
-use golemdb_storage::{Database, MdbxDatabase, ReadTransaction, Table, WriteTransaction};
+use golemdb_storage::{MdbxStore, ReadTransaction, Store, Table, WriteTransaction};
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
 const HEAD: Table = Table("Head");
@@ -27,7 +27,7 @@ fn hash(tx: &impl ReadTransaction, key: &[u8]) -> Hash {
 fn reopen_in_fresh_process_preserves_head_history_and_discards_uncommitted_writes() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let index = Index::new(&HASH);
         let mut tx = db.begin_write().unwrap();
         let old = index
@@ -72,7 +72,7 @@ fn persistence_worker() {
     let Some(path) = std::env::var_os("GOLEM_MDBX_TEST_PATH") else {
         return;
     };
-    let db = MdbxDatabase::open(path).unwrap();
+    let db = MdbxStore::open(path).unwrap();
     let index = Index::new(&HASH);
     let read = db.begin_read().unwrap();
     let root = index.reopen(&read, hash(&read, b"current")).unwrap();
@@ -110,7 +110,7 @@ fn persistence_worker() {
     );
 
     // Old immutable trees remain walkable through the latest read transaction.
-    // This is structural history; reopening old flat term state is engine work.
+    // This is structural history; reopening old flat term state belongs to the layers above.
     let bitmap_trie =
         Trie::<_, BITMAP_TRIE_PATH_BYTES>::new(tables::BITMAP_TRIE, BITMAP_BRANCH_DOMAIN, &HASH);
     let old_bitmap = hash(&read, b"old_bitmap");
@@ -153,7 +153,7 @@ fn persistence_worker() {
             .apply(&mut tx, root, [add(b"uncommitted", 42), add(b"a", 7)])
             .unwrap();
         tx.put(HEAD, b"current", &changed.root.hash(&HASH)).unwrap();
-        // Exit without running transaction/database destructors. The next
+        // Exit without running transaction/store destructors. The next
         // process must recover the last committed head and all four tables.
         std::process::exit(0);
     }
@@ -164,7 +164,7 @@ fn singleton_and_empty_roots_reopen_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let index = Index::new(&HASH);
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = index
             .apply(&mut tx, RootRef::Empty, [add(b"only", 42)])
@@ -174,7 +174,7 @@ fn singleton_and_empty_roots_reopen_from_disk() {
         tx.commit().unwrap();
     }
     {
-        let db = MdbxDatabase::open(dir.path()).unwrap();
+        let db = MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         let root = index.reopen(&tx, hash(&tx, b"current")).unwrap();
         assert!(matches!(root, RootRef::Leaf(_)));
@@ -193,7 +193,7 @@ fn singleton_and_empty_roots_reopen_from_disk() {
         tx.put(HEAD, b"current", &root.hash(&HASH)).unwrap();
         tx.commit().unwrap();
     }
-    let db = MdbxDatabase::open(dir.path()).unwrap();
+    let db = MdbxStore::open(dir.path()).unwrap();
     let tx = db.begin_read().unwrap();
     assert_eq!(
         index.reopen(&tx, hash(&tx, b"current")).unwrap(),
