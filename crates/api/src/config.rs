@@ -43,12 +43,12 @@ impl GenesisConfig {
         let value = (1 + u64::from(limits.max_bytes_len.max(limits.max_str_len))).max(16 * 1024);
         if key > max_key as u64 {
             return Err(OpenError::InvalidConfig(format!(
-                "configured cells/index terms need {key}-byte keys; backend supports {max_key}"
+                "configured cells/index terms need {key}-byte keys; store supports {max_key}"
             )));
         }
         if value > max_value as u64 {
             return Err(OpenError::InvalidConfig(format!(
-                "configured cells and engine rows need {value}-byte values; backend supports {max_value}"
+                "configured cells and engine rows need {value}-byte values; store supports {max_value}"
             )));
         }
         Ok(())

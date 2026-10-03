@@ -14,7 +14,7 @@ impl ReadCursor for FailingCursor {
         if count == 0 {
             Ok(Some((b"a".to_vec(), vec![])))
         } else {
-            Err(StorageError::Backend(
+            Err(StorageError::Implementation(
                 std::io::Error::other("injected read failure").into(),
             ))
         }
@@ -37,7 +37,10 @@ fn scan_returns_error_once_and_never_advances_again() {
     let tx = FailingTransaction(calls.clone());
     let mut scan = scan(&tx, Table("test"), Unbounded, Unbounded).unwrap();
     assert!(scan.next().unwrap().is_ok());
-    assert!(matches!(scan.next(), Some(Err(StorageError::Backend(_)))));
+    assert!(matches!(
+        scan.next(),
+        Some(Err(StorageError::Implementation(_)))
+    ));
     assert!(scan.next().is_none());
     assert!(scan.next().is_none());
     assert_eq!(calls.get(), 2);

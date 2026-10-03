@@ -41,7 +41,7 @@ impl<T> Observed<T> {
     fn writing(&self, table: Table) -> Result<()> {
         *self.counts.borrow_mut().writes.entry(table).or_default() += 1;
         if self.fail_table == Some(table) {
-            return Err(StorageError::Backend(
+            return Err(StorageError::Implementation(
                 std::io::Error::other("injected write failure").into(),
             ));
         }

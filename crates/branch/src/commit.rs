@@ -14,7 +14,7 @@ pub(crate) fn persist(
     origin: CommitId,
     sealed: &SealedCommit,
 ) -> Result<CommitId> {
-    // Drop a failed writer outside unwinding so backend mutexes are not poisoned
+    // Drop a failed writer outside unwinding so the store's mutexes are not poisoned
     // by a panic while reading head or replaying rows. Nothing has been published.
     match catch_unwind(AssertUnwindSafe(|| stage(&mut tx, origin, sealed))) {
         Ok(result) => result?,

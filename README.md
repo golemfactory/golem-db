@@ -11,7 +11,7 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
 - `crates/cells` (package `golemdb-cells`) — the wire format for "Cells",
   GolemDB's typed value encoding
 - `crates/storage` (package `golemdb-storage`) — transactional ordered key/value
-  traits, bidirectional cursors, range scans, memory and optional MDBX backends
+  traits, bidirectional cursors, range scans, memory and optional MDBX store implementations
 - `crates/index` (package `golemdb-index`) — transactional posting updates across
   bitmap/index tries, ordered terms and scans, canonical chunks, and query bitmaps
 - `crates/merkle` (package `golemdb-merkle`) — branch-only persistent Merkle trie,

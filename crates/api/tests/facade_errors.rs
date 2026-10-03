@@ -45,7 +45,7 @@ impl<S: Store> Store for FailingStore<S> {
 }
 
 fn injected() -> StorageError {
-    StorageError::Backend(std::io::Error::other("injected facade storage failure").into())
+    StorageError::Implementation(std::io::Error::other("injected facade storage failure").into())
 }
 
 fn diagnostic(error: ApiError) {
@@ -62,7 +62,7 @@ fn diagnostic(error: ApiError) {
         }
         source = cause.source();
     }
-    panic!("the backend diagnostic must survive the facade's error conversion");
+    panic!("the store diagnostic must survive the facade's error conversion");
 }
 
 fn failure_contract(store: impl Store + Send + Sync + 'static) {
@@ -76,7 +76,7 @@ fn failure_contract(store: impl Store + Send + Sync + 'static) {
             max_bytes_len: 128,
         },
     });
-    let db = GolemDb::from_backend(
+    let db = GolemDb::from_store(
         FailingStore {
             store,
             fail_reads: fail_reads.clone(),

@@ -143,7 +143,7 @@ fn workloads(chunks: u64) -> Vec<(&'static str, Vec<PostingChange>)> {
     ]
 }
 
-fn backend(
+fn bench_store(
     c: &mut Criterion,
     name: &str,
     db: &impl Store,
@@ -231,12 +231,12 @@ fn durable_commit(c: &mut Criterion, algorithm: &str, hasher: &impl HashProvider
 
 fn algorithm(c: &mut Criterion, algorithm: &str, hasher: &impl HashProvider) {
     for chunks in [64, 256] {
-        backend(c, "memory", &MemoryStore::new(), chunks, algorithm, hasher);
+        bench_store(c, "memory", &MemoryStore::new(), chunks, algorithm, hasher);
         #[cfg(feature = "mdbx")]
         {
             let dir = tempfile::tempdir().unwrap();
             let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
-            backend(c, "mdbx", &db, chunks, algorithm, hasher);
+            bench_store(c, "mdbx", &db, chunks, algorithm, hasher);
         }
     }
     #[cfg(feature = "mdbx")]

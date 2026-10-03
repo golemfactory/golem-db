@@ -6,18 +6,18 @@ pub enum StorageError {
     AlreadyExists,
     InvalidTableName(Table),
     InvalidRange,
-    /// Backend physical limit, not a required constructor configuration.
+    /// Physical limit of the store implementation, not a required constructor configuration.
     KeyTooLarge {
         actual: usize,
         max: usize,
     },
-    /// Backend physical limit, not a required constructor configuration.
+    /// Physical limit of the store implementation, not a required constructor configuration.
     ValueTooLarge {
         actual: usize,
         max: usize,
     },
     Poisoned(&'static str),
-    Backend(Box<dyn Error + Send + Sync>),
+    Implementation(Box<dyn Error + Send + Sync>),
 }
 
 impl fmt::Display for StorageError {
@@ -29,7 +29,7 @@ impl fmt::Display for StorageError {
             Self::KeyTooLarge { actual, max } => write!(f, "key size {actual} exceeds {max}"),
             Self::ValueTooLarge { actual, max } => write!(f, "value size {actual} exceeds {max}"),
             Self::Poisoned(lock) => write!(f, "storage {lock} lock poisoned"),
-            Self::Backend(source) => write!(f, "storage backend error: {source}"),
+            Self::Implementation(source) => write!(f, "store implementation error: {source}"),
         }
     }
 }
@@ -37,7 +37,7 @@ impl fmt::Display for StorageError {
 impl Error for StorageError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Backend(source) => Some(source.as_ref()),
+            Self::Implementation(source) => Some(source.as_ref()),
             _ => None,
         }
     }

@@ -4,8 +4,8 @@
 //! a writer sees its own changes and publishes them atomically on commit. Drop
 //! aborts an uncommitted writer.
 //!
-//! [`MemoryStore`] is the initial backend. The traits intentionally expose
-//! owned bytes and no backend-specific handles or threading requirements.
+//! [`MemoryStore`] is the initial store implementation. The traits intentionally expose
+//! owned bytes and no implementation-specific handles or threading requirements.
 //! The optional `mdbx` feature adds persistent `MdbxStore` using the same traits.
 //!
 //! ```
@@ -52,10 +52,10 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// A store with concurrent snapshot readers and one active writer at a time.
 ///
 /// Readers and their cursors remain usable while a writer is active or commits.
-/// Only writers serialize with other writers. Every backend must support this.
+/// Only writers serialize with other writers. Every store implementation must support this.
 pub trait Store {
     /// Physical ceilings, independent of deployment admission policy.
-    /// Unbounded backends may keep these defaults; bounded adapters must override.
+    /// Unbounded store implementations may keep these defaults; bounded adapters must override.
     fn max_key_size(&self) -> usize {
         usize::MAX
     }
@@ -117,8 +117,8 @@ pub trait WriteTransaction: ReadTransaction {
     /// Initialization must make this check under the same writer as its writes.
     /// Adapters that cannot inspect the catalogue must fail, never assume empty.
     fn is_pristine(&self) -> Result<bool> {
-        Err(StorageError::Backend(
-            "backend cannot inspect its table catalogue".into(),
+        Err(StorageError::Implementation(
+            "store implementation cannot inspect its table catalogue".into(),
         ))
     }
 

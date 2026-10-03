@@ -240,7 +240,7 @@ impl<S> Controlled<S> {
     }
 }
 fn injected() -> StorageError {
-    StorageError::Backend("injected commit failure".into())
+    StorageError::Implementation("injected commit failure".into())
 }
 struct ControlledWrite<W> {
     inner: W,

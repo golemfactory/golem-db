@@ -99,7 +99,7 @@ fn replay(db: &impl Store, sealed: &SealedCommit) {
     tx.commit().unwrap();
 }
 
-// Seal must never acquire a backend writer, even temporarily.
+// Seal must never acquire a store writer, even temporarily.
 struct ReadOnly<S>(S);
 impl<S: Store> Store for ReadOnly<S> {
     type Read<'a>
@@ -398,7 +398,7 @@ impl<R: golemdb_storage::ReadTransaction> golemdb_storage::ReadTransaction for F
         Self: 'a;
     fn get(&self, table: Table, key: &[u8]) -> golemdb_storage::Result<Option<Vec<u8>>> {
         if table == golemdb_index::tables::BITMAP_CONTAINER && self.fail.load(Ordering::Relaxed) {
-            return Err(golemdb_storage::StorageError::Backend(
+            return Err(golemdb_storage::StorageError::Implementation(
                 "injected bitmap read failure".into(),
             ));
         }

@@ -84,7 +84,9 @@ impl<R: ReadTransaction> WriteTransaction for Buffered<'_, R> {
         Ok(existed)
     }
     fn commit(self) -> Result<()> {
-        Err(StorageError::Backend("a seal buffer cannot commit".into()))
+        Err(StorageError::Implementation(
+            "a seal buffer cannot commit".into(),
+        ))
     }
 }
 

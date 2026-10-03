@@ -8,7 +8,7 @@ use golemdb_storage::Store;
 use crate::{
     Api, ApiError, BranchId, BranchInfo, CommitId, GenesisConfig, HashAlgorithm,
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenConfig,
-    OpenInfo, OpenResult, OpenedDatabase, PatchInput, Projection, ReadTarget, Record, RecordInput,
+    OpenInfo, OpenResult, OpenedStore, PatchInput, Projection, ReadTarget, Record, RecordInput,
     RecordKey, Result, SealInfo,
 };
 
@@ -16,7 +16,7 @@ use crate::{
 /// a branch begun through one clone can be used through any other clone.
 /// Dropping the last clone discards pending work; only commit publishes it.
 ///
-/// Backend and hash-provider types stay inside the engine. Dispatch occurs once
+/// Store and hash-provider types stay inside the engine. Dispatch occurs once
 /// per API operation; hashing within an operation uses a concrete provider.
 /// No storage writer or unrestricted cell access is exposed by this handle.
 #[derive(Clone)]
@@ -27,19 +27,19 @@ pub struct GolemDb {
 }
 
 impl GolemDb {
-    /// Initialize a fresh memory backend. For a shared existing backend use
-    /// from_backend; for another handle to the same engine use clone.
+    /// Initialize a fresh memory store. For a shared existing store use
+    /// from_store; for another handle to the same engine use clone.
     pub fn open_memory(config: &OpenConfig) -> OpenResult<Self> {
         crate::open_memory(config)?.into_golem_db()
     }
 
-    /// Initialize or validate a caller-supplied backend and construct one engine.
+    /// Initialize or validate a caller-supplied store and construct one engine.
     /// Separate calls create separate branch registries, even over shared storage.
-    pub fn from_backend<S: Store + Send + Sync + 'static>(
+    pub fn from_store<S: Store + Send + Sync + 'static>(
         store: S,
         config: &OpenConfig,
     ) -> OpenResult<Self> {
-        crate::open_backend(store, config)?.into_golem_db()
+        crate::open_store(store, config)?.into_golem_db()
     }
 
     /// Open durable storage. Close all handles before independently reopening the
@@ -79,11 +79,11 @@ impl GolemDb {
     }
 
     pub(crate) fn from_opened<S: Store + Send + Sync + 'static>(
-        opened: OpenedDatabase<S>,
+        opened: OpenedStore<S>,
     ) -> OpenResult<Self> {
         let genesis = *opened.genesis();
         let info = *opened.info();
-        let store = opened.into_database();
+        let store = opened.into_store();
         let engine: Arc<dyn Api + Send + Sync> = match genesis.hash_function {
             HashAlgorithm::Keccak256 => Arc::new(Engine::new(store, Keccak256Hasher)?),
             HashAlgorithm::Blake3 => Arc::new(Engine::new(store, Blake3Hasher)?),

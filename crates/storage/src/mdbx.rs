@@ -7,7 +7,7 @@ use crate::{
     Entry, ReadCursor, ReadTransaction, Result, StorageError, Store, Table, WriteTransaction,
 };
 
-/// Backend capacity settings, not table declarations or logical storage quotas.
+/// MDBX capacity settings, not table declarations or logical storage quotas.
 #[derive(Clone, Copy, Debug)]
 pub struct MdbxOptions {
     pub max_tables: u64,
@@ -72,7 +72,7 @@ impl MdbxStore {
 
     pub fn open_with_options(path: impl AsRef<Path>, options: MdbxOptions) -> Result<Self> {
         let invalid = || {
-            StorageError::Backend(
+            StorageError::Implementation(
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "invalid MDBX capacity settings",
@@ -85,7 +85,8 @@ impl MdbxStore {
         }
         let max_size = isize::try_from(options.max_map_size).map_err(|_| invalid())?;
         let growth_step = isize::try_from(options.growth_step).map_err(|_| invalid())?;
-        std::fs::create_dir_all(path.as_ref()).map_err(|e| StorageError::Backend(e.into()))?;
+        std::fs::create_dir_all(path.as_ref())
+            .map_err(|e| StorageError::Implementation(e.into()))?;
         let inner = libmdbx::Database::open_with_options(
             path,
             libmdbx::DatabaseOptions {
@@ -99,7 +100,7 @@ impl MdbxStore {
                 ..Default::default()
             },
         )
-        .map_err(backend)?;
+        .map_err(mdbx_error)?;
         // SAFETY: the environment is successfully opened and remains alive;
         // both functions are read-only queries with normal (non-DUPSORT) flags.
         let (key, value) = unsafe {
@@ -109,7 +110,7 @@ impl MdbxStore {
             )
         };
         if key <= 0 || value <= 0 {
-            return Err(backend(libmdbx::Error::Invalid));
+            return Err(mdbx_error(libmdbx::Error::Invalid));
         }
         Ok(Self {
             inner: Arc::new(inner),
@@ -130,10 +131,10 @@ impl MdbxStore {
     }
 }
 
-fn backend(error: libmdbx::Error) -> StorageError {
+fn mdbx_error(error: libmdbx::Error) -> StorageError {
     match error {
         libmdbx::Error::KeyExist => StorageError::AlreadyExists,
-        error => StorageError::Backend(Box::new(error)),
+        error => StorageError::Implementation(Box::new(error)),
     }
 }
 
@@ -156,13 +157,13 @@ impl Store for MdbxStore {
     type Write<'db> = MdbxWriteTransaction<'db>;
     fn begin_read(&self) -> Result<Self::Read<'_>> {
         Ok(MdbxTransaction {
-            inner: self.inner.begin_ro_txn().map_err(backend)?,
+            inner: self.inner.begin_ro_txn().map_err(mdbx_error)?,
             limits: self.limits,
         })
     }
     fn begin_write(&self) -> Result<Self::Write<'_>> {
         Ok(MdbxTransaction {
-            inner: self.inner.begin_rw_txn().map_err(backend)?,
+            inner: self.inner.begin_rw_txn().map_err(mdbx_error)?,
             limits: self.limits,
         })
     }
@@ -176,11 +177,11 @@ impl<K: TransactionKind> MdbxTransaction<'_, K> {
         // handle for a table newer than this reader's snapshot. Check the
         // native catalogue in this transaction before using such a handle.
         // Do not translate arbitrary BadDbi failures into missing data.
-        let catalog = self.inner.open_table(None).map_err(backend)?;
+        let catalog = self.inner.open_table(None).map_err(mdbx_error)?;
         if self
             .inner
             .get::<Vec<u8>>(&catalog, table.0.as_bytes())
-            .map_err(backend)?
+            .map_err(mdbx_error)?
             .is_none()
         {
             return Ok(None);
@@ -188,7 +189,7 @@ impl<K: TransactionKind> MdbxTransaction<'_, K> {
         match self.inner.open_table(Some(table.0)) {
             Ok(handle) => Ok(Some(handle)),
             Err(libmdbx::Error::NotFound) => Ok(None),
-            Err(error) => Err(backend(error)),
+            Err(error) => Err(mdbx_error(error)),
         }
     }
 }
@@ -203,7 +204,7 @@ impl<K: TransactionKind> ReadTransaction for MdbxTransaction<'_, K> {
         table.validate()?;
         self.limits.key(key)?;
         match self.table(table)? {
-            Some(handle) => self.inner.get(&handle, key).map_err(backend),
+            Some(handle) => self.inner.get(&handle, key).map_err(mdbx_error),
             None => Ok(None),
         }
     }
@@ -215,7 +216,7 @@ impl<K: TransactionKind> ReadTransaction for MdbxTransaction<'_, K> {
             .table(table)?
             .map(|handle| self.inner.cursor(&handle))
             .transpose()
-            .map_err(backend)?;
+            .map_err(mdbx_error)?;
         Ok(MdbxCursor {
             inner,
             position: Position::Start(key.to_vec()),
@@ -237,15 +238,22 @@ impl MdbxWriteTransaction<'_> {
         let handle = self
             .inner
             .create_table(Some(table.0), TableFlags::empty())
-            .map_err(backend)?;
-        self.inner.put(&handle, key, value, flags).map_err(backend)
+            .map_err(mdbx_error)?;
+        self.inner
+            .put(&handle, key, value, flags)
+            .map_err(mdbx_error)
     }
 }
 
 impl WriteTransaction for MdbxWriteTransaction<'_> {
     fn is_pristine(&self) -> Result<bool> {
-        let catalog = self.inner.open_table(None).map_err(backend)?;
-        Ok(self.inner.table_stat(&catalog).map_err(backend)?.entries() == 0)
+        let catalog = self.inner.open_table(None).map_err(mdbx_error)?;
+        Ok(self
+            .inner
+            .table_stat(&catalog)
+            .map_err(mdbx_error)?
+            .entries()
+            == 0)
     }
 
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()> {
@@ -258,12 +266,12 @@ impl WriteTransaction for MdbxWriteTransaction<'_> {
         table.validate()?;
         self.limits.key(key)?;
         match self.table(table)? {
-            Some(handle) => self.inner.del(&handle, key, None).map_err(backend),
+            Some(handle) => self.inner.del(&handle, key, None).map_err(mdbx_error),
             None => Ok(false),
         }
     }
     fn commit(self) -> Result<()> {
-        self.inner.commit().map(|_| ()).map_err(backend)
+        self.inner.commit().map(|_| ()).map_err(mdbx_error)
     }
 }
 
@@ -286,22 +294,24 @@ impl<K: TransactionKind> MdbxCursor<'_, K> {
         };
         let row = match &self.position {
             Position::Start(key) => {
-                let row = cursor.set_range::<Vec<u8>, Vec<u8>>(key).map_err(backend)?;
+                let row = cursor
+                    .set_range::<Vec<u8>, Vec<u8>>(key)
+                    .map_err(mdbx_error)?;
                 if forward {
                     row
                 } else {
                     match row {
                         Some((found, value)) if found.as_slice() == key => Some((found, value)),
-                        Some(_) => cursor.prev().map_err(backend)?,
-                        None => cursor.last().map_err(backend)?,
+                        Some(_) => cursor.prev().map_err(mdbx_error)?,
+                        None => cursor.last().map_err(mdbx_error)?,
                     }
                 }
             }
-            Position::Before if forward => cursor.first().map_err(backend)?,
-            Position::After if !forward => cursor.last().map_err(backend)?,
+            Position::Before if forward => cursor.first().map_err(mdbx_error)?,
+            Position::After if !forward => cursor.last().map_err(mdbx_error)?,
             Position::Before | Position::After => None,
-            Position::At if forward => cursor.next().map_err(backend)?,
-            Position::At => cursor.prev().map_err(backend)?,
+            Position::At if forward => cursor.next().map_err(mdbx_error)?,
+            Position::At => cursor.prev().map_err(mdbx_error)?,
         };
         self.position = if row.is_some() {
             Position::At

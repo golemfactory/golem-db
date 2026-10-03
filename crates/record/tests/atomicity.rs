@@ -42,7 +42,7 @@ impl<R: ReadTransaction> ReadTransaction for FaultRead<R> {
             && table == tables::CELL
             && key == CellKey::new(64, CellNameRef::raw(b"z")).encode()
         {
-            return Err(StorageError::Backend(
+            return Err(StorageError::Implementation(
                 "injected late patch read failure".into(),
             ));
         }

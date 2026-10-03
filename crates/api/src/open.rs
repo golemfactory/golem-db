@@ -31,13 +31,13 @@ impl OpenInfo {
 /// Validated storage ready for engine construction. This setup boundary is for
 /// trusted library code; ordinary data consumers use GolemDb's constructors.
 /// Consume this handle with into_golem_db to connect it to the public facade.
-pub struct OpenedDatabase<S> {
+pub struct OpenedStore<S> {
     store: S,
     genesis: GenesisConfig,
     info: OpenInfo,
 }
 
-impl<S> OpenedDatabase<S> {
+impl<S> OpenedStore<S> {
     pub fn info(&self) -> &OpenInfo {
         &self.info
     }
@@ -45,12 +45,12 @@ impl<S> OpenedDatabase<S> {
         &self.genesis
     }
     /// Hand initialized storage to the engine; low-level writes remain trusted.
-    pub fn into_database(self) -> S {
+    pub fn into_store(self) -> S {
         self.store
     }
 }
 
-impl<S: Store + Send + Sync + 'static> OpenedDatabase<S> {
+impl<S: Store + Send + Sync + 'static> OpenedStore<S> {
     /// Construct one engine using the validated hash selection. The returned
     /// facade's clones share its branch registry and storage lifetime.
     pub fn into_golem_db(self) -> OpenResult<crate::GolemDb> {
@@ -58,11 +58,11 @@ impl<S: Store + Send + Sync + 'static> OpenedDatabase<S> {
     }
 }
 
-/// Open a caller-supplied backend. Clone an existing backend to share its
+/// Open a caller-supplied store. Clone an existing store to share its
 /// environment; never open the same MDBX directory twice within one process.
 /// Inspect, validate, and initialize under one writer to serialize with other
 /// initializers and committers. Reopening does not commit or rewrite any rows.
-pub fn open_backend<S: Store>(store: S, config: &OpenConfig) -> OpenResult<OpenedDatabase<S>> {
+pub fn open_store<S: Store>(store: S, config: &OpenConfig) -> OpenResult<OpenedStore<S>> {
     config
         .genesis
         .validate(store.max_key_size(), store.max_value_size())?;
@@ -83,7 +83,7 @@ pub fn open_backend<S: Store>(store: S, config: &OpenConfig) -> OpenResult<Opene
     } else {
         tx.abort();
     }
-    Ok(OpenedDatabase {
+    Ok(OpenedStore {
         store,
         genesis: config.genesis,
         info,
@@ -91,7 +91,7 @@ pub fn open_backend<S: Store>(store: S, config: &OpenConfig) -> OpenResult<Opene
 }
 
 /// Open a fresh in-memory database using the same genesis transaction as MDBX.
-/// To reopen shared memory state, pass a backend clone to open_backend instead.
+/// To reopen shared memory state, pass a store clone to open_store instead.
 ///
 /// ```
 /// use golemdb_api::{GenesisConfig, OpenConfig, open_memory};
@@ -107,8 +107,8 @@ pub fn open_backend<S: Store>(store: S, config: &OpenConfig) -> OpenResult<Opene
 /// assert_eq!(opened.info().commit_id, 0);
 /// # Ok::<(), golemdb_api::OpenError>(())
 /// ```
-pub fn open_memory(config: &OpenConfig) -> OpenResult<OpenedDatabase<MemoryStore>> {
-    open_backend(MemoryStore::new(), config)
+pub fn open_memory(config: &OpenConfig) -> OpenResult<OpenedStore<MemoryStore>> {
+    open_store(MemoryStore::new(), config)
 }
 
 #[cfg(feature = "mdbx")]
@@ -117,7 +117,7 @@ pub fn open_memory(config: &OpenConfig) -> OpenResult<OpenedDatabase<MemoryStore
 pub fn open_database(
     path: impl AsRef<std::path::Path>,
     config: &OpenConfig,
-) -> OpenResult<OpenedDatabase<golemdb_storage::MdbxStore>> {
+) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     open_with_options(path, config, golemdb_storage::MdbxOptions::default())
 }
 
@@ -126,18 +126,18 @@ pub fn open_database(
 pub fn open(
     path: impl AsRef<std::path::Path>,
     config: &OpenConfig,
-) -> OpenResult<OpenedDatabase<golemdb_storage::MdbxStore>> {
+) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     open_database(path, config)
 }
 
-/// Capacity settings are local backend options and do not affect genesis identity.
+/// Capacity settings are local store options and do not affect genesis identity.
 /// ExistingOnly may open an empty environment but will never initialize it.
 #[cfg(feature = "mdbx")]
 pub fn open_with_options(
     path: impl AsRef<std::path::Path>,
     config: &OpenConfig,
     options: golemdb_storage::MdbxOptions,
-) -> OpenResult<OpenedDatabase<golemdb_storage::MdbxStore>> {
+) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     // Do not create a missing directory for ExistingOnly. Initialization itself
     // is always determined from the contents under the storage writer lock.
     if config.mode == crate::OpenMode::ExistingOnly
@@ -146,5 +146,5 @@ pub fn open_with_options(
         return Err(crate::OpenError::NotInitialized);
     }
     let store = golemdb_storage::MdbxStore::open_with_options(path, options)?;
-    open_backend(store, config)
+    open_store(store, config)
 }

@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_backend};
+use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_store};
 use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
 fn config() -> OpenConfig {
@@ -85,7 +85,7 @@ impl<S: Store> Store for Controlled<S> {
 }
 
 fn injected() -> StorageError {
-    StorageError::Backend("injected opening failure".into())
+    StorageError::Implementation("injected opening failure".into())
 }
 
 impl<W: ReadTransaction> ReadTransaction for ControlledWrite<W> {
@@ -144,14 +144,14 @@ impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
 fn failures(db: impl Store + Clone) {
     let baseline = Controlled::new(MemoryStore::new(), Fault::None);
     let count = baseline.mutations.clone();
-    let expected = *open_backend(baseline, &config()).unwrap().info();
+    let expected = *open_store(baseline, &config()).unwrap().info();
     let writes = count.load(Ordering::SeqCst);
     assert!(writes > 10);
     for fault in (1..=writes)
         .map(Fault::Write)
         .chain([Fault::Commit, Fault::Read])
     {
-        let error = open_backend(Controlled::new(db.clone(), fault), &config())
+        let error = open_store(Controlled::new(db.clone(), fault), &config())
             .err()
             .expect("injected failure must abort opening");
         assert!(
@@ -162,7 +162,7 @@ fn failures(db: impl Store + Clone) {
     }
     for step in [1, writes / 2, writes] {
         assert!(
-            std::panic::catch_unwind(AssertUnwindSafe(|| open_backend(
+            std::panic::catch_unwind(AssertUnwindSafe(|| open_store(
                 Controlled::new(db.clone(), Fault::Panic(step)),
                 &config()
             )))
@@ -171,14 +171,11 @@ fn failures(db: impl Store + Clone) {
         // No partial rows or poisoned MemoryStore writer remain after panic.
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
     }
-    assert_eq!(
-        *open_backend(db.clone(), &config()).unwrap().info(),
-        expected
-    );
+    assert_eq!(*open_store(db.clone(), &config()).unwrap().info(), expected);
     for fault in [Fault::Write(1), Fault::Commit] {
         let observed = Controlled::new(db.clone(), fault);
         let count = observed.mutations.clone();
-        assert!(!open_backend(observed, &config()).unwrap().info().created);
+        assert!(!open_store(observed, &config()).unwrap().info().created);
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 }
@@ -216,7 +213,7 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
         bounded.max_key = max_key;
         bounded.max_value = max_value;
         assert!(matches!(
-            open_backend(bounded, &cfg),
+            open_store(bounded, &cfg),
             Err(OpenError::InvalidConfig(_))
         ));
         assert!(db.begin_write().unwrap().is_pristine().unwrap());
@@ -224,5 +221,5 @@ fn physical_limits_cover_full_index_keys_fixed_values_and_size_overflow() {
     let mut bounded = Controlled::new(MemoryStore::new(), Fault::None);
     bounded.max_key = 98;
     bounded.max_value = 16384;
-    assert!(open_backend(bounded, &config()).is_ok());
+    assert!(open_store(bounded, &config()).is_ok());
 }

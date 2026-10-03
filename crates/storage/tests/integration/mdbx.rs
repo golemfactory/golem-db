@@ -527,7 +527,7 @@ fn table_capacity_error_is_not_absence_and_can_be_raised_on_reopen() {
     let mut tx = db.begin_write().unwrap();
     assert!(matches!(
         tx.put(B, b"b", b"2"),
-        Err(StorageError::Backend(_))
+        Err(StorageError::Implementation(_))
     ));
     tx.abort();
     drop(db);
@@ -557,7 +557,7 @@ fn map_full_aborts_all_pending_rows() {
     tx.put(A, b"a", b"before failure").unwrap();
     assert!(matches!(
         tx.put(A, b"huge", &vec![0; 2 * 1024 * 1024]),
-        Err(StorageError::Backend(_))
+        Err(StorageError::Implementation(_))
     ));
     tx.abort();
     assert!(db.begin_read().unwrap().get(A, b"a").unwrap().is_none());

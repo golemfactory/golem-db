@@ -27,7 +27,7 @@ fn input(price: i32) -> RecordInput {
 }
 
 // Every contract is exercised through the same public handle on both hashes
-// and both backends. A directory remains alive until all facade clones drop.
+// and both stores. A directory remains alive until all facade clones drop.
 fn each_backend(contract: fn(GolemDb)) {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
         contract(GolemDb::open_memory(&config(hash)).unwrap());
@@ -337,13 +337,13 @@ fn competing_commits_and_cross_thread_clones_use_one_registry() {
 fn opening_setup_conversion_and_separate_engines_do_not_share_branch_handles() {
     let cfg = config(HashAlgorithm::Blake3);
     let storage = MemoryStore::new();
-    let setup = open_backend(storage.clone(), &cfg).unwrap();
+    let setup = open_store(storage.clone(), &cfg).unwrap();
     let info = *setup.info();
     let first = setup.into_golem_db().unwrap();
     assert_eq!(first.info(), &info);
     let branch = first.begin().unwrap();
     first.create(branch, KEY, input(50)).unwrap();
-    let second = GolemDb::from_backend(storage, &cfg).unwrap();
+    let second = GolemDb::from_store(storage, &cfg).unwrap();
     assert!(matches!(
         second.branch_info(branch),
         Err(ApiError::HandleInvalid)

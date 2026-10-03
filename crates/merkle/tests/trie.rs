@@ -341,7 +341,7 @@ fn updates_touch_only_affected_branches_and_walk_is_lazy() {
 }
 
 fn injected_error() -> golemdb_storage::StorageError {
-    golemdb_storage::StorageError::Backend(std::io::Error::other("injected failure").into())
+    golemdb_storage::StorageError::Implementation(std::io::Error::other("injected failure").into())
 }
 
 #[test]

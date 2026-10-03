@@ -80,7 +80,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     config: OpenConfig,
     hasher: H,
 ) -> OpenInfo {
-    let opened = open_backend(db.clone(), &config).unwrap();
+    let opened = open_store(db.clone(), &config).unwrap();
     let genesis = *opened.info();
     assert!(genesis.created);
     assert_eq!(genesis.commit_id, 0);
@@ -113,7 +113,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
         assert_eq!(reader.scan_record(id).unwrap().count(), 1);
     }
     let before = snapshot(&db);
-    let reopened = open_backend(db.clone(), &config).unwrap();
+    let reopened = open_store(db.clone(), &config).unwrap();
     assert_eq!(
         *reopened.info(),
         OpenInfo {
@@ -123,7 +123,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     );
     assert_eq!(snapshot(&db), before);
 
-    let branches = Branches::new(opened.into_database(), hasher).unwrap();
+    let branches = Branches::new(opened.into_store(), hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
     let input = RecordInput::new()
@@ -132,7 +132,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     records.create(branch, KEY, input.into_cells()).unwrap();
     assert_eq!(branches.commit(branch).unwrap(), 1);
     let before = snapshot(&db);
-    let reopened = open_backend(
+    let reopened = open_store(
         db.clone(),
         &OpenConfig {
             mode: OpenMode::ExistingOnly,
@@ -144,7 +144,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     assert_eq!(reopened.info().commit_id, 1);
     assert_eq!(reopened.info().genesis_id, genesis.genesis_id);
     assert_eq!(snapshot(&db), before);
-    let fresh = Records::new(Branches::new(reopened.into_database(), hasher).unwrap());
+    let fresh = Records::new(Branches::new(reopened.into_store(), hasher).unwrap());
     assert_eq!(
         fresh.get(ReadTarget::Head, KEY, None).unwrap().cells[b"price".as_slice()].as_i32(),
         Some(50)
@@ -184,7 +184,7 @@ fn memory_genesis_and_committed_reopen_support_both_hash_algorithms() {
 fn modes(db: impl Store + Clone) {
     let config = config();
     assert!(matches!(
-        open_backend(
+        open_store(
             db.clone(),
             &OpenConfig {
                 mode: OpenMode::ExistingOnly,
@@ -194,7 +194,7 @@ fn modes(db: impl Store + Clone) {
         Err(OpenError::NotInitialized)
     ));
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
-    let opened = open_backend(
+    let opened = open_store(
         db.clone(),
         &OpenConfig {
             mode: OpenMode::CreateNew,
@@ -205,7 +205,7 @@ fn modes(db: impl Store + Clone) {
     assert!(opened.info().created);
     let before = snapshot(&db);
     assert!(matches!(
-        open_backend(
+        open_store(
             db.clone(),
             &OpenConfig {
                 mode: OpenMode::CreateNew,
@@ -223,7 +223,7 @@ fn modes(db: impl Store + Clone) {
             _ => different.genesis.cell_limits.max_bytes_len += 1,
         }
         assert!(matches!(
-            open_backend(db.clone(), &different),
+            open_store(db.clone(), &different),
             Err(OpenError::GenesisMismatch)
         ));
         assert_eq!(snapshot(&db), before);
@@ -258,7 +258,7 @@ fn partial_or_foreign_state_is_never_initialized() {
                 OpenMode::CreateNew,
             ] {
                 assert!(matches!(
-                    open_backend(db.clone(), &OpenConfig { mode, ..config() }),
+                    open_store(db.clone(), &OpenConfig { mode, ..config() }),
                     Err(OpenError::CorruptState(_))
                 ));
             }
@@ -281,7 +281,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         b"head",
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_database();
+            let db = open_memory(&config()).unwrap().into_store();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(SUPERBLOCK, key, b"x").unwrap();
@@ -290,7 +290,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
             }
             tx.commit().unwrap();
             let before = snapshot(&db);
-            assert!(open_backend(db.clone(), &config()).is_err());
+            assert!(open_store(db.clone(), &config()).is_err());
             assert_eq!(snapshot(&db), before);
         }
     }
@@ -304,7 +304,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         ),
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_database();
+            let db = open_memory(&config()).unwrap().into_store();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(
@@ -318,7 +318,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
             }
             tx.commit().unwrap();
             let before = snapshot(&db);
-            assert!(open_backend(db.clone(), &config()).is_err());
+            assert!(open_store(db.clone(), &config()).is_err());
             assert_eq!(snapshot(&db), before);
         }
     }
@@ -331,11 +331,11 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
         (b"hash_fn", 99u16.to_be_bytes().to_vec()),
         (b"roaring", 99u16.to_be_bytes().to_vec()),
     ] {
-        let db = open_memory(&config()).unwrap().into_database();
+        let db = open_memory(&config()).unwrap().into_store();
         let mut tx = db.begin_write().unwrap();
         tx.put(SUPERBLOCK, key, &bytes).unwrap();
         tx.commit().unwrap();
-        let result = open_backend(db, &config());
+        let result = open_store(db, &config());
         assert!(matches!(
             result,
             Err(OpenError::UnsupportedFormat(99)
@@ -345,11 +345,11 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
     }
     let opened = open_memory(&config()).unwrap();
     let root = opened.info().state_root;
-    let db = opened.into_database();
+    let db = opened.into_store();
     let mut tx = db.begin_write().unwrap();
     assert!(tx.delete(tables::CELL_TRIE, &root).unwrap());
     tx.commit().unwrap();
-    assert!(open_backend(db, &config()).is_err());
+    assert!(open_store(db, &config()).is_err());
 }
 
 fn concurrent(db: impl Store + Clone + Send + Sync, mode: OpenMode, different: bool) {
@@ -363,7 +363,7 @@ fn concurrent(db: impl Store + Clone + Send + Sync, mode: OpenMode, different: b
     let (first, second) = std::thread::scope(|scope| {
         let call = |cfg, barrier: Arc<Barrier>| {
             barrier.wait();
-            open_backend(db.clone(), &cfg).map(|opened| *opened.info())
+            open_store(db.clone(), &cfg).map(|opened| *opened.info())
         };
         let first_barrier = barrier.clone();
         let one = scope.spawn(move || call(a, first_barrier));
@@ -471,7 +471,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         .unwrap();
         assert_eq!(opened.info().commit_id, 1);
         assert_eq!(opened.info().genesis_id, memory.genesis_id);
-        let db = opened.into_database();
+        let db = opened.into_store();
         let tx = db.begin_read().unwrap();
         assert_eq!(
             CellReader::new(&tx)
@@ -517,14 +517,14 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     // Name + separator + tag + value must fit, not just the string by itself.
     cfg.genesis.cell_limits.max_str_len = db.max_key_size() as u32;
     assert!(matches!(
-        open_backend(db.clone(), &cfg),
+        open_store(db.clone(), &cfg),
         Err(OpenError::InvalidConfig(_))
     ));
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
     cfg.genesis.cell_limits.max_str_len =
         db.max_key_size() as u32 - cfg.genesis.cell_limits.max_cell_name_len - 2;
-    let opened = open_backend(db, &cfg).unwrap();
-    let branches = Branches::new(opened.into_database(), Keccak256Hasher).unwrap();
+    let opened = open_store(db, &cfg).unwrap();
+    let branches = Branches::new(opened.into_store(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
     let input = RecordInput::new()
@@ -551,7 +551,7 @@ fn mdbx_foreign_tables_even_when_empty_are_not_pristine_storage() {
         assert!(!tx.is_pristine().unwrap());
         tx.commit().unwrap();
         assert!(matches!(
-            open_backend(db.clone(), &config()),
+            open_store(db.clone(), &config()),
             Err(OpenError::CorruptState(_))
         ));
         assert_eq!(
