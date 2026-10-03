@@ -9,17 +9,17 @@ Consumers accept `&dyn Api` or `Arc<dyn Api + Send + Sync>`. The trait does not
 impose threading bounds; consumers add them when needed. Adding required methods
 requires updating concrete implementations and mocks.
 
-`GolemDb` implements `Api` and hides store and hash-provider types. Clones share
+`Database` implements `Api` and hides store and hash-provider types. Clones share
 one engine and branch registry, so handles work across clones and threads. The
 hash is selected on opening and stays a concrete type within the engine. Import
-`Api` to use its methods on `GolemDb`.
+`Api` to use its methods on `Database`.
 
 The examples use persistent MDBX storage. Enable the `mdbx` feature on
-`golemdb-api`; `GolemDb::open_database(path, &config)` opens the store internally.
+`golemdb-api`; `Database::open_database(path, &config)` opens the store internally.
 Use a fresh database directory for the catalogue examples.
 
 ```rust
-use golemdb_api::{Api, CellLimits, CellValue, GenesisConfig, GolemDb,
+use golemdb_api::{Api, CellLimits, CellValue, Database, GenesisConfig,
     HashAlgorithm, OpenConfig, Projection, ReadTarget, RecordInput, RecordKey};
 
 let config = OpenConfig::new(GenesisConfig {
@@ -28,7 +28,7 @@ let config = OpenConfig::new(GenesisConfig {
         max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
     },
 });
-let db = GolemDb::open_database("./golemdb-quickstart", &config)?;
+let db = Database::open_database("./golemdb-quickstart", &config)?;
 let branch = db.begin()?;
 let key = RecordKey([0x42; 32]);
 db.create(branch, key, RecordInput::new()
@@ -94,7 +94,7 @@ another branch can still win the commit race.
 
 ```rust
 use golemdb_api::{
-    Api, ApiError, CellLimits, CellValue, GenesisConfig, GolemDb, HashAlgorithm,
+    Api, ApiError, CellLimits, CellValue, Database, GenesisConfig, HashAlgorithm,
     OpenConfig, OpenMode, PatchInput, Projection, ReadTarget, RecordInput, RecordKey,
 };
 
@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     });
     config.mode = OpenMode::CreateNew;
-    let db = GolemDb::open_database("./golemdb-catalogue", &config)?;
+    let db = Database::open_database("./golemdb-catalogue", &config)?;
     let laptop = RecordKey([1; 32]);
     let keyboard = RecordKey([2; 32]);
     let mouse = RecordKey([3; 32]);
@@ -243,18 +243,18 @@ Use `GenesisConfig::load(path)` or `GenesisConfig::from_yaml(text)`; the loader
 does not search for files or read environment overrides.
 
 ```rust
-use golemdb_api::{GenesisConfig, OpenConfig, GolemDb};
+use golemdb_api::{Database, GenesisConfig, OpenConfig};
 
 let genesis = GenesisConfig::load("genesis.yaml")?;
 let config = OpenConfig::new(genesis); // CreateIfMissing
-let db = GolemDb::open_database("./golemdb", &config)?;
+let db = Database::open_database("./golemdb", &config)?;
 # Ok::<(), golemdb_api::OpenError>(())
 ```
 
-With the `mdbx` feature, `GolemDb::open_database(path, &config)` opens persistent
-storage (`GolemDb::open` remains an alias). `GolemDb::open_with_options` additionally
+With the `mdbx` feature, `Database::open_database(path, &config)` opens persistent
+storage (`Database::open` remains an alias). `Database::open_with_options` additionally
 accepts local `MdbxOptions`. For a custom store or a shared store instance,
-use `GolemDb::from_store(store, &config)`.
+use `Database::from_store(store, &config)`.
 Do not independently open the same MDBX directory twice within one process.
 
 | Mode | Pristine storage | Initialized storage |
@@ -289,14 +289,14 @@ or resets allocation. Formatting or field order in YAML does not affect identity
 changed deployment settings return `GenesisMismatch`.
 
 `OpenError` distinguishes configuration, format, initialization, and storage
-failures. `GolemDb::info()` describes the opening snapshot; call `head()` for the
+failures. `Database::info()` describes the opening snapshot; call `head()` for the
 live head, or `get(ReadTarget::Head, ...)` for a consistent current record read.
 
 The free opening functions remain lower-level setup helpers returning
 `OpenedStore`: `open_database` accepts an MDBX path, while `open_store`
-accepts a store instance. Use `into_golem_db()` to consume one as a facade, or
+accepts a store instance. Use `into_database()` to consume one as a facade, or
 `into_store()` to hand validated storage to trusted engine code. Ordinary
-consumers use the associated `GolemDb` constructors and the `Api` methods.
+consumers use the associated `Database` constructors and the `Api` methods.
 
 ## Current scope
 
@@ -322,13 +322,13 @@ key indexes, and commit integration are deferred. The
 the future behavior, including pruning and rewind of key bindings.
 
 All four iterations are implemented: typed cells, the facade contract and builders,
-atomic opening/genesis, and a cloneable `GolemDb` with shared branch state.
+atomic opening/genesis, and a cloneable `Database` with shared branch state.
 Budgets, cost receipts, generated keys, OCC, and transport serialization are deferred.
 
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks
 for consumer error paths. For tests, replace the storage opening with
-`GolemDb::open_memory(&config)?` to get a fresh in-memory database. Arkiv can pass `Arc::new(GolemDb::open_memory(&config)?)`
+`Database::open_memory(&config)?` to get a fresh in-memory database. Arkiv can pass `Arc::new(Database::open_memory(&config)?)`
 as `Arc<dyn Api + Send + Sync>` to run behavioral tests with real database semantics.
 The [facade contract tests](tests/facade.rs) run the same scenarios against memory
 and MDBX with both hash algorithms. The [error tests](tests/facade_errors.rs)

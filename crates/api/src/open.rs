@@ -29,8 +29,8 @@ impl OpenInfo {
 }
 
 /// Validated storage ready for engine construction. This setup boundary is for
-/// trusted library code; ordinary data consumers use GolemDb's constructors.
-/// Consume this handle with into_golem_db to connect it to the public facade.
+/// trusted library code; ordinary data consumers use Database's constructors.
+/// Consume this handle with into_database to connect it to the public facade.
 pub struct OpenedStore<S> {
     store: S,
     genesis: GenesisConfig,
@@ -53,8 +53,8 @@ impl<S> OpenedStore<S> {
 impl<S: Store + Send + Sync + 'static> OpenedStore<S> {
     /// Construct one engine using the validated hash selection. The returned
     /// facade's clones share its branch registry and storage lifetime.
-    pub fn into_golem_db(self) -> OpenResult<crate::GolemDb> {
-        crate::GolemDb::from_opened(self)
+    pub fn into_database(self) -> OpenResult<crate::Database> {
+        crate::Database::from_opened(self)
     }
 }
 

@@ -24,7 +24,7 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   identity and bindings; branch work-in-progress and committed-head reads
   ([scope and usage](crates/record/README.md))
 - `crates/api` (package `golemdb-api`) — one public `Api` trait implemented by the
-  cloneable `GolemDb` facade, explicit input builders, projections, errors, and
+  cloneable `Database` facade, explicit input builders, projections, errors, and
   atomic memory/MDBX opening from typed or YAML genesis
   ([scope and usage](crates/api/README.md))
 

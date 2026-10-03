@@ -76,7 +76,7 @@ fn failure_contract(store: impl Store + Send + Sync + 'static) {
             max_bytes_len: 128,
         },
     });
-    let db = GolemDb::from_store(
+    let db = Database::from_store(
         FailingStore {
             store,
             fail_reads: fail_reads.clone(),

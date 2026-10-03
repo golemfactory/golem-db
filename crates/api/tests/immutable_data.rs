@@ -95,7 +95,7 @@ fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgori
             max_bytes_len: 128,
         },
     });
-    let db = GolemDb::from_store(
+    let db = Database::from_store(
         Guarded {
             store,
             forbid_io: forbid_io.clone(),
