@@ -14,14 +14,35 @@ pub struct IndexTerm(Vec<u8>);
 impl IndexTerm {
     pub fn new(name: &str, ty: CellType, value: &[u8]) -> Result<Self, TermError> {
         let mut bytes = Self::prefix(name, ty)?;
-        ty.validate(value).map_err(TermError::Value)?;
         let mut ordered = value.to_vec();
+        match ty {
+            // Floats arrive as raw IEEE-754 bytes. The cell codec's
+            // validate() checks the stored order form, so validate in the
+            // raw domain here: reject NaN (as TermError::NaN) and normalize
+            // zero to +0 before applying the order transform.
+            CellType::Float(width) => {
+                let expected = match width {
+                    FloatWidth::F32 => 4,
+                    FloatWidth::F64 => 8,
+                };
+                if value.len() != expected {
+                    return Err(TermError::Value(CellParseError::LengthMismatch {
+                        ty,
+                        expected,
+                        actual: value.len(),
+                    }));
+                }
+                validate_float(&mut ordered, width)?;
+            }
+            _ => {
+                ty.validate(value).map_err(TermError::Value)?;
+            }
+        }
         match ty {
             CellType::Int(_) | CellType::Decimal(_) | CellType::Date32 | CellType::Timestamp64 => {
                 ordered[0] ^= 0x80;
             }
-            CellType::Float(width) => {
-                validate_float(&mut ordered, width)?;
+            CellType::Float(_) => {
                 if ordered[0] & 0x80 != 0 {
                     for byte in &mut ordered {
                         *byte = !*byte;
@@ -39,11 +60,38 @@ impl IndexTerm {
     /// Fields, including reserved-record cells, produce no index term. Validate
     /// attribute names and types only after this check; system field keys may
     /// use names that are not user identifiers.
+    ///
+    /// Cell values hold the stored order form (sign-flipped integers and the
+    /// sortable IEEE transform for floats), while `new` takes raw values;
+    /// invert the stored form before constructing the term.
     pub fn from_cell(name: &str, cell: CellValue<'_>) -> Result<Option<Self>, TermError> {
         if !cell.is_indexable() {
             return Ok(None);
         }
-        Self::new(name, cell.cell_type(), cell.value()).map(Some)
+        let ty = cell.cell_type();
+        let stored = cell.value();
+        let raw = match ty {
+            CellType::Int(_) | CellType::Decimal(_) | CellType::Date32 | CellType::Timestamp64 => {
+                let mut v = stored.to_vec();
+                if !v.is_empty() {
+                    v[0] ^= 0x80;
+                }
+                v
+            }
+            CellType::Float(_) => {
+                let mut v = stored.to_vec();
+                if v.first().is_some_and(|&b| b & 0x80 != 0) {
+                    v[0] ^= 0x80;
+                } else {
+                    for byte in &mut v {
+                        *byte = !*byte;
+                    }
+                }
+                v
+            }
+            _ => stored.to_vec(),
+        };
+        Self::new(name, ty, &raw).map(Some)
     }
 
     /// Prefix that confines range/prefix scans to one attribute name and type.
