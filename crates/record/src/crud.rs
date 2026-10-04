@@ -1,4 +1,4 @@
-use golemdb_branch::{BranchId, Branches, CellRead, read_head};
+use golemdb_branch::{BranchId, Branches, CellRead, CommitId, read_head};
 use golemdb_cells::{
     CellKey, CellLimits, CellName, CellNameRef, CellReader, CellValue, reserved, system,
 };
@@ -39,12 +39,25 @@ impl<S: Store, H: HashProvider> Records<S, H> {
         key: RecordKey,
         projection: Option<&[CellName]>,
     ) -> Result<Record> {
+        self.get_with_head(target, key, projection)
+            .map(|(record, _)| record)
+    }
+
+    /// Like `get`, and for a committed target also the head of the snapshot
+    /// the record was read from. `None` for branch reads.
+    pub fn get_with_head(
+        &self,
+        target: ReadTarget,
+        key: RecordKey,
+        projection: Option<&[CellName]>,
+    ) -> Result<(Record, Option<CommitId>)> {
         match target {
             ReadTarget::Branch(branch) => self
                 .branches
                 .read(branch, |cell_reader| {
                     read_branch_record(cell_reader, key, projection)
                 })
+                .map(|record| (record, None))
                 .map_err(Into::into),
             ReadTarget::Head | ReadTarget::Commit(_) => {
                 let tx = self.branches.store().begin_read()?;
@@ -55,6 +68,7 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                     return Err(RecordError::CommitUnavailable { requested, head });
                 }
                 read_committed_record(&CellReader::new(&tx), key, projection)
+                    .map(|record| (record, Some(head)))
             }
         }
     }
@@ -219,8 +233,8 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                 let mut details = Details::default();
                 for (address, value) in cells {
                     let name = address.name();
-                    // System cells such as #key are not counted.
-                    if CellNameRef::parse_user(name.as_bytes(), usize::MAX).is_ok() {
+                    // Reserved cells such as #key and #meta are not counted.
+                    if !CellNameRef::raw(name.as_bytes()).is_reserved() {
                         details.deleted(name.as_bytes(), &value);
                     }
                     cell_writer.delete(address);

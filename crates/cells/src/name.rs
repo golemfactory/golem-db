@@ -107,6 +107,13 @@ impl<'a> CellNameRef<'a> {
     pub const fn as_bytes(self) -> &'a [u8] {
         self.0
     }
+
+    /// Whether the name is in the reserved namespace: it begins with `#` or
+    /// `@`. User names begin with a letter or `$`, so a stored name is either
+    /// one or the other.
+    pub const fn is_reserved(self) -> bool {
+        matches!(self.0, [b'#' | b'@', ..])
+    }
 }
 
 impl fmt::Display for CellNameRef<'_> {

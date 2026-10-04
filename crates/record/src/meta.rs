@@ -29,7 +29,9 @@ impl RecordMeta {
     /// The metadata after a write with these effects.
     pub(crate) fn apply(self, details: &Details) -> Result<Self> {
         let adjust = |count: u64, added: u64, removed: u64| {
-            (count + added)
+            count
+                .checked_add(added)
+                .ok_or(RecordError::CorruptState("#meta count overflow"))?
                 .checked_sub(removed)
                 .ok_or(RecordError::CorruptState("#meta count below zero"))
         };
@@ -78,5 +80,36 @@ impl RecordMeta {
             indexed_cells: count(2),
             index_bytes: count(3),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecordMeta;
+    use crate::{Details, RecordError};
+
+    #[test]
+    fn counts_that_leave_the_u64_range_are_corrupt_state() {
+        let added = Details {
+            cells_created: 1,
+            ..Details::default()
+        };
+        let full = RecordMeta {
+            cells: u64::MAX,
+            ..RecordMeta::default()
+        };
+        assert!(matches!(
+            full.apply(&added),
+            Err(RecordError::CorruptState("#meta count overflow"))
+        ));
+        let removed = Details {
+            cells_deleted: 1,
+            ..Details::default()
+        };
+        assert!(matches!(
+            RecordMeta::default().apply(&removed),
+            Err(RecordError::CorruptState("#meta count below zero"))
+        ));
+        assert_eq!(RecordMeta::default().apply(&added).unwrap().cells, 1);
     }
 }

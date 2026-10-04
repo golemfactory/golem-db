@@ -1,7 +1,10 @@
 //! `RecordOp`: kinds and values, validation reported by the call, keys,
 //! projections and the accessors mocks use.
 
+use std::error::Error;
+
 use golemdb_api::*;
+use golemdb_cells::{CellNameError, CellParseError};
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 
@@ -173,4 +176,85 @@ fn a_budget_is_accepted_but_not_enforced_yet() {
     );
     assert_eq!(created.receipt.cost, 0);
     assert_eq!(created.into_result().unwrap(), KEY);
+}
+
+#[test]
+fn build_errors_name_the_step_and_keep_the_cause() {
+    let message = |op: std::result::Result<(), ApiError>| match op {
+        Err(ApiError::InvalidArgument { message, source }) => {
+            (message, source.map(|source| source.to_string()))
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    };
+    let error = RecordOp::create()
+        .key(KEY)
+        .field("price", 1i32)
+        .attribute("pri ce", 2i32)
+        .field("1st", 3i32)
+        .validate()
+        .unwrap_err();
+    // The first invalid step is kept; its typed cause is the source.
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<CellNameError>()),
+        Some(&CellNameError::InvalidByte { at: 3, byte: b' ' })
+    );
+    assert_eq!(
+        message(Err(error)).0,
+        r#"attribute("pri ce"): invalid cell name"#
+    );
+    let (text, source) = message(
+        RecordOp::create()
+            .key(KEY)
+            .attribute("payload", &b"x"[..])
+            .validate(),
+    );
+    assert_eq!(text, r#"attribute("payload"): invalid cell value"#);
+    assert_eq!(source, Some(CellParseError::NotIndexable.to_string()));
+    assert_eq!(
+        message(
+            RecordOp::patch(KEY)
+                .field("price", 1i32)
+                .remove("price")
+                .validate()
+        ),
+        (
+            r#"remove("price"): the operation already writes or removes this cell"#.into(),
+            None
+        )
+    );
+    assert_eq!(
+        message(RecordOp::create().key(KEY).key(KEY).validate()).0,
+        "key(): the record key is given twice"
+    );
+    assert!(
+        RecordOp::create()
+            .key(KEY)
+            .field("price", 1i32)
+            .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn operations_are_values_that_can_be_cloned_and_compared() {
+    let (db, branch) = db();
+    let op = RecordOp::create().key(KEY).field("price", 1i32).budget(10);
+    assert_eq!(op.clone(), op);
+    assert_ne!(op.clone().field("name", "x"), op);
+    db.create(branch, op.clone()).into_result().unwrap();
+    // Repeating the same operation, as after a Conflict, is the same call.
+    assert!(matches!(
+        db.create(branch, op).into_result(),
+        Err(ApiError::AlreadyExists)
+    ));
+    // A kept build error is part of the value too.
+    let broken = RecordOp::patch(KEY).field("", 1i32);
+    assert_eq!(broken.clone(), broken);
+    assert_ne!(broken, RecordOp::patch(KEY));
+    assert_eq!(
+        RecordOp::get(KEY).only(["a", "a"]),
+        RecordOp::get(KEY).only(["a"])
+    );
 }

@@ -113,6 +113,10 @@ fn reserved_names_take_a_sigil_then_the_grammar() {
             CellNameRef::parse_user(key.as_bytes(), MAX).is_err(),
             "{key}"
         );
+        assert!(key.is_reserved(), "{key}");
+    }
+    for user in [&b"price"[..], b"$owner", b"Price"] {
+        assert!(!CellNameRef::raw(user).is_reserved());
     }
 
     assert!(CellNameRef::parse_reserved(b"@admin").is_ok());

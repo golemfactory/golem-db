@@ -24,8 +24,8 @@ impl<T> Metered<T> {
     }
 
     /// An outcome with a zero-cost receipt and no effects, for mocks and
-    /// implementations without metering.
-    pub fn unmetered(result: Result<T, ApiError>, priced_at: CommitId) -> Self {
+    /// implementations without metering. `priced_at` is a commit or `None`.
+    pub fn unmetered(result: Result<T, ApiError>, priced_at: impl Into<Option<CommitId>>) -> Self {
         Self::new(result, Receipt::unmetered(priced_at, Details::default()))
     }
 
@@ -45,8 +45,11 @@ pub struct Receipt {
     /// The call's cost. **Always 0 until metering is implemented.**
     pub cost: u64,
     /// The commit whose cost schedule prices the call: for writes and branch
-    /// reads the branch's base commit, for reads at a commit that commit.
-    pub priced_at: CommitId,
+    /// reads the branch's base commit, for committed reads the head of the
+    /// snapshot read. `None` only when the call failed before that commit was
+    /// known: an unknown or consumed handle, or a failed head read. Never a
+    /// made-up value.
+    pub priced_at: Option<CommitId>,
     /// The call's effects on the record's user cells. Zero for reads and for
     /// failed calls, which apply nothing.
     ///
@@ -57,10 +60,10 @@ pub struct Receipt {
 
 impl Receipt {
     /// A zero-cost receipt.
-    pub fn unmetered(priced_at: CommitId, details: Details) -> Self {
+    pub fn unmetered(priced_at: impl Into<Option<CommitId>>, details: Details) -> Self {
         Self {
             cost: 0,
-            priced_at,
+            priced_at: priced_at.into(),
             details,
         }
     }

@@ -125,7 +125,10 @@ pub enum Delete {}
   `.key()` only on a create; a projection only on a get.
 - **Runtime checks, at the call:** key mode (`KeyModeMismatch`); invalid names, duplicate names, a
   set and a remove of the same name, `.key()` twice (`InvalidArgument`). Builder steps are
-  infallible; the first problem is reported by the call, so call sites have no `?` per step.
+  infallible; the first problem is reported by the call, so call sites have no `?` per step. The
+  error names the step (`field("price")`) and keeps a typed cause as its source; `.validate()`
+  reports it early. Each operation holds only its own data, and the kept error is a cloneable
+  internal type, so `RecordOp` is `Clone + PartialEq + Eq`.
 - **Values from Rust types:** `.attribute("price", 50i32)`, `.field("name", "Laptop")`. A conversion
   trait (`IntoCellValue`) covers integers, strings, bytes, booleans and `CellValue` itself;
   fallible conversions (a NaN float) are recorded and reported at the call like other errors. The
@@ -154,7 +157,9 @@ pub struct Metered<T> {
 #[non_exhaustive]
 pub struct Receipt {
     pub cost: u64,              // 0 until metering is implemented
-    pub priced_at: CommitId,    // writes and branch reads: the branch's base; get at a commit: that commit
+    pub priced_at: Option<CommitId>, // writes and branch reads: the branch's base; head reads: the
+                                     // snapshot's head; get at a commit: that commit. None only for
+                                     // an unknown or consumed handle or a failed head read
     pub details: Details,
 }
 

@@ -60,14 +60,13 @@ fn invalid_input_and_internal_failures_keep_diagnostic_sources() {
         invalid.source().unwrap().downcast_ref::<CellNameError>(),
         Some(&CellNameError::Empty)
     );
+    // Each text appears once in the chain: the message names the input, the
+    // source says what is wrong; a plain message has no source.
+    assert_eq!(invalid.to_string(), "invalid argument: invalid cell name");
+    assert_eq!(invalid.source().unwrap().to_string(), "cell name is empty");
     let invalid = ApiError::from(RecordError::InvalidArgument("deployment limit".into()));
-    assert!(
-        invalid
-            .source()
-            .unwrap()
-            .downcast_ref::<RecordError>()
-            .is_some()
-    );
+    assert_eq!(invalid.to_string(), "invalid argument: deployment limit");
+    assert!(invalid.source().is_none());
     let error = ApiError::from(BranchError::Storage(
         golemdb_storage::StorageError::Implementation("disk error".into()),
     ));

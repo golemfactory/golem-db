@@ -71,10 +71,15 @@ db.patch(branch, RecordOp::patch(key).attribute("price", 75i32).remove("descript
 
 Every write declares its kind: `attribute` for an indexed cell, `field` for a stored
 one. Values come from Rust types, and the type decides the cell type, so write
-`50i32` or `50i64` explicitly; a `CellValue` can be passed too and keeps its type.
-Builder steps never fail: the first invalid name, duplicate name (including a set and
-a removal of the same name) or invalid value is reported by the call as
-`InvalidArgument`. Deployment limits and record rules are checked by the call as well.
+`50i32` or `50i64` explicitly (an unsuffixed literal is an `i32`); a `CellValue` can
+be passed too and keeps its type. Byte strings are slices or fixed-width arrays:
+`&b"abc"[..]` for `bytes`, `*b"abcd"` for `bytes4`. Builder steps never fail: the
+first invalid name, duplicate name (including a set and a removal of the same name) or
+invalid value is reported by the call as `InvalidArgument`, naming the step, such as
+`field("price")`, with the cause as the error's source. `op.validate()` reports it
+before the call. Deployment limits and record rules are checked by the call as well.
+Operations are plain values: `Clone` to repeat a call after a `Conflict`, `PartialEq`
+to compare them in a mock.
 How keys are assigned is fixed in genesis (`record_keys`). With caller-assigned keys a
 create names its key with `.key(k)`; with generated keys it names none, and the
 database returns the key it derived. A create that does not match the mode fails with
@@ -103,7 +108,9 @@ works only on `Result`, so use `.into_result()?` or `.result?`. A `Receipt` has:
 
 - `cost`: always 0 until metering is implemented.
 - `priced_at`: the commit whose cost schedule prices the call: a write's or branch
-  read's base commit, or the commit a read targets.
+  read's base commit, the head of the snapshot a head read used, or the commit a read
+  targets. `None` only when that commit is unknown, for an unknown or consumed handle
+  or a failed head read. Building a receipt never invalidates a branch.
 - `details`: the call's effects on user cells, as in the metering spec: cells
   created, updated and deleted, index joins and leaves, and cell and index bytes
   written and deleted. Effects, not requests: setting a cell to its current value
@@ -433,8 +440,29 @@ the future behavior; it does not cover the optional row keys yet.
 
 Implemented: typed cells, record operations with receipts, empty records and `#meta`,
 both key modes, atomic opening and genesis, and a cloneable `Database` with shared
-branch state. Deferred: metering (real costs, budget enforcement, the ledger),
-historical reads, query and count, proofs, OCC, and transport serialization.
+branch state.
+
+Not implemented yet, although the [API specification](../../docs/golem-db-api.md)
+describes them:
+
+- History and change sets: no historical `get` (`ReadTarget::Commit` accepts the head
+  only) and no `rewind`.
+- `begin(at?)`: a branch always starts at the head.
+- `branch_hash`.
+- `branch_info` returns `{commit_id, branch_id, version, sealed}`, not the specified
+  `{origin, frame_depth}`.
+- `roots(at?)` and `params()`.
+- Query and count.
+- Proofs.
+- Metering: real costs, budget enforcement and `OutOfBudget { spent }`, the ledger, and
+  the metering admin API with its separate admin handle.
+- Immutable data: stubs only (above).
+- Transport serialization; adapters own it.
+
+Known differences from the specification, still to be decided: a sealed branch
+rejects reads as well as writes (`Sealed`), where the specification keeps it readable;
+and a stale branch reports `Conflict` only when `commit` is its first call after
+losing the race (see above).
 
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks

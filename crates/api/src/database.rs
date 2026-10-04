@@ -207,19 +207,11 @@ impl<S: Store, H: HashProvider> Inner<S, H> {
 }
 
 impl<S: Store, H: HashProvider> Inner<S, H> {
-    /// The commit pricing a call on `branch`: its base commit, or the head if
-    /// the handle is unknown (the call fails then, with a zero-cost receipt).
-    fn priced_at(&self, branch: BranchId) -> CommitId {
-        self.branches
-            .branch_info(branch)
-            .map(|info| info.commit_id)
-            .or_else(|_| self.branches.head())
-            .unwrap_or_default()
-    }
-
-    /// A write's outcome with its receipt: the effects on success, none on failure.
-    fn write_receipt<T>(&self, branch: BranchId, outcome: Result<(T, Details)>) -> Metered<T> {
-        let priced_at = self.priced_at(branch);
+    /// A write's outcome with its receipt: the effects on success, none on
+    /// failure. `priced_at` is the branch's origin, taken before the call with
+    /// `Branches::origin`: a lookup without side effects, so building a receipt
+    /// never invalidates a branch, and an origin never changes, so it cannot race.
+    fn write_receipt<T>(priced_at: Option<CommitId>, outcome: Result<(T, Details)>) -> Metered<T> {
         match outcome {
             Ok((value, details)) => Metered::new(Ok(value), Receipt::unmetered(priced_at, details)),
             Err(error) => Metered::new(
@@ -232,40 +224,57 @@ impl<S: Store, H: HashProvider> Inner<S, H> {
 
 impl<S: Store, H: HashProvider> Api for Inner<S, H> {
     fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey> {
+        let priced_at = self.branches.origin(branch);
         let outcome = op.into_create().and_then(|(key, cells)| {
             Ok(match key {
                 Some(key) => self.records.create(branch, key, cells)?,
                 None => self.records.create_generated(branch, cells)?,
             })
         });
-        self.write_receipt(branch, outcome)
+        Self::write_receipt(priced_at, outcome)
     }
     fn get(&self, target: ReadTarget, op: RecordOp<op::Get>) -> Metered<Record> {
-        let priced_at = match target {
-            ReadTarget::Commit(commit) => commit,
-            ReadTarget::Branch(branch) => self.priced_at(branch),
-            ReadTarget::Head => self.branches.head().unwrap_or_default(),
+        let branch_origin = match target {
+            ReadTarget::Branch(branch) => self.branches.origin(branch),
+            _ => None,
         };
         let (key, projection) = op.into_get();
-        let result = self
+        match self
             .records
-            .get(target, key, projection.as_deref())
-            .map_err(Into::into);
-        Metered::new(result, Receipt::unmetered(priced_at, Details::default()))
+            .get_with_head(target, key, projection.as_deref())
+        {
+            // A committed read is priced at the head of the snapshot it read.
+            Ok((record, head)) => Metered::new(
+                Ok(record),
+                Receipt::unmetered(head.or(branch_origin), Details::default()),
+            ),
+            Err(error) => {
+                let priced_at = match target {
+                    ReadTarget::Commit(commit) => Some(commit),
+                    _ => branch_origin,
+                };
+                Metered::new(
+                    Err(error.into()),
+                    Receipt::unmetered(priced_at, Details::default()),
+                )
+            }
+        }
     }
     fn patch(&self, branch: BranchId, op: RecordOp<op::Patch>) -> Metered<()> {
+        let priced_at = self.branches.origin(branch);
         let outcome = op
             .into_patch()
             .and_then(|(key, changes)| Ok(((), self.records.patch(branch, key, changes)?)));
-        self.write_receipt(branch, outcome)
+        Self::write_receipt(priced_at, outcome)
     }
     fn delete(&self, branch: BranchId, op: RecordOp<op::Delete>) -> Metered<()> {
+        let priced_at = self.branches.origin(branch);
         let outcome = self
             .records
             .delete(branch, op.into_delete())
             .map(|details| ((), details))
             .map_err(Into::into);
-        self.write_receipt(branch, outcome)
+        Self::write_receipt(priced_at, outcome)
     }
     fn head(&self) -> Result<CommitId> {
         self.branches.head().map_err(Into::into)

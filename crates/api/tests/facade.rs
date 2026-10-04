@@ -285,17 +285,15 @@ fn reserved_records_limits_and_failed_mutations_preserve_state() {
         db.create(branch, input(KEY, 50)).into_result().unwrap();
         let before = get(&db, ReadTarget::Branch(branch));
         let info = db.branch_info(branch).unwrap();
-        for bad in [RecordOp::patch(KEY)
+        let bad = RecordOp::patch(KEY)
             .field("aaa", true)
-            .field("zzz", "v".repeat(65))]
-        {
-            assert!(matches!(
-                db.patch(branch, bad).into_result(),
-                Err(ApiError::InvalidArgument { .. })
-            ));
-            assert_eq!(get(&db, ReadTarget::Branch(branch)), before);
-            assert_eq!(db.branch_info(branch).unwrap(), info);
-        }
+            .field("zzz", "v".repeat(65));
+        assert!(matches!(
+            db.patch(branch, bad).into_result(),
+            Err(ApiError::InvalidArgument { .. })
+        ));
+        assert_eq!(get(&db, ReadTarget::Branch(branch)), before);
+        assert_eq!(db.branch_info(branch).unwrap(), info);
         db.commit(branch).unwrap();
     });
 }

@@ -77,9 +77,11 @@ impl ApiError {
         }
     }
 
-    fn invalid_input(source: impl Error + Send + Sync + 'static) -> Self {
+    /// A typed cause: the message names the kind of input, the source says
+    /// what is wrong with it, so error reports print each text once.
+    fn invalid_input(what: &str, source: impl Error + Send + Sync + 'static) -> Self {
         Self::InvalidArgument {
-            message: source.to_string(),
+            message: what.into(),
             source: Some(Box::new(source)),
         }
     }
@@ -87,13 +89,13 @@ impl ApiError {
 
 impl From<CellNameError> for ApiError {
     fn from(error: CellNameError) -> Self {
-        Self::invalid_input(error)
+        Self::invalid_input("invalid cell name", error)
     }
 }
 
 impl From<CellParseError> for ApiError {
     fn from(error: CellParseError) -> Self {
-        Self::invalid_input(error)
+        Self::invalid_input("invalid cell value", error)
     }
 }
 
@@ -104,10 +106,9 @@ impl From<RecordError> for ApiError {
             RecordError::AlreadyExists => Self::AlreadyExists,
             RecordError::KeyModeMismatch => Self::KeyModeMismatch,
             RecordError::Reserved => Self::Reserved,
-            RecordError::InvalidArgument(ref message) => Self::InvalidArgument {
-                message: message.clone(),
-                source: Some(Box::new(error)),
-            },
+            // The message is the whole error; repeating it as a source would
+            // print it twice in error reports.
+            RecordError::InvalidArgument(message) => Self::invalid_argument(message),
             RecordError::CommitUnavailable { requested, head } => {
                 Self::CommitUnavailable { requested, head }
             }

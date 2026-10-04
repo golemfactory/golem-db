@@ -96,6 +96,17 @@ impl<S: Store, H: HashProvider> Branches<S, H> {
         &self.inner.hasher
     }
 
+    /// The commit a branch was opened over, or `None` for an unknown or consumed
+    /// handle. A pure lookup: unlike every other operation it does not check the
+    /// branch against the head, so it never invalidates a stale branch, and it
+    /// reads no storage. A branch's origin never changes, so the answer cannot
+    /// race with commits.
+    pub fn origin(&self, branch_id: BranchId) -> Option<CommitId> {
+        let entry = self.inner.branches.lock().ok()?.get(&branch_id).cloned()?;
+        let slot = entry.lock().ok()?;
+        slot.as_ref().map(|state| state.commit_id)
+    }
+
     /// Open a manager over an initialized head. Performs no writes and fails
     /// if the head is missing, malformed, or unreadable.
     pub fn new(store: S, hasher: H) -> Result<Self> {
