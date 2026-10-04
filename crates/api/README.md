@@ -273,6 +273,30 @@ let db = Database::open(&store, &config)?;
 # Ok::<(), golemdb_api::OpenError>(())
 ```
 
+The same settings can live in a store file, kept separate from the genesis file:
+genesis is identical on every node and may never change, while store settings are
+local to a node and may change between restarts.
+
+```yaml
+mdbx:
+  path: data                     # relative to this file's directory
+  options:                       # optional; omitted options keep their defaults
+    max_map_size: 8589934592     # 8 GiB
+```
+
+`memory` alone selects the in-memory store. Unknown fields are rejected, and errors
+are reported as `OpenError::StoreYaml`. `StoreConfig::load(path)` resolves a relative
+`path` against the store file's directory; `StoreConfig::from_yaml(text)` has no file
+location and leaves it relative to the current directory.
+
+```rust
+use golemdb_api::{Config, Database, Genesis, StoreConfig};
+
+let config = Config::new(Genesis::load("genesis.yaml")?);
+let db = Database::open(StoreConfig::load("store.yaml")?, &config)?;
+# Ok::<(), golemdb_api::OpenError>(())
+```
+
 `Config` holds what applies to every store: the `Genesis` and the `OpenMode`. Store
 settings are local to a node and never part of the genesis identity. Open an MDBX
 directory at most once per process and share it with `clone`; another process may

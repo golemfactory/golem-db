@@ -7,6 +7,8 @@ pub enum OpenError {
     Io(#[source] std::io::Error),
     #[error("invalid genesis YAML: {0}")]
     Yaml(#[source] serde_saphyr::Error),
+    #[error("invalid store YAML: {0}")]
+    StoreYaml(#[source] serde_saphyr::Error),
     #[error("invalid opening configuration: {0}")]
     InvalidConfig(String),
     #[error("database is not initialized")]

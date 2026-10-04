@@ -174,3 +174,97 @@ impl From<std::path::PathBuf> for StoreConfig {
         Self::mdbx(path)
     }
 }
+
+impl StoreConfig {
+    /// Parse a store file. Relative MDBX paths stay relative to the current
+    /// directory; use [`StoreConfig::load`] to resolve them against the file.
+    ///
+    /// ```yaml
+    /// mdbx:
+    ///   path: ./data
+    ///   options:             # optional; omitted options keep their defaults
+    ///     max_map_size: 68719476736
+    /// ```
+    ///
+    /// `memory` selects the in-memory store. Unknown fields are rejected.
+    pub fn from_yaml(yaml: &str) -> OpenResult<Self> {
+        StoreFile::parse(yaml)?.into_config(None)
+    }
+
+    /// Read a store file from this explicit path. A relative MDBX path in the
+    /// file is resolved against the file's directory, not the current one.
+    /// Keep the store file separate from the genesis file: store settings are
+    /// local to a node and may change between restarts; genesis may not.
+    pub fn load(path: impl AsRef<Path>) -> OpenResult<Self> {
+        let path = path.as_ref();
+        let yaml = std::fs::read_to_string(path).map_err(OpenError::Io)?;
+        StoreFile::parse(&yaml)?.into_config(path.parent())
+    }
+}
+
+/// The store file's YAML shape. Kept apart from `StoreConfig` so that
+/// golemdb-storage needs no serde, and omitted options fall back to the
+/// store implementation's defaults.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+enum StoreFile {
+    Memory,
+    Mdbx(MdbxFile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+struct MdbxFile {
+    path: std::path::PathBuf,
+    #[serde(default)]
+    options: MdbxOptionsFile,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+struct MdbxOptionsFile {
+    max_tables: Option<u64>,
+    max_map_size: Option<usize>,
+    growth_step: Option<usize>,
+}
+
+impl StoreFile {
+    fn parse(yaml: &str) -> OpenResult<Self> {
+        serde_saphyr::from_str(yaml).map_err(OpenError::StoreYaml)
+    }
+
+    fn into_config(self, base: Option<&Path>) -> OpenResult<StoreConfig> {
+        match self {
+            StoreFile::Memory => Ok(StoreConfig::Memory),
+            #[cfg(feature = "mdbx")]
+            StoreFile::Mdbx(file) => {
+                let mut options = golemdb_storage::MdbxOptions::default();
+                if let Some(value) = file.options.max_tables {
+                    options.max_tables = value;
+                }
+                if let Some(value) = file.options.max_map_size {
+                    options.max_map_size = value;
+                }
+                if let Some(value) = file.options.growth_step {
+                    options.growth_step = value;
+                }
+                let path = match base {
+                    Some(base) if file.path.is_relative() => base.join(&file.path),
+                    _ => file.path,
+                };
+                Ok(StoreConfig::Mdbx { path, options })
+            }
+            #[cfg(not(feature = "mdbx"))]
+            StoreFile::Mdbx(_) => {
+                let _ = base;
+                Err(OpenError::InvalidConfig(
+                    "the store file selects MDBX, but golemdb-api was built without the mdbx feature"
+                        .into(),
+                ))
+            }
+        }
+    }
+}
