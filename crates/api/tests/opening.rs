@@ -15,6 +15,12 @@ fn config() -> Config {
     Config::new(Genesis::from_yaml(YAML).unwrap())
 }
 
+/// One user cell, for creating records through the record layer directly.
+fn cells(name: &str, value: CellValue, kind: CellKind) -> golemdb_record::RecordCells {
+    let name = CellNameRef::parse_user(name.as_bytes(), usize::MAX).unwrap();
+    [(name.into(), value.with_kind(kind).unwrap())].into()
+}
+
 fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     [
@@ -127,10 +133,8 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     let branches = Branches::new(opened.into_store(), hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
-    let input = RecordInput::new()
-        .attribute("price", CellValue::from_i32(50))
-        .unwrap();
-    records.create(branch, KEY, input.into_cells()).unwrap();
+    let input = cells("price", CellValue::from_i32(50), CellKind::Attribute);
+    records.create(branch, KEY, input).unwrap();
     assert_eq!(branches.commit(branch).unwrap(), 1);
     let before = snapshot(&db);
     let reopened = open_store(db.clone(), &config.with_mode(OpenMode::ExistingOnly)).unwrap();
@@ -416,10 +420,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
                     .create(
                         branch,
                         KEY,
-                        RecordInput::new()
-                            .field("price", CellValue::from_i32(50))
-                            .unwrap()
-                            .into_cells(),
+                        cells("price", CellValue::from_i32(50), CellKind::Field),
                     )
                     .unwrap();
                 branches.commit(branch).unwrap()
@@ -432,10 +433,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
                     .create(
                         branch,
                         KEY,
-                        RecordInput::new()
-                            .field("price", CellValue::from_i32(50))
-                            .unwrap()
-                            .into_cells(),
+                        cells("price", CellValue::from_i32(50), CellKind::Field),
                     )
                     .unwrap();
                 branches.commit(branch).unwrap()
@@ -500,13 +498,12 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let branches = Branches::new(opened.into_store(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
-    let input = RecordInput::new()
-        .attribute(
-            &"a".repeat(cfg.genesis.cell_limits.max_cell_name_len as usize),
-            CellValue::from_str(&"v".repeat(cfg.genesis.cell_limits.max_str_len as usize)),
-        )
-        .unwrap();
-    records.create(branch, KEY, input.into_cells()).unwrap();
+    let input = cells(
+        &"a".repeat(cfg.genesis.cell_limits.max_cell_name_len as usize),
+        CellValue::from_str(&"v".repeat(cfg.genesis.cell_limits.max_str_len as usize)),
+        CellKind::Attribute,
+    );
+    records.create(branch, KEY, input).unwrap();
     branches.commit(branch).unwrap();
 }
 

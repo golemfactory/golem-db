@@ -19,19 +19,18 @@ The examples use persistent MDBX storage. Enable the `mdbx` feature on
 Use a fresh database directory for the catalogue examples.
 
 ```rust
-use golemdb_api::{Api, CellValue, Config, Database, Genesis, Projection, ReadTarget,
-    RecordInput, RecordKey};
+use golemdb_api::{Api, Config, Database, Genesis, ReadTarget, RecordKey, RecordOp};
 
 // Genesis::DEV is for development and examples; deployments load their own genesis.
 let db = Database::open("./golemdb-quickstart", &Config::new(Genesis::DEV))?;
 let branch = db.begin()?;
 let key = RecordKey([0x42; 32]);
-db.create(branch, key, RecordInput::new()
-    .attribute("price", CellValue::from_i32(50))?
-    .field("description", CellValue::from_str("A product"))?)?;
-let pending = db.clone().get(ReadTarget::Branch(branch), key, Projection::All)?;
+db.create(branch, RecordOp::create().key(key)
+    .attribute("price", 50i32)
+    .field("description", "A product")).into_result()?;
+let pending = db.clone().get(ReadTarget::Branch(branch), RecordOp::get(key)).into_result()?;
 db.commit(branch)?;
-assert_eq!(db.get(ReadTarget::Head, key, Projection::All)?, pending);
+assert_eq!(db.get(ReadTarget::Head, RecordOp::get(key)).into_result()?, pending);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -40,33 +39,61 @@ committed MDBX state survives reopening. Handles belong to one open database:
 separate opens over a shared store have separate registries. Use `clone` to share
 handles.
 
-## Inputs and reads
+## Record operations and receipts
+
+Each record call takes a `RecordOp` built for it: `RecordOp::create()`,
+`RecordOp::patch(key)`, `RecordOp::get(key)` or `RecordOp::delete(key)`. The
+operation decides which methods exist: only a create takes `.key(k)`, only a patch
+can `.remove(name)`, only a get can narrow its cells with `.only([names])`. Every call
+returns a `Metered` outcome: the result together with a receipt.
 
 ```rust
-use golemdb_api::{CellValue, PatchInput, Projection, RecordInput};
+use golemdb_api::{Api, Database, Genesis, RecordKey, RecordOp};
 
-let record = RecordInput::new()
-    .attribute("price", CellValue::from_i32(50))?
-    .field("description", CellValue::from_str("A product"))?;
-let patch = PatchInput::new()
-    .attribute("price", CellValue::from_i32(75))?
-    .remove("description")?;
-let projection = Projection::only(["price", "#key"]);
-# Ok::<(), golemdb_api::ApiError>(())
+let db = Database::open_memory(&Genesis::DEV)?;
+let branch = db.begin()?;
+let key = RecordKey([1; 32]);
+let created = db.create(branch, RecordOp::create().key(key)
+    .attribute("price", 50i32)
+    .field("description", "A product"));
+// The receipt is there whether the call succeeded or failed.
+assert_eq!(created.receipt.cost, 0); // not metered yet
+assert_eq!(created.receipt.details.cells_created, 2);
+created.into_result()?;
+db.patch(branch, RecordOp::patch(key).attribute("price", 75i32).remove("description"))
+    .into_result()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Explicit cell constructors own value encoding. The input helpers choose field or
-attribute kind; `RecordInput::insert` and `PatchInput::set` preserve the supplied
-value's kind. Builders reject invalid names, unindexable attributes, and duplicate
-names, including a set and removal for the same name. Conversion from existing
-record maps checks name syntax. Deployment limits and record invariants remain
-execution-time checks in record.
+Every write declares its kind: `attribute` for an indexed cell, `field` for a stored
+one. Values come from Rust types, and the type decides the cell type, so write
+`50i32` or `50i64` explicitly; a `CellValue` can be passed too and keeps its type.
+Builder steps never fail: the first invalid name, duplicate name (including a set and
+a removal of the same name) or invalid value is reported by the call as
+`InvalidArgument`. Deployment limits and record rules are checked by the call as well.
+A create must name its key: every database uses caller-assigned keys today, and a
+create without one fails with `KeyModeMismatch`.
+
+`Metered::into_result()` drops the receipt for callers that do not charge; Rust's `?`
+works only on `Result`, so use `.into_result()?` or `.result?`. A `Receipt` has:
+
+- `cost`: always 0 until metering is implemented.
+- `priced_at`: the commit whose cost schedule prices the call: a write's or branch
+  read's base commit, or the commit a read targets.
+- `details`: the call's effects on user cells, as in the metering spec: cells
+  created, updated and deleted, index joins and leaves, and cell and index bytes
+  written and deleted. Effects, not requests: setting a cell to its current value
+  counts nothing, and failed calls and reads report zero. Details are always present
+  in this version; a later version may make them optional per call.
+
+`RecordOp::budget(n)` caps a call's cost. It is not enforced yet: every call costs 0
+until metering is implemented, so `ApiError::OutOfBudget` is not returned yet.
 
 `ReadTarget::Branch(id)` reads work in progress. `ReadTarget::Head` resolves head
 and reads the record in one storage snapshot. `ReadTarget::Commit(id)` currently
 accepts only that snapshot's head; historical reads are deferred.
-`Projection::All` reads all cells. `Projection::only` accepts text or raw byte names
-for reserved records; an empty projection still checks existence.
+A get reads all cells unless narrowed with `.only([names])`, which accepts text or raw
+byte names for reserved records; an empty list still checks that the record exists.
 
 `ApiError` exposes common failures directly and retains diagnostic sources for
 invalid input and internal failures. A live stale branch's commit returns
@@ -90,8 +117,8 @@ another branch can still win the commit race.
 
 ```rust
 use golemdb_api::{
-    Api, ApiError, CellLimits, CellValue, Config, Database, Genesis, HashAlgorithm,
-    OpenMode, PatchInput, Projection, ReadTarget, RecordInput, RecordKey,
+    Api, ApiError, CellLimits, Config, Database, Genesis, HashAlgorithm, OpenMode,
+    ReadTarget, RecordKey, RecordOp,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,12 +146,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         db.create(
             branch,
-            key,
-            RecordInput::new()
-                .attribute("name", CellValue::from_str(name))?
-                .attribute("price_cents", CellValue::from_i32(price_cents))?
-                .field("description", CellValue::from_str(description))?,
-        )?;
+            RecordOp::create()
+                .key(key)
+                .attribute("name", name)
+                .attribute("price_cents", price_cents)
+                .field("description", description),
+        )
+        .into_result()?;
     }
     // Seal computes roots and freezes the branch; nothing is published yet.
     let first_seal = db.seal(branch)?;
@@ -136,16 +164,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(first_commit, 1); // Opening created genesis at commit 0.
 
     // 2. Read a full record and a projection from committed state.
-    let saved_laptop = db.get(ReadTarget::Head, laptop, Projection::All)?;
+    let saved_laptop = db.get(ReadTarget::Head, RecordOp::get(laptop)).into_result()?;
     assert_eq!(saved_laptop.cells[b"price_cents".as_slice()].as_i32(), Some(120_000));
     assert_eq!(saved_laptop.cells[b"#key".as_slice()].as_bytes32(), Some(laptop.0));
 
     // An explicit commit target is supported while that commit is the head.
-    let saved_keyboard = db.get(
-        ReadTarget::Commit(first_commit),
-        keyboard,
-        Projection::only(["name", "price_cents"]),
-    )?;
+    let saved_keyboard = db
+        .get(
+            ReadTarget::Commit(first_commit),
+            RecordOp::get(keyboard).only(["name", "price_cents"]),
+        )
+        .into_result()?;
     assert_eq!(saved_keyboard.cells.len(), 2);
     assert_eq!(saved_keyboard.cells[b"name".as_slice()].as_str(), Some("Keyboard"));
 
@@ -154,31 +183,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let branch = db.begin()?;
     db.patch(
         branch,
-        laptop,
-        PatchInput::new()
-            .attribute("price_cents", CellValue::from_i32(110_000))?
-            .field("stock", CellValue::from_u32(5))?
-            .remove("description")?,
-    )?;
+        RecordOp::patch(laptop)
+            .attribute("price_cents", 110_000i32)
+            .field("stock", 5u32)
+            .remove("description"),
+    )
+    .into_result()?;
     db.create(
         branch,
-        monitor,
-        RecordInput::new()
-            .attribute("name", CellValue::from_str("Monitor"))?
-            .attribute("price_cents", CellValue::from_i32(30_000))?
-            .field("description", CellValue::from_str("27-inch monitor"))?,
-    )?;
-    db.delete(branch, mouse)?;
+        RecordOp::create()
+            .key(monitor)
+            .attribute("name", "Monitor")
+            .attribute("price_cents", 30_000i32)
+            .field("description", "27-inch monitor"),
+    )
+    .into_result()?;
+    db.delete(branch, RecordOp::delete(mouse)).into_result()?;
 
     // Branch reads see the changes immediately; head still contains commit 1.
-    let pending_laptop = db.get(ReadTarget::Branch(branch), laptop, Projection::All)?;
+    let pending_laptop = db.get(ReadTarget::Branch(branch), RecordOp::get(laptop)).into_result()?;
     assert_eq!(pending_laptop.cells[b"price_cents".as_slice()].as_i32(), Some(110_000));
-    assert_eq!(db.get(ReadTarget::Head, laptop, Projection::All)?, saved_laptop);
+    assert_eq!(db.get(ReadTarget::Head, RecordOp::get(laptop)).into_result()?, saved_laptop);
     assert!(matches!(
-        db.get(ReadTarget::Branch(branch), mouse, Projection::All),
+        db.get(ReadTarget::Branch(branch), RecordOp::get(mouse)).into_result(),
         Err(ApiError::NotFound)
     ));
-    assert!(db.get(ReadTarget::Head, mouse, Projection::All).is_ok());
+    assert!(db.get(ReadTarget::Head, RecordOp::get(mouse)).into_result().is_ok());
 
     // Finish pending reads before sealing: a sealed branch rejects record
     // reads/writes, checkpoints, and rollback. Head reads remain available.
@@ -187,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("State root: {:02x?}", second_seal.state_root);
     println!("Index root: {:02x?}", second_seal.index_root);
     assert_eq!(db.head()?, first_commit);
-    assert_eq!(db.get(ReadTarget::Head, laptop, Projection::All)?, saved_laptop);
+    assert_eq!(db.get(ReadTarget::Head, RecordOp::get(laptop)).into_result()?, saved_laptop);
     assert_eq!(db.seal(branch)?, second_seal); // Repeated seal returns the same result.
 
     // Commit publishes the sealed changes and consumes the branch handle.
@@ -198,23 +228,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Read again: laptop changed, keyboard stayed the same, monitor appeared,
     //    and mouse disappeared. Use Head now; historical commit 1 is deferred.
-    let updated_laptop = db.get(ReadTarget::Head, laptop, Projection::All)?;
+    let updated_laptop = db.get(ReadTarget::Head, RecordOp::get(laptop)).into_result()?;
     assert_eq!(updated_laptop, pending_laptop);
     assert_eq!(updated_laptop.cells[b"stock".as_slice()].as_u32(), Some(5));
     assert!(!updated_laptop.cells.contains_key(b"description".as_slice()));
 
-    let unchanged_keyboard = db.get(
-        ReadTarget::Head,
-        keyboard,
-        Projection::only(["name", "price_cents"]),
-    )?;
+    let unchanged_keyboard = db.get(ReadTarget::Head, RecordOp::get(keyboard).only(["name", "price_cents"])).into_result()?;
     assert_eq!(unchanged_keyboard, saved_keyboard);
 
-    let new_monitor = db.get(ReadTarget::Head, monitor, Projection::All)?;
+    let new_monitor = db.get(ReadTarget::Head, RecordOp::get(monitor)).into_result()?;
     assert_eq!(new_monitor.cells[b"name".as_slice()].as_str(), Some("Monitor"));
     assert_eq!(new_monitor.cells[b"price_cents".as_slice()].as_i32(), Some(30_000));
     assert!(matches!(
-        db.get(ReadTarget::Head, mouse, Projection::All),
+        db.get(ReadTarget::Head, RecordOp::get(mouse)).into_result(),
         Err(ApiError::NotFound)
     ));
 
@@ -371,7 +397,8 @@ the future behavior, including pruning and rewind of key bindings.
 
 All four iterations are implemented: typed cells, the facade contract and builders,
 atomic opening/genesis, and a cloneable `Database` with shared branch state.
-Budgets, cost receipts, generated keys, OCC, and transport serialization are deferred.
+Metering (real costs, budget enforcement, the ledger), generated keys, OCC, and transport
+serialization are deferred; receipts already report each call's effects.
 
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks

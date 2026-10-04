@@ -4,22 +4,23 @@ use std::sync::{Arc, Mutex};
 use golemdb_api::*;
 
 struct MockApi {
-    created: Mutex<Vec<(BranchId, RecordKey, RecordInput)>>,
+    created: Mutex<Vec<(BranchId, RecordOp<op::Create>)>>,
     commit_result: Mutex<Option<Result<CommitId>>>,
 }
 
 impl Api for MockApi {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
-        self.created.lock().unwrap().push((branch, key, cells));
-        Ok(key)
+    fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey> {
+        let key = op.record_key().expect("the script assigns keys");
+        self.created.lock().unwrap().push((branch, op));
+        Metered::unmetered(Ok(key), 0)
     }
-    fn get(&self, _: ReadTarget, _: RecordKey, _: Projection) -> Result<Record> {
+    fn get(&self, _: ReadTarget, _: RecordOp<op::Get>) -> Metered<Record> {
         panic!("get was not expected by this script")
     }
-    fn patch(&self, _: BranchId, _: RecordKey, _: PatchInput) -> Result<()> {
+    fn patch(&self, _: BranchId, _: RecordOp<op::Patch>) -> Metered<()> {
         panic!("patch was not expected by this script")
     }
-    fn delete(&self, _: BranchId, _: RecordKey) -> Result<()> {
+    fn delete(&self, _: BranchId, _: RecordOp<op::Delete>) -> Metered<()> {
         panic!("delete was not expected by this script")
     }
     fn begin(&self) -> Result<BranchId> {
@@ -87,9 +88,9 @@ impl Api for MockApi {
 fn stage_price(api: &dyn Api, branch: BranchId, key: RecordKey) -> Result<RecordKey> {
     api.create(
         branch,
-        key,
-        RecordInput::new().attribute("price", CellValue::from_i32(50))?,
+        RecordOp::create().key(key).attribute("price", 50i32),
     )
+    .into_result()
 }
 
 fn create_price(api: Arc<dyn Api + Send + Sync>, key: RecordKey) -> Result<CommitId> {
@@ -120,9 +121,9 @@ fn facade_trait_accepts_thread_safe_mocks_and_injected_failures() {
         assert_eq!(mock.created.lock().unwrap().len(), 1);
         assert!(mock.commit_result.lock().unwrap().is_none());
         let calls = mock.created.lock().unwrap();
-        assert_eq!((calls[0].0, calls[0].1), (7, key));
+        assert_eq!((calls[0].0, calls[0].1.record_key()), (7, Some(key)));
         assert_eq!(
-            calls[0].2.as_cells()[b"price".as_slice()].as_i32(),
+            calls[0].1.value("price").and_then(CellValue::as_i32),
             Some(50)
         );
     }

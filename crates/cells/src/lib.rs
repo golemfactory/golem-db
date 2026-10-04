@@ -145,7 +145,7 @@ pub use key::{CellKey, CellKeyError};
 pub use name::{CellName, CellNameError, CellNameRef, reserved};
 pub use order::{decode_float, encode_float, flip_sign};
 pub use types::{CellKind, CellType, FloatWidth, Width};
-pub use value::{CellValue, CellValueRef};
+pub use value::{CellValue, CellValueRef, IntoCellValue};
 
 /// Cell trie paths are full hash digests of the encoded cell key.
 pub const CELL_TRIE_PATH_BYTES: usize = size_of::<golemdb_merkle::Hash>();

@@ -85,27 +85,32 @@ fn failure_contract(store: impl Store + Send + Sync + 'static) {
     let branch = db.begin().unwrap();
     db.create(
         branch,
-        key,
-        RecordInput::new()
-            .attribute("price", CellValue::from_i32(50))
-            .unwrap(),
+        RecordOp::create().key(key).attribute("price", 50i32),
     )
+    .into_result()
     .unwrap();
     let pending = db
-        .get(ReadTarget::Branch(branch), key, Projection::All)
+        .get(ReadTarget::Branch(branch), RecordOp::get(key))
+        .into_result()
         .unwrap();
     let info = db.branch_info(branch).unwrap();
     fail_reads.store(true, Ordering::SeqCst);
-    diagnostic(db.get(ReadTarget::Head, key, Projection::All).unwrap_err());
     diagnostic(
-        db.patch(branch, key, PatchInput::new().remove("price").unwrap())
+        db.get(ReadTarget::Head, RecordOp::get(key))
+            .into_result()
+            .unwrap_err(),
+    );
+    diagnostic(
+        db.patch(branch, RecordOp::patch(key).remove("price"))
+            .into_result()
             .unwrap_err(),
     );
     diagnostic(db.head().unwrap_err());
     fail_reads.store(false, Ordering::SeqCst);
     assert_eq!(db.branch_info(branch).unwrap(), info);
     assert_eq!(
-        db.get(ReadTarget::Branch(branch), key, Projection::All)
+        db.get(ReadTarget::Branch(branch), RecordOp::get(key))
+            .into_result()
             .unwrap(),
         pending
     );
@@ -118,7 +123,9 @@ fn failure_contract(store: impl Store + Send + Sync + 'static) {
     fail_writes.store(false, Ordering::SeqCst);
     assert_eq!(db.commit(branch).unwrap(), sealed.commit_id);
     assert_eq!(
-        db.get(ReadTarget::Head, key, Projection::All).unwrap(),
+        db.get(ReadTarget::Head, RecordOp::get(key))
+            .into_result()
+            .unwrap(),
         pending
     );
 }
@@ -159,8 +166,10 @@ fn full_store_reports_store_full_and_recovers_with_a_larger_cap() {
         for i in 0u32..600 {
             let mut key = [0; 32];
             key[..4].copy_from_slice(&i.to_be_bytes());
-            let cells = RecordInput::new().field("v", CellValue::from_bytes(&[7; 128]))?;
-            db.create(branch, RecordKey(key), cells)?;
+            let op = RecordOp::create()
+                .key(RecordKey(key))
+                .field("v", &[7u8; 128][..]);
+            db.create(branch, op).into_result()?;
         }
         db.commit(branch)
     };

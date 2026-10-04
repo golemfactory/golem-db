@@ -1,10 +1,13 @@
 use golemdb_branch::{BranchId, Branches, CellRead, read_head};
-use golemdb_cells::{CellKey, CellLimits, CellName, CellReader, CellValue, reserved, system};
+use golemdb_cells::{
+    CellKey, CellLimits, CellName, CellNameRef, CellReader, CellValue, reserved, system,
+};
 use golemdb_merkle::HashProvider;
 use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
-    CellPatch, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordPatch, Result, state,
+    CellPatch, Details, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordPatch,
+    Result, state,
 };
 
 /// Cloneable record facade; clones share the supplied branch manager.
@@ -58,12 +61,13 @@ impl<S: Store, H: HashProvider> Records<S, H> {
     /// Create a record with at least one user cell. Exact reserved keys are
     /// rejected before branch access; all other validation follows handle checks.
     /// Names and values are checked in byte order before identity/allocation reads.
+    /// Returns the key and the write's effects on user cells.
     pub fn create(
         &self,
         branch: BranchId,
         key: RecordKey,
         values: RecordCells,
-    ) -> Result<RecordKey> {
+    ) -> Result<(RecordKey, Details)> {
         reject_reserved(key)?;
         self.branches
             .write(branch, |cell_writer| {
@@ -91,7 +95,9 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                         "allocator points to occupied record",
                     ));
                 }
+                let mut details = Details::default();
                 for (name, value) in values {
+                    details.created(name.as_bytes(), &value);
                     cell_writer.put(CellKey::new(id, name), value);
                 }
                 cell_writer.put(
@@ -100,7 +106,7 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                 );
                 cell_writer.put(state::binding(key), CellValue::from_u64(id));
                 cell_writer.put(state::allocator_key(), CellValue::from_u64(next));
-                Ok(key)
+                Ok((key, details))
             })
             .map_err(Into::into)
     }
@@ -108,7 +114,8 @@ impl<S: Store, H: HashProvider> Records<S, H> {
     /// Apply a partial mutation. Empty patches and removing absent cells are
     /// no-ops on an existing record. At least one user cell must remain, excluding
     /// #key. A removal-only patch scans the record to check its final shape.
-    pub fn patch(&self, branch: BranchId, key: RecordKey, changes: RecordPatch) -> Result<()> {
+    /// Returns the patch's effects on user cells.
+    pub fn patch(&self, branch: BranchId, key: RecordKey, changes: RecordPatch) -> Result<Details> {
         reject_reserved(key)?;
         self.branches
             .write(branch, |cell_writer| {
@@ -152,43 +159,60 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                         }
                     }
                 }
+                let mut details = Details::default();
                 for (name, change) in changes {
                     let address = CellKey::new(id, name);
+                    let old = cell_writer.get(&address)?;
+                    let name = address.name();
+                    let name = name.as_bytes();
                     match change {
-                        CellPatch::Set(value) => {
-                            if cell_writer.get(&address)?.as_ref() != Some(&value) {
+                        CellPatch::Set(value) => match &old {
+                            Some(old) if *old == value => {}
+                            Some(old) => {
+                                details.updated(name, old, &value);
                                 cell_writer.put(address, value);
                             }
-                        }
+                            None => {
+                                details.created(name, &value);
+                                cell_writer.put(address, value);
+                            }
+                        },
                         CellPatch::Remove => {
-                            if cell_writer.get(&address)?.is_some() {
+                            if let Some(old) = &old {
+                                details.deleted(name, old);
                                 cell_writer.delete(address);
                             }
                         }
                     }
                 }
-                Ok(())
+                Ok(details)
             })
             .map_err(Into::into)
     }
 
     /// Remove the binding and every live cell, including #key. Successful
     /// deletion never rewinds the allocator; recreation receives a fresh ID.
-    pub fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()> {
+    /// Returns the deletion's effects on user cells.
+    pub fn delete(&self, branch: BranchId, key: RecordKey) -> Result<Details> {
         reject_reserved(key)?;
         self.branches
             .write(branch, |cell_writer| {
                 let cell_reader = cell_writer.as_read();
                 let id = state::resolve(&cell_reader, key)?.ok_or(RecordError::NotFound)?;
-                let addresses = cell_reader
+                let cells = cell_reader
                     .scan_prefix(&id.to_be_bytes())?
-                    .map(|row| row.map(|(address, _)| address))
                     .collect::<golemdb_branch::Result<Vec<_>>>()?;
-                for address in addresses {
+                let mut details = Details::default();
+                for (address, value) in cells {
+                    let name = address.name();
+                    // System cells such as #key are not counted.
+                    if CellNameRef::parse_user(name.as_bytes(), usize::MAX).is_ok() {
+                        details.deleted(name.as_bytes(), &value);
+                    }
                     cell_writer.delete(address);
                 }
                 cell_writer.delete(state::binding(key));
-                Ok(())
+                Ok(details)
             })
             .map_err(Into::into)
     }

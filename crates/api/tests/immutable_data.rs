@@ -101,16 +101,12 @@ fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgori
     .unwrap();
     let key = RecordKey([1; 32]);
     let branch = db.begin().unwrap();
-    db.create(
-        branch,
-        key,
-        RecordInput::new()
-            .field("price", CellValue::from_i32(50))
-            .unwrap(),
-    )
-    .unwrap();
+    db.create(branch, RecordOp::create().key(key).field("price", 50i32))
+        .into_result()
+        .unwrap();
     let record = db
-        .get(ReadTarget::Branch(branch), key, Projection::All)
+        .get(ReadTarget::Branch(branch), RecordOp::get(key))
+        .into_result()
         .unwrap();
     let info = db.branch_info(branch).unwrap();
     let sealed_branch = db.begin().unwrap();
@@ -128,7 +124,8 @@ fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgori
     assert_eq!(db.branch_info(sealed_branch).unwrap(), sealed_info);
     assert_eq!(db.seal(sealed_branch).unwrap(), seal);
     assert_eq!(
-        db.get(ReadTarget::Branch(branch), key, Projection::All)
+        db.get(ReadTarget::Branch(branch), RecordOp::get(key))
+            .into_result()
             .unwrap(),
         record
     );

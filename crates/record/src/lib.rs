@@ -43,10 +43,12 @@
 //! ```
 
 mod crud;
+mod details;
 mod error;
 mod state;
 mod types;
 
 pub use crud::Records;
+pub use details::Details;
 pub use error::{RecordError, Result};
 pub use types::{CellPatch, ReadTarget, Record, RecordCells, RecordKey, RecordPatch};

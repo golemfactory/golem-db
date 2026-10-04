@@ -209,7 +209,7 @@ fn work_in_progress_is_isolated_and_projection_preserves_identity() {
     let (_, branches, records) = setup();
     let a = branches.begin().unwrap();
     let b = branches.begin().unwrap();
-    assert_eq!(records.create(a, KEY, values("Alice")).unwrap(), KEY);
+    assert_eq!(records.create(a, KEY, values("Alice")).unwrap().0, KEY);
     assert_eq!(id(&branches, a, KEY), 64);
     let full = records.get(ReadTarget::Branch(a), KEY, None).unwrap();
     assert_eq!(full.cells.len(), 2);

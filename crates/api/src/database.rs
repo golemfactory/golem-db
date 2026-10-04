@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use golemdb_branch::Branches;
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
-use golemdb_record::Records;
+use golemdb_record::{Details, Records};
 use golemdb_storage::{MemoryStore, Store};
 
 use crate::open::OpenedStore;
 
 use crate::{
     Api, ApiError, BranchId, BranchInfo, CommitId, Config, Genesis, HashAlgorithm,
-    ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenInfo,
-    OpenResult, PatchInput, Projection, ReadTarget, Record, RecordInput, RecordKey, Result,
-    SealInfo, StoreConfig,
+    ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, Metered,
+    OpenInfo, OpenResult, ReadTarget, Receipt, Record, RecordKey, RecordOp, Result, SealInfo,
+    StoreConfig, op,
 };
 
 /// A handle to an open database. Cheap to clone; all clones share the same open
@@ -120,17 +120,17 @@ impl Database {
 }
 
 impl Api for Database {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
-        self.inner.create(branch, key, cells)
+    fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey> {
+        self.inner.create(branch, op)
     }
-    fn get(&self, target: ReadTarget, key: RecordKey, projection: Projection) -> Result<Record> {
-        self.inner.get(target, key, projection)
+    fn get(&self, target: ReadTarget, op: RecordOp<op::Get>) -> Metered<Record> {
+        self.inner.get(target, op)
     }
-    fn patch(&self, branch: BranchId, key: RecordKey, patch: PatchInput) -> Result<()> {
-        self.inner.patch(branch, key, patch)
+    fn patch(&self, branch: BranchId, op: RecordOp<op::Patch>) -> Metered<()> {
+        self.inner.patch(branch, op)
     }
-    fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()> {
-        self.inner.delete(branch, key)
+    fn delete(&self, branch: BranchId, op: RecordOp<op::Delete>) -> Metered<()> {
+        self.inner.delete(branch, op)
     }
     fn head(&self) -> Result<CommitId> {
         self.inner.head()
@@ -206,24 +206,65 @@ impl<S: Store, H: HashProvider> Inner<S, H> {
     }
 }
 
+impl<S: Store, H: HashProvider> Inner<S, H> {
+    /// The commit pricing a call on `branch`: its base commit, or the head if
+    /// the handle is unknown (the call fails then, with a zero-cost receipt).
+    fn priced_at(&self, branch: BranchId) -> CommitId {
+        self.branches
+            .branch_info(branch)
+            .map(|info| info.commit_id)
+            .or_else(|_| self.branches.head())
+            .unwrap_or_default()
+    }
+
+    /// A write's outcome with its receipt: the effects on success, none on failure.
+    fn write_receipt<T>(&self, branch: BranchId, outcome: Result<(T, Details)>) -> Metered<T> {
+        let priced_at = self.priced_at(branch);
+        match outcome {
+            Ok((value, details)) => Metered::new(Ok(value), Receipt::unmetered(priced_at, details)),
+            Err(error) => Metered::new(
+                Err(error),
+                Receipt::unmetered(priced_at, Details::default()),
+            ),
+        }
+    }
+}
+
 impl<S: Store, H: HashProvider> Api for Inner<S, H> {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
-        self.records
-            .create(branch, key, cells.into_cells())
-            .map_err(Into::into)
+    fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey> {
+        let outcome = op.into_create().and_then(|(key, cells)| {
+            // Every database uses caller-assigned keys until key modes exist.
+            let key = key.ok_or(ApiError::KeyModeMismatch)?;
+            Ok(self.records.create(branch, key, cells)?)
+        });
+        self.write_receipt(branch, outcome)
     }
-    fn get(&self, target: ReadTarget, key: RecordKey, projection: Projection) -> Result<Record> {
-        self.records
-            .get(target, key, projection.as_names())
-            .map_err(Into::into)
+    fn get(&self, target: ReadTarget, op: RecordOp<op::Get>) -> Metered<Record> {
+        let priced_at = match target {
+            ReadTarget::Commit(commit) => commit,
+            ReadTarget::Branch(branch) => self.priced_at(branch),
+            ReadTarget::Head => self.branches.head().unwrap_or_default(),
+        };
+        let (key, projection) = op.into_get();
+        let result = self
+            .records
+            .get(target, key, projection.as_deref())
+            .map_err(Into::into);
+        Metered::new(result, Receipt::unmetered(priced_at, Details::default()))
     }
-    fn patch(&self, branch: BranchId, key: RecordKey, patch: PatchInput) -> Result<()> {
-        self.records
-            .patch(branch, key, patch.into_patch())
-            .map_err(Into::into)
+    fn patch(&self, branch: BranchId, op: RecordOp<op::Patch>) -> Metered<()> {
+        let outcome = op
+            .into_patch()
+            .and_then(|(key, changes)| Ok(((), self.records.patch(branch, key, changes)?)));
+        self.write_receipt(branch, outcome)
     }
-    fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()> {
-        self.records.delete(branch, key).map_err(Into::into)
+    fn delete(&self, branch: BranchId, op: RecordOp<op::Delete>) -> Metered<()> {
+        let outcome = self
+            .records
+            .delete(branch, op.into_delete())
+            .map(|details| ((), details))
+            .map_err(Into::into);
+        self.write_receipt(branch, outcome)
     }
     fn head(&self) -> Result<CommitId> {
         self.branches.head().map_err(Into::into)

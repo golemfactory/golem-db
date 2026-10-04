@@ -559,3 +559,60 @@ impl<'a> CellValueRef<'a> {
             .map(|b| i64::from_be_bytes(flip_sign(b)))
     }
 }
+
+/// A Rust value that becomes a cell value, for builders that take values
+/// directly (`.attribute("price", 50i32)`). The Rust type decides the cell type,
+/// so `50i32` and `50i64` are different cells. Conversions that can fail, such as
+/// a NaN float, return the error instead of panicking.
+pub trait IntoCellValue {
+    fn into_cell_value(self) -> Result<CellValue, CellParseError>;
+}
+
+impl IntoCellValue for CellValue {
+    fn into_cell_value(self) -> Result<CellValue, CellParseError> {
+        Ok(self)
+    }
+}
+
+macro_rules! into_cell_value {
+    ($($ty:ty => $constructor:expr),* $(,)?) => {
+        $(impl IntoCellValue for $ty {
+            fn into_cell_value(self) -> Result<CellValue, CellParseError> {
+                #[allow(clippy::redundant_closure_call)]
+                Ok(($constructor)(self))
+            }
+        })*
+    };
+}
+
+into_cell_value! {
+    bool => CellValue::from_bool,
+    i32 => CellValue::from_i32,
+    i64 => CellValue::from_i64,
+    i128 => CellValue::from_i128,
+    u32 => CellValue::from_u32,
+    u64 => CellValue::from_u64,
+    u128 => CellValue::from_u128,
+    &str => CellValue::from_str,
+    String => |value: String| CellValue::from_str(&value),
+    &String => |value: &String| CellValue::from_str(value),
+    &[u8] => CellValue::from_bytes,
+    Vec<u8> => |value: Vec<u8>| CellValue::from_bytes(&value),
+    [u8; 4] => CellValue::from_bytes4,
+    [u8; 8] => CellValue::from_bytes8,
+    [u8; 16] => CellValue::from_bytes16,
+    [u8; 20] => CellValue::from_bytes20,
+    [u8; 32] => CellValue::from_bytes32,
+}
+
+impl IntoCellValue for f32 {
+    fn into_cell_value(self) -> Result<CellValue, CellParseError> {
+        CellValue::from_f32(self)
+    }
+}
+
+impl IntoCellValue for f64 {
+    fn into_cell_value(self) -> Result<CellValue, CellParseError> {
+        CellValue::from_f64(self)
+    }
+}

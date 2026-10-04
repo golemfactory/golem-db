@@ -18,6 +18,16 @@ pub enum ApiError {
     NotFound,
     #[error("record key already exists")]
     AlreadyExists,
+    /// A `create` that does not match the database's key mode: a missing key
+    /// where keys are caller-assigned, or a key where the database generates
+    /// them. Today every database uses caller-assigned keys.
+    #[error("the create's key does not match the database's key mode")]
+    KeyModeMismatch,
+    /// The call's cost would exceed its budget; nothing was applied, and the
+    /// receipt's cost is what was spent. Not returned until metering is
+    /// implemented: every call costs 0 until then.
+    #[error("the call's budget is exhausted")]
+    OutOfBudget,
     #[error("reserved records cannot be modified through CRUD")]
     Reserved,
     #[error("invalid argument: {message}")]
