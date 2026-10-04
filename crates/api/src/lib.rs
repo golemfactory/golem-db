@@ -70,25 +70,28 @@ pub use golemdb_branch::{BranchId, BranchInfo, CommitId};
 pub use golemdb_cells::{
     CellKind, CellName, CellNameRef, CellType, CellValue, FloatWidth, IntoCellValue, Width,
 };
-pub use golemdb_record::{Details, ReadTarget, Record, RecordKey};
+pub use golemdb_record::{Details, ReadTarget, Record, RecordKey, RecordMeta};
 
 /// Synchronous record and branch facade. Record calls take a [`RecordOp`] and
 /// return [`Metered`] outcomes; implementations enforce deployment limits,
 /// reserved-record rules, identity, and atomic mutations.
 /// Adding a required method requires updating concrete implementations and mocks.
 pub trait Api {
-    /// Stage a new record with at least one user cell and return its key. The
-    /// key must be named with `RecordOp::key` (`KeyModeMismatch` otherwise):
-    /// every database uses caller-assigned keys today.
+    /// Stage a new record with zero or more user cells and return its key. The
+    /// database adds the record's `#key` and `#meta` cells. The key must be named
+    /// with `RecordOp::key` (`KeyModeMismatch` otherwise): every database uses
+    /// caller-assigned keys today.
     fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey>;
 
     /// Read pending or committed state. Head selection and materialization share
-    /// one snapshot. Missing projected cells are omitted; an empty projection
-    /// still verifies existence. Explicit non-head commits are not yet supported.
+    /// one snapshot. A full read includes `#key` and `#meta` (see `Record::meta`).
+    /// Missing projected cells are omitted; an empty projection still verifies
+    /// existence. Explicit non-head commits are not yet supported.
     fn get(&self, target: ReadTarget, op: RecordOp<op::Get>) -> Metered<Record>;
 
-    /// Atomically edit one record, preserving at least one user cell. Empty
-    /// patches and removals of missing cells are valid on an existing record.
+    /// Atomically edit one record and update its `#meta`. Empty patches and
+    /// removals of missing cells are valid on an existing record; removing the
+    /// last user cell leaves an empty record, which exists until deleted.
     fn patch(&self, branch: BranchId, op: RecordOp<op::Patch>) -> Metered<()>;
 
     /// Delete the record and its binding without reclaiming the internal ID.

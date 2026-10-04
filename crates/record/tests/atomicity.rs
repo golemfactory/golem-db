@@ -8,7 +8,7 @@ use golemdb_cells::{
     CellKey, CellNameRef, CellType, CellValue, CellValueRef, Width, reserved, system, tables,
 };
 use golemdb_merkle::Keccak256Hasher;
-use golemdb_record::{CellPatch, RecordKey, Records};
+use golemdb_record::{CellPatch, RecordKey, RecordMeta, Records};
 use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
 struct FaultStore {
@@ -88,6 +88,16 @@ fn late_storage_failure_restores_earlier_patch_writes_and_checkpoint_state() {
         (
             CellKey::new(64, CellNameRef::raw(b"a")),
             value(CellType::Str, b"original"),
+        ),
+        (
+            CellKey::new(64, reserved::META),
+            RecordMeta {
+                cells: 1,
+                cell_bytes: (8 + 1 + value(CellType::Str, b"original").encoded_bytes().len())
+                    as u64,
+                ..RecordMeta::default()
+            }
+            .to_value(),
         ),
     ] {
         tx.put(tables::CELL, &address.encode(), value.encoded_bytes())

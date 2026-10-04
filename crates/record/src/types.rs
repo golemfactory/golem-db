@@ -41,3 +41,13 @@ pub struct Record {
     /// Byte-ordered names; raw binary names are possible in reserved records.
     pub cells: RecordCells,
 }
+
+impl Record {
+    /// The record's metadata, if this read included its `#meta` cell (a full
+    /// read does; a projection only when it names `#meta`).
+    pub fn meta(&self) -> Option<crate::RecordMeta> {
+        self.cells
+            .get(golemdb_cells::reserved::META.as_bytes())
+            .and_then(crate::RecordMeta::from_value)
+    }
+}

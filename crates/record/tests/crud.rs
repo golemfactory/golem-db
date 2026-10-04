@@ -212,7 +212,8 @@ fn work_in_progress_is_isolated_and_projection_preserves_identity() {
     assert_eq!(records.create(a, KEY, values("Alice")).unwrap().0, KEY);
     assert_eq!(id(&branches, a, KEY), 64);
     let full = records.get(ReadTarget::Branch(a), KEY, None).unwrap();
-    assert_eq!(full.cells.len(), 2);
+    assert_eq!(full.cells.len(), 3); // name, #key, #meta
+    assert_eq!(full.meta().unwrap().cells, 1);
     assert_eq!(full.cells[b"#key".as_slice()].as_bytes32(), Some(KEY.0));
     assert!(!full.cells[b"#key".as_slice()].is_indexable());
     for target in [ReadTarget::Branch(b), ReadTarget::Commit(0)] {
@@ -307,10 +308,6 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
         records.create(b, KEY, values("duplicate")),
         Err(RecordError::AlreadyExists)
     ));
-    assert!(matches!(
-        records.create(b, OTHER, Default::default()),
-        Err(RecordError::InvalidArgument(_))
-    ));
     for invalid in [
         b"#key".as_slice(),
         b"@admin",
@@ -342,10 +339,6 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
         ));
     }
     assert!(matches!(
-        records.patch(b, KEY, [(name(b"name"), CellPatch::Remove)].into()),
-        Err(RecordError::InvalidArgument(_))
-    ));
-    assert!(matches!(
         records.patch(b, OTHER, Default::default()),
         Err(RecordError::NotFound)
     ));
@@ -358,7 +351,7 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
 }
 
 #[test]
-fn patches_check_final_shape_and_no_ops_add_no_journal_entries() {
+fn patches_replace_cells_and_no_ops_add_no_journal_entries() {
     let (_, branches, records) = setup();
     let b = branches.begin().unwrap();
     records.create(b, KEY, values("Alice")).unwrap();
@@ -390,7 +383,7 @@ fn patches_check_final_shape_and_no_ops_add_no_journal_entries() {
         )
         .unwrap();
     let record = records.get(ReadTarget::Branch(b), KEY, None).unwrap();
-    assert_eq!(record.cells.len(), 2);
+    assert_eq!(record.cells.len(), 3); // replacement, #key, #meta
     assert_eq!(record.cells[b"replacement".as_slice()].as_u64(), Some(7));
 }
 
@@ -539,7 +532,7 @@ fn lifecycle(db: impl Store + Clone) {
             .unwrap()
             .cells
             .len(),
-        2
+        3
     );
     assert!(
         reopened
@@ -702,8 +695,8 @@ fn committed_cell_reader_keeps_one_snapshot_when_head_advances() {
         .unwrap()
         .collect::<golemdb_cells::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(stored.len(), 2);
-    assert_eq!(stored[1].1, text("before", true));
+    assert_eq!(stored.len(), 3); // #key, #meta, name
+    assert_eq!(stored[2].1, text("before", true));
     assert_eq!(
         records.get(ReadTarget::Commit(2), KEY, None).unwrap().cells[b"name".as_slice()],
         text("after", true)

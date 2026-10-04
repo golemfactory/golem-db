@@ -81,7 +81,7 @@ fn crud_pending_reads_projections_and_recreation() {
         }
         let pending = get(api.as_ref(), ReadTarget::Branch(branch));
         assert_eq!(pending.key, KEY);
-        assert_eq!(pending.cells.len(), 3);
+        assert_eq!(pending.cells.len(), 4); // price, description, #key, #meta
         assert_eq!(pending.cells[b"#key".as_slice()].as_bytes32(), Some(KEY.0));
         assert!(pending.cells[b"price".as_slice()].is_indexable());
         let selected = api
@@ -262,7 +262,6 @@ fn reserved_records_limits_and_failed_mutations_preserve_state() {
         }
         assert_eq!(db.branch_info(branch).unwrap(), original);
         for bad in [
-            RecordOp::create().key(KEY),
             RecordOp::create().key(KEY).field(&"a".repeat(33), true),
             RecordOp::create().key(KEY).field("long", "v".repeat(65)),
             RecordOp::create().key(KEY).field("long", &[0u8; 129][..]),
@@ -285,12 +284,10 @@ fn reserved_records_limits_and_failed_mutations_preserve_state() {
         db.create(branch, input(KEY, 50)).into_result().unwrap();
         let before = get(&db, ReadTarget::Branch(branch));
         let info = db.branch_info(branch).unwrap();
-        for bad in [
-            RecordOp::patch(KEY).remove("price").remove("description"),
-            RecordOp::patch(KEY)
-                .field("aaa", true)
-                .field("zzz", "v".repeat(65)),
-        ] {
+        for bad in [RecordOp::patch(KEY)
+            .field("aaa", true)
+            .field("zzz", "v".repeat(65))]
+        {
             assert!(matches!(
                 db.patch(branch, bad).into_result(),
                 Err(ApiError::InvalidArgument { .. })

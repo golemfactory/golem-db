@@ -70,6 +70,21 @@ pub(crate) fn limits<R: ReadTransaction>(cell_reader: &CellRead<'_, R>) -> Resul
     })
 }
 
+pub(crate) fn meta_key(id: u64) -> CellKey {
+    CellKey::new(id, reserved::META)
+}
+
+/// A user record's `#meta`, which every user record has.
+pub(crate) fn meta<R: ReadTransaction>(
+    cell_reader: &CellRead<'_, R>,
+    id: u64,
+) -> Result<crate::RecordMeta> {
+    let value = cell_reader
+        .get(&meta_key(id))?
+        .ok_or(RecordError::CorruptState("record has no #meta"))?;
+    crate::RecordMeta::from_value(&value).ok_or(RecordError::CorruptState("invalid #meta"))
+}
+
 pub(crate) fn allocator_key() -> CellKey {
     CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID)
 }

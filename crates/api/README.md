@@ -74,6 +74,12 @@ a removal of the same name) or invalid value is reported by the call as
 A create must name its key: every database uses caller-assigned keys today, and a
 create without one fails with `KeyModeMismatch`.
 
+A record is its key, zero or more user cells, and two cells the database
+maintains: `#key` and `#meta`. `#meta` holds four counts over the user cells (cells,
+their bytes, indexed cells, their index bytes); `Record::meta()` decodes it from a full
+read or from `RecordOp::get(key).only(["#meta"])`. A record can be empty: a create may
+name no cells, and a patch may remove the last one; only a delete removes the record.
+
 `Metered::into_result()` drops the receipt for callers that do not charge; Rust's `?`
 works only on `Result`, so use `.into_result()?` or `.result?`. A `Receipt` has:
 

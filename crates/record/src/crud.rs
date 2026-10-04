@@ -6,8 +6,8 @@ use golemdb_merkle::HashProvider;
 use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
-    CellPatch, Details, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordPatch,
-    Result, state,
+    CellPatch, Details, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordMeta,
+    RecordPatch, Result, state,
 };
 
 /// Cloneable record facade; clones share the supplied branch manager.
@@ -58,9 +58,10 @@ impl<S: Store, H: HashProvider> Records<S, H> {
         }
     }
 
-    /// Create a record with at least one user cell. Exact reserved keys are
-    /// rejected before branch access; all other validation follows handle checks.
-    /// Names and values are checked in byte order before identity/allocation reads.
+    /// Create a record with zero or more user cells, plus its `#key` and
+    /// `#meta` cells and its binding. Exact reserved keys are rejected before
+    /// branch access; all other validation follows handle checks. Names and
+    /// values are checked in byte order before identity/allocation reads.
     /// Returns the key and the write's effects on user cells.
     pub fn create(
         &self,
@@ -72,11 +73,6 @@ impl<S: Store, H: HashProvider> Records<S, H> {
         self.branches
             .write(branch, |cell_writer| {
                 let cell_reader = cell_writer.as_read();
-                if values.is_empty() {
-                    return Err(RecordError::InvalidArgument(
-                        "a record needs at least one user cell".into(),
-                    ));
-                }
                 let limits = state::limits(&cell_reader)?;
                 for (name, value) in &values {
                     validate(&limits, name, Some(value))?;
@@ -104,6 +100,8 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                     CellKey::new(id, reserved::KEY),
                     CellValue::from_bytes32(key.0),
                 );
+                let meta = RecordMeta::default().apply(&details)?;
+                cell_writer.put(state::meta_key(id), meta.to_value());
                 cell_writer.put(state::binding(key), CellValue::from_u64(id));
                 cell_writer.put(state::allocator_key(), CellValue::from_u64(next));
                 Ok((key, details))
@@ -112,9 +110,9 @@ impl<S: Store, H: HashProvider> Records<S, H> {
     }
 
     /// Apply a partial mutation. Empty patches and removing absent cells are
-    /// no-ops on an existing record. At least one user cell must remain, excluding
-    /// #key. A removal-only patch scans the record to check its final shape.
-    /// Returns the patch's effects on user cells.
+    /// no-ops on an existing record. Removing the last user cell leaves an empty
+    /// record, which exists until deleted. `#meta` is updated from the patch's
+    /// effects, which are returned.
     pub fn patch(&self, branch: BranchId, key: RecordKey, changes: RecordPatch) -> Result<Details> {
         reject_reserved(key)?;
         self.branches
@@ -132,33 +130,7 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                         },
                     )?;
                 }
-                if changes
-                    .values()
-                    .any(|change| matches!(change, CellPatch::Remove))
-                {
-                    let has_set = changes
-                        .values()
-                        .any(|change| matches!(change, CellPatch::Set(_)));
-                    if !has_set {
-                        let survives = cell_reader
-                            .scan_prefix(&id.to_be_bytes())?
-                            .collect::<golemdb_branch::Result<Vec<_>>>()?
-                            .iter()
-                            .any(|(address, _)| {
-                                // Only valid user names count, not structural cells.
-                                limits.parse_user_name(address.name().as_bytes()).is_ok()
-                                    && !matches!(
-                                        changes.get(address.name().as_bytes()),
-                                        Some(CellPatch::Remove)
-                                    )
-                            });
-                        if !survives {
-                            return Err(RecordError::InvalidArgument(
-                                "cannot remove the last user cell".into(),
-                            ));
-                        }
-                    }
-                }
+                let meta = state::meta(&cell_reader, id)?;
                 let mut details = Details::default();
                 for (name, change) in changes {
                     let address = CellKey::new(id, name);
@@ -184,6 +156,10 @@ impl<S: Store, H: HashProvider> Records<S, H> {
                             }
                         }
                     }
+                }
+                let updated = meta.apply(&details)?;
+                if updated != meta {
+                    cell_writer.put(state::meta_key(id), updated.to_value());
                 }
                 Ok(details)
             })
