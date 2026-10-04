@@ -15,20 +15,15 @@ selected on opening and stays a concrete type within the database. Import
 `Api` to use its methods on `Database`.
 
 The examples use persistent MDBX storage. Enable the `mdbx` feature on
-`golemdb-api`; `Database::open_database(path, &config)` opens the store internally.
+`golemdb-api`; `Database::open(path, &config)` opens an MDBX store in that directory.
 Use a fresh database directory for the catalogue examples.
 
 ```rust
-use golemdb_api::{Api, CellLimits, CellValue, Config, Database, Genesis,
-    HashAlgorithm, Projection, ReadTarget, RecordInput, RecordKey};
+use golemdb_api::{Api, CellValue, Config, Database, Genesis, Projection, ReadTarget,
+    RecordInput, RecordKey};
 
-let config = Config::new(Genesis {
-    hash_function: HashAlgorithm::Keccak256,
-    cell_limits: CellLimits {
-        max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
-    },
-});
-let db = Database::open_database("./golemdb-quickstart", &config)?;
+// Genesis::DEV is for development and examples; deployments load their own genesis.
+let db = Database::open("./golemdb-quickstart", &Config::new(Genesis::DEV))?;
 let branch = db.begin()?;
 let key = RecordKey([0x42; 32]);
 db.create(branch, key, RecordInput::new()
@@ -109,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     });
     config.mode = OpenMode::CreateNew;
-    let db = Database::open_database("./golemdb-catalogue", &config)?;
+    let db = Database::open("./golemdb-catalogue", &config)?;
     let laptop = RecordKey([1; 32]);
     let keyboard = RecordKey([2; 32]);
     let mouse = RecordKey([3; 32]);
@@ -248,15 +243,42 @@ use golemdb_api::{Config, Database, Genesis};
 
 let genesis = Genesis::load("genesis.yaml")?;
 let config = Config::new(genesis); // CreateIfMissing
-let db = Database::open_database("./golemdb", &config)?;
+let db = Database::open("./golemdb", &config)?;
 # Ok::<(), golemdb_api::OpenError>(())
 ```
 
-With the `mdbx` feature, `Database::open_database(path, &config)` opens persistent
-storage (`Database::open` remains an alias). `Database::open_with_options` additionally
-accepts local `MdbxOptions`. For a custom store or a shared store instance,
-use `Database::from_store(store, &config)`.
-Do not independently open the same MDBX directory twice within one process.
+There are three constructors:
+
+- `Database::open(store, &config)` opens a built-in store. `store` is anything that
+  converts into a `StoreConfig`: a path means MDBX with default options (with the `mdbx`
+  feature), `StoreConfig::Memory` a throwaway database, and
+  `StoreConfig::Mdbx { path, options }` MDBX with tuned capacity. The default
+  `MdbxOptions` cap the store at 1 GiB. A larger `max_map_size` takes effect on reopening, a smaller one is ignored.
+- `Database::open_memory(&genesis)` opens a fresh in-memory database, the standard for
+  tests. Each call starts empty, so it takes no `OpenMode`.
+- `Database::from_store(store, &config)` opens a caller-supplied store, for custom or
+  wrapped stores and tests. The store is trusted as supplied, and the path guarantees
+  of `open` below do not apply to it.
+
+A node sizes its store explicitly:
+
+```rust
+use golemdb_api::{Config, Database, Genesis, MdbxOptions, StoreConfig};
+
+let config = Config::new(Genesis::load("genesis.yaml")?);
+let mut options = MdbxOptions::default();
+options.max_map_size = 8 << 30; // 8 GiB
+let store = StoreConfig::Mdbx { path: "./golemdb-node".into(), options };
+let db = Database::open(&store, &config)?;
+# Ok::<(), golemdb_api::OpenError>(())
+```
+
+`Config` holds what applies to every store: the `Genesis` and the `OpenMode`. Store
+settings are local to a node and never part of the genesis identity. Open an MDBX
+directory at most once per process and share it with `clone`; another process may
+open it too, with separate branches and `Conflict` for the losing commit. A store
+should back one open database at a time; reopening it after the database is dropped
+is fine.
 
 | Mode | Pristine storage | Initialized storage |
 | --- | --- | --- |
@@ -266,8 +288,9 @@ Do not independently open the same MDBX directory twice within one process.
 
 Pristine means no tables or rows. A pre-existing empty directory is allowed for
 creation. Tables without a head, including empty or foreign tables, are rejected
-as incomplete state. `ExistingOnly` never writes genesis or creates a missing
-directory; opening an existing empty directory can create MDBX environment files.
+as incomplete state. `ExistingOnly` never writes genesis; through `Database::open` it
+also never creates a missing directory, but opening an existing empty directory can
+create MDBX environment files.
 
 All detection, validation, and initialization occurs under one storage writer.
 Creation writes the fixed reserved-record catalogue from cells, identities and
@@ -329,7 +352,7 @@ Budgets, cost receipts, generated keys, OCC, and transport serialization are def
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks
 for consumer error paths. For tests, replace the storage opening with
-`Database::open_memory(&config)?` to get a fresh in-memory database. Arkiv can pass `Arc::new(Database::open_memory(&config)?)`
+`Database::open_memory(&genesis)?` to get a fresh in-memory database (`Genesis::DEV` for tests that need no particular limits). Arkiv can pass `Arc::new(Database::open_memory(&genesis)?)`
 as `Arc<dyn Api + Send + Sync>` to run behavioral tests with real database semantics.
 The [facade contract tests](tests/facade.rs) run the same scenarios against memory
 and MDBX with both hash algorithms. The [error tests](tests/facade_errors.rs)

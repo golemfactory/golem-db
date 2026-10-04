@@ -89,11 +89,7 @@ fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgori
     let forbid_io = Arc::new(AtomicBool::new(false));
     let config = Config::new(Genesis {
         hash_function,
-        cell_limits: CellLimits {
-            max_cell_name_len: 32,
-            max_str_len: 64,
-            max_bytes_len: 128,
-        },
+        ..Genesis::DEV
     });
     let db = Database::from_store(
         Guarded {

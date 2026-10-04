@@ -12,16 +12,10 @@
 //! returns [`ApiError::NotImplemented`] immediately without I/O or state changes.
 //!
 //! ```
-//! use golemdb_api::{Api, CellLimits, CellValue, Config, Database, Genesis,
-//!     HashAlgorithm, Projection, ReadTarget, RecordInput, RecordKey};
+//! use golemdb_api::{Api, CellValue, Database, Genesis, Projection, ReadTarget,
+//!     RecordInput, RecordKey};
 //!
-//! let config = Config::new(Genesis {
-//!     hash_function: HashAlgorithm::Keccak256,
-//!     cell_limits: CellLimits {
-//!         max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
-//!     },
-//! });
-//! let db = Database::open_memory(&config)?;
+//! let db = Database::open_memory(&Genesis::DEV)?;
 //! let branch = db.begin()?;
 //! let key = RecordKey([0x42; 32]);
 //! db.create(branch, key, RecordInput::new()
@@ -45,7 +39,7 @@ mod open;
 mod open_error;
 mod types;
 
-pub use config::{Config, Genesis, OpenMode};
+pub use config::{Config, Genesis, OpenMode, StoreConfig};
 pub use database::Database;
 pub use error::{ApiError, Result};
 pub use golemdb_cells::CellLimits;

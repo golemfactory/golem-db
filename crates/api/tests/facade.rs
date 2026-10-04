@@ -30,11 +30,11 @@ fn input(price: i32) -> RecordInput {
 // and both stores. A directory remains alive until all facade clones drop.
 fn each_store(contract: fn(Database)) {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
-        contract(Database::open_memory(&config(hash)).unwrap());
+        contract(Database::open_memory(&config(hash).genesis).unwrap());
         #[cfg(feature = "mdbx")]
         {
             let dir = tempfile::tempdir().unwrap();
-            contract(Database::open_database(dir.path(), &config(hash)).unwrap());
+            contract(Database::open(dir.path(), &config(hash)).unwrap());
         }
     }
 }
@@ -366,7 +366,11 @@ fn durable_facade_reopens_committed_state_and_discards_pending_work() {
         let cfg = config(hash);
         let dir = tempfile::tempdir().unwrap();
         let (sealed, pending, genesis_id) = {
-            let db = Database::open_with_options(dir.path(), &cfg, MdbxOptions::default()).unwrap();
+            let store = StoreConfig::Mdbx {
+                path: dir.path().into(),
+                options: MdbxOptions::default(),
+            };
+            let db = Database::open(&store, &cfg).unwrap();
             let branch = db.begin().unwrap();
             db.create(branch, KEY, input(50)).unwrap();
             let sealed = db.seal(branch).unwrap();
@@ -375,14 +379,7 @@ fn durable_facade_reopens_committed_state_and_discards_pending_work() {
             db.delete(pending, KEY).unwrap();
             (sealed, pending, db.info().genesis_id)
         };
-        let db = Database::open_database(
-            dir.path(),
-            &Config {
-                mode: OpenMode::ExistingOnly,
-                ..cfg
-            },
-        )
-        .unwrap();
+        let db = Database::open(dir.path(), &cfg.with_mode(OpenMode::ExistingOnly)).unwrap();
         assert!(!db.info().created);
         assert_eq!(db.info().genesis_id, genesis_id);
         assert_eq!(db.info().commit_id, sealed.commit_id);

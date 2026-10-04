@@ -513,14 +513,9 @@ fn persistent_tables_and_native_limits() {
 #[test]
 fn table_capacity_error_is_not_absence_and_can_be_raised_on_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    let db = MdbxStore::open_with_options(
-        dir.path(),
-        MdbxOptions {
-            max_tables: 1,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let mut options = MdbxOptions::default();
+    options.max_tables = 1;
+    let db = MdbxStore::open_with_options(dir.path(), options).unwrap();
     let mut tx = db.begin_write().unwrap();
     tx.put(A, b"a", b"1").unwrap();
     tx.commit().unwrap();
@@ -544,15 +539,10 @@ fn table_capacity_error_is_not_absence_and_can_be_raised_on_reopen() {
 #[test]
 fn map_full_aborts_all_pending_rows() {
     let dir = tempfile::tempdir().unwrap();
-    let db = MdbxStore::open_with_options(
-        dir.path(),
-        MdbxOptions {
-            max_map_size: 1024 * 1024,
-            growth_step: 65536,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let mut options = MdbxOptions::default();
+    options.max_map_size = 1024 * 1024;
+    options.growth_step = 65536;
+    let db = MdbxStore::open_with_options(dir.path(), options).unwrap();
     let mut tx = db.begin_write().unwrap();
     tx.put(A, b"a", b"before failure").unwrap();
     assert!(matches!(

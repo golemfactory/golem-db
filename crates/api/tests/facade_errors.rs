@@ -70,11 +70,7 @@ fn failure_contract(store: impl Store + Send + Sync + 'static) {
     let fail_writes = Arc::new(AtomicBool::new(false));
     let config = Config::new(Genesis {
         hash_function: HashAlgorithm::Blake3,
-        cell_limits: CellLimits {
-            max_cell_name_len: 32,
-            max_str_len: 64,
-            max_bytes_len: 128,
-        },
+        ..Genesis::DEV
     });
     let db = Database::from_store(
         FailingStore {

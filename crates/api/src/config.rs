@@ -16,6 +16,19 @@ pub struct Genesis {
 }
 
 impl Genesis {
+    /// A genesis for development, tests and examples; never for a deployment.
+    /// Its values may change between releases, so databases created with it
+    /// are disposable. Deployments define their own genesis, usually as a
+    /// YAML file loaded with [`Genesis::load`].
+    pub const DEV: Genesis = Genesis {
+        hash_function: HashAlgorithm::Keccak256,
+        cell_limits: CellLimits {
+            max_cell_name_len: 32,
+            max_str_len: 64,
+            max_bytes_len: 128,
+        },
+    };
+
     pub fn from_yaml(yaml: &str) -> OpenResult<Self> {
         serde_saphyr::from_str(yaml).map_err(OpenError::Yaml)
     }
@@ -69,7 +82,13 @@ pub enum OpenMode {
     CreateNew,
 }
 
+/// What opening needs regardless of the store: the deployment's genesis, which
+/// is identical on every node, and how to treat existing storage.
+///
+/// Non-exhaustive: build it with `Config::new` and set fields (or use
+/// `with_mode`), so store-neutral options can be added without breaking callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
     pub genesis: Genesis,
     pub mode: OpenMode,
@@ -81,5 +100,77 @@ impl Config {
             genesis,
             mode: OpenMode::CreateIfMissing,
         }
+    }
+
+    pub fn with_mode(mut self, mode: OpenMode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
+/// Which built-in store a database opens, and its local tuning. Store settings
+/// are node-local and never part of the genesis identity.
+///
+/// Non-exhaustive so that further stores can be added without breaking
+/// callers. A custom store is opened with `Database::from_store` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreConfig {
+    /// A fresh in-memory store; nothing survives the last database handle.
+    Memory,
+    /// An MDBX environment in the directory `path`.
+    #[cfg(feature = "mdbx")]
+    Mdbx {
+        path: std::path::PathBuf,
+        options: golemdb_storage::MdbxOptions,
+    },
+}
+
+impl StoreConfig {
+    /// MDBX at `path` with default options (note the 1 GiB size cap of
+    /// `MdbxOptions::default()`).
+    #[cfg(feature = "mdbx")]
+    pub fn mdbx(path: impl Into<std::path::PathBuf>) -> Self {
+        Self::Mdbx {
+            path: path.into(),
+            options: golemdb_storage::MdbxOptions::default(),
+        }
+    }
+}
+
+/// Lets a store config be reused: `Database::open(&store, &config)`.
+impl From<&StoreConfig> for StoreConfig {
+    fn from(store: &StoreConfig) -> Self {
+        store.clone()
+    }
+}
+
+// A bare path means MDBX with default options, the standard store:
+// `Database::open("./data", &config)`.
+#[cfg(feature = "mdbx")]
+impl From<&str> for StoreConfig {
+    fn from(path: &str) -> Self {
+        Self::mdbx(path)
+    }
+}
+
+#[cfg(feature = "mdbx")]
+impl From<String> for StoreConfig {
+    fn from(path: String) -> Self {
+        Self::mdbx(path)
+    }
+}
+
+#[cfg(feature = "mdbx")]
+impl From<&std::path::Path> for StoreConfig {
+    fn from(path: &std::path::Path) -> Self {
+        Self::mdbx(path)
+    }
+}
+
+#[cfg(feature = "mdbx")]
+impl From<std::path::PathBuf> for StoreConfig {
+    fn from(path: std::path::PathBuf) -> Self {
+        Self::mdbx(path)
     }
 }

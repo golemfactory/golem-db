@@ -129,14 +129,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     records.create(branch, KEY, input.into_cells()).unwrap();
     assert_eq!(branches.commit(branch).unwrap(), 1);
     let before = snapshot(&db);
-    let reopened = open_store(
-        db.clone(),
-        &Config {
-            mode: OpenMode::ExistingOnly,
-            ..config
-        },
-    )
-    .unwrap();
+    let reopened = open_store(db.clone(), &config.with_mode(OpenMode::ExistingOnly)).unwrap();
     assert!(!reopened.info().created);
     assert_eq!(reopened.info().commit_id, 1);
     assert_eq!(reopened.info().genesis_id, genesis.genesis_id);
@@ -181,34 +174,15 @@ fn memory_genesis_and_committed_reopen_support_both_hash_algorithms() {
 fn modes(db: impl Store + Clone) {
     let config = config();
     assert!(matches!(
-        open_store(
-            db.clone(),
-            &Config {
-                mode: OpenMode::ExistingOnly,
-                ..config
-            }
-        ),
+        open_store(db.clone(), &config.with_mode(OpenMode::ExistingOnly)),
         Err(OpenError::NotInitialized)
     ));
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
-    let opened = open_store(
-        db.clone(),
-        &Config {
-            mode: OpenMode::CreateNew,
-            ..config
-        },
-    )
-    .unwrap();
+    let opened = open_store(db.clone(), &config.with_mode(OpenMode::CreateNew)).unwrap();
     assert!(opened.info().created);
     let before = snapshot(&db);
     assert!(matches!(
-        open_store(
-            db.clone(),
-            &Config {
-                mode: OpenMode::CreateNew,
-                ..config
-            }
-        ),
+        open_store(db.clone(), &config.with_mode(OpenMode::CreateNew)),
         Err(OpenError::AlreadyInitialized)
     ));
     for change in 0..4 {
@@ -255,7 +229,7 @@ fn partial_or_foreign_state_is_never_initialized() {
                 OpenMode::CreateNew,
             ] {
                 assert!(matches!(
-                    open_store(db.clone(), &Config { mode, ..config() }),
+                    open_store(db.clone(), &config().with_mode(mode)),
                     Err(OpenError::CorruptState(_))
                 ));
             }
@@ -458,14 +432,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         };
         assert_eq!(branches, 1);
         drop(db);
-        let opened = open(
-            dir.path(),
-            &Config {
-                mode: OpenMode::ExistingOnly,
-                ..cfg
-            },
-        )
-        .unwrap();
+        let opened = open(dir.path(), &cfg.with_mode(OpenMode::ExistingOnly)).unwrap();
         assert_eq!(opened.info().commit_id, 1);
         assert_eq!(opened.info().genesis_id, memory.genesis_id);
         let db = opened.into_store();
@@ -499,13 +466,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("absent");
     assert!(matches!(
-        open(
-            &missing,
-            &Config {
-                mode: OpenMode::ExistingOnly,
-                ..config()
-            }
-        ),
+        open(&missing, &config().with_mode(OpenMode::ExistingOnly)),
         Err(OpenError::NotInitialized)
     ));
     assert!(!missing.exists());

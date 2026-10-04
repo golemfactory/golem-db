@@ -9,7 +9,7 @@ use crate::{
     Api, ApiError, BranchId, BranchInfo, CommitId, Config, Genesis, HashAlgorithm,
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenInfo,
     OpenResult, OpenedStore, PatchInput, Projection, ReadTarget, Record, RecordInput, RecordKey,
-    Result, SealInfo,
+    Result, SealInfo, StoreConfig,
 };
 
 /// A handle to an open database. Cheap to clone; all clones share the same open
@@ -31,41 +31,59 @@ pub struct Database {
 }
 
 impl Database {
-    /// Initialize a fresh memory store. For a shared existing store use
-    /// from_store; for another handle to the same database use clone.
-    pub fn open_memory(config: &Config) -> OpenResult<Self> {
-        crate::open_memory(config)?.into_database()
+    /// Open a database on a built-in store, creating or validating genesis
+    /// according to `config.mode`. This is the standard way to open GolemDB.
+    ///
+    /// `store` is anything that converts into a `StoreConfig`. A path means
+    /// MDBX with default options: `Database::open("./data", &config)`. For
+    /// tuned capacity pass `StoreConfig::Mdbx { path, options }`; for a
+    /// throwaway database, `StoreConfig::Memory`.
+    ///
+    /// For MDBX:
+    /// - With `OpenMode::ExistingOnly`, a missing directory fails with
+    ///   `NotInitialized` and nothing is created. An existing but empty
+    ///   directory also fails with `NotInitialized`, but MDBX has created its
+    ///   environment files in it by then.
+    /// - Open a directory at most once per process; share an open database
+    ///   with `clone`. Another process may open the same directory: its
+    ///   branches are separate, and of two competing commits one gets `Conflict`.
+    /// - A larger `max_map_size` takes effect on reopening; a smaller one than
+    ///   the store already has is ignored.
+    pub fn open(store: impl Into<StoreConfig>, config: &Config) -> OpenResult<Self> {
+        match store.into() {
+            StoreConfig::Memory => crate::open_memory(config)?.into_database(),
+            #[cfg(feature = "mdbx")]
+            StoreConfig::Mdbx { path, options } => {
+                crate::open_with_options(path, config, options)?.into_database()
+            }
+        }
     }
 
-    /// Initialize or validate a caller-supplied store and open a database on it.
-    /// Separate calls create separate branch registries, even over a shared store.
+    /// Open a fresh in-memory database: the standard for tests. Each call
+    /// creates a new, empty database, so there is no `OpenMode` to choose.
+    /// To reopen in-memory state, keep a clone of a `MemoryStore` and pass it
+    /// to `from_store`; to share an open database, use `clone`.
+    pub fn open_memory(genesis: &Genesis) -> OpenResult<Self> {
+        crate::open_memory(&Config::new(*genesis))?.into_database()
+    }
+
+    /// Open a database on a caller-supplied store, for custom or wrapped
+    /// stores and tests.
+    ///
+    /// The store is trusted: its limits and durability are taken as reported,
+    /// and writes made through it outside a database are not re-validated
+    /// beyond the startup checks. The path guarantees of `open` do not apply,
+    /// since the store already exists when this is called.
+    ///
+    /// A store should back one open database at a time; share an open
+    /// database with `clone`. Reopening a store after its database is dropped
+    /// is fine. Two databases open on one store at once behave like two
+    /// processes: separate branches, and `Conflict` for the losing commit.
     pub fn from_store<S: Store + Send + Sync + 'static>(
         store: S,
         config: &Config,
     ) -> OpenResult<Self> {
         crate::open_store(store, config)?.into_database()
-    }
-
-    /// Open durable storage. Close all handles before independently reopening the
-    /// same MDBX directory within one process; use clone to share an open database.
-    #[cfg(feature = "mdbx")]
-    pub fn open_database(path: impl AsRef<std::path::Path>, config: &Config) -> OpenResult<Self> {
-        crate::open_database(path, config)?.into_database()
-    }
-
-    /// Alias for open_database.
-    #[cfg(feature = "mdbx")]
-    pub fn open(path: impl AsRef<std::path::Path>, config: &Config) -> OpenResult<Self> {
-        Self::open_database(path, config)
-    }
-
-    #[cfg(feature = "mdbx")]
-    pub fn open_with_options(
-        path: impl AsRef<std::path::Path>,
-        config: &Config,
-        options: crate::MdbxOptions,
-    ) -> OpenResult<Self> {
-        crate::open_with_options(path, config, options)?.into_database()
     }
 
     /// Immutable deployment configuration validated at opening.
