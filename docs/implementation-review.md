@@ -14,15 +14,21 @@ First reviewed 2026-10-02 at `c0f18a7` (branch `feature/golem-db-api`). **Update
 revision `9ee62d6` (branch `matthiaszimmermann/refactor/namings`)**, after the renames of Part 0:
 Parts A–C use the current names and line numbers, and every finding was re-checked against that
 revision. Part 0 is the record of the naming decisions and keeps the old names where it describes
-what changed. **Part 0** records naming decisions, **Part A** covers the public API, **Part B** covers genesis, the Superblock and
-the reserved records, and **Part C** collects code comments per file.
+what changed. **Updated again 2026-10-04 for revision `6d5e332`** after the API refactorings N11–N17
+(constructors, `StoreConfig`, `Genesis::DEV`, the `internals` feature, `StoreFull`, the store file);
+references and findings in Parts A–C were re-checked against it. The code added by N11–N17 is
+recorded in Part 0 and covered by tests, but has not had the in-depth review Parts A–C give the
+original code. **Part 0** records naming decisions, **Part A** covers the public API, **Part B**
+covers genesis, the Superblock and the reserved records, and **Part C** collects code comments per
+file.
 
 **Method.** All sources were read in full: `crates/api`, plus the parts of `cells`, `branch`,
 `record` and `merkle` that genesis and commits depend on. Behavioural claims were checked by running
 the README examples and probe code as temporary tests, removed afterwards. The crate's own suite
-passes: `cargo test -p golemdb-api --features mdbx`, 33 tests, including 13 on opening and genesis.
-The re-check on 2026-10-03 re-ran the behavioural probes (C1–C4, R4, R7) and the README examples
-against the renamed code; all results are unchanged.
+passes: `cargo test -p golemdb-api --features mdbx`, 40 tests at `6d5e332` (33 at the first
+review), including 13 on opening and genesis. The re-checks on 2026-10-03 and 2026-10-04 re-ran the
+behavioural probes (C1–C4, R4, R7) and the README examples against the changed code; all results
+are unchanged.
 
 ---
 
@@ -30,9 +36,10 @@ against the renamed code; all results are unchanged.
 
 Ranked by how expensive they become later.
 
-0. **Naming** (Part 0): code renames done (PR #29: `Store`, `Database`, `Inner`, no "engine" or
-   "backend" in code). Still open: sign-off on the product name *GolemDB* (P10), the spec vocabulary
-   (S16), and the repo and doc file renames (T07); see [naming-migration.md](naming-migration.md).
+0. **Naming and API shape** (Part 0): done in code (PR #29): the renames N4–N10 and the
+   refactorings N11–N17. Still open: sign-off on the product name *GolemDB* (P10), the spec
+   vocabulary and `StoreFull` in the API spec (S16, F31), and the repo and doc file renames (T07);
+   see [naming-migration.md](naming-migration.md). Operational gaps: B6.
 1. **Genesis is not final, but already identity-hashed and persisted** (B5, G3, G4). `genesis_id`
    hashes every genesis cell, so adding `#minRetention`, `#shardSpan`, `#immutableDataSegments` or
    the metering model later changes the identity. Every database created today will then fail with
@@ -55,8 +62,8 @@ Ranked by how expensive they become later.
 
 # Part 0: Naming
 
-Decisions agreed 2026-10-03. The product name (N1) is a branding decision and needs sign-off beyond
-this review.
+Decisions agreed 2026-10-03 (N1–N10) and 2026-10-04 (N11–N17). The product name (N1) is a branding
+decision and needs sign-off beyond this review.
 
 **Background.** Rust fixes the casing; a project only chooses the words. Package names are
 kebab-case (`golemdb-api`), Cargo turns `-` into `_` for use in code (`golemdb_api`), types are
@@ -76,13 +83,21 @@ package prefix and repo name.
 | N8 | **Spec identifiers** | `EngineAssigned` becomes **`Generated`** (`CallerAssigned` stays); `machineId` becomes **`nodeId`** ("database-assigned") | "Generated keys" is already the README's term. An unqualified "node" means a machine per the design glossary (S04). D11 recommends removing this cursor field altogether; the name applies if it survives |
 | N9 | **Private shared state** | `struct Engine` becomes **`Inner`**, field `engine` becomes **`inner`** | **Rationale:** a cheap-to-clone public handle holding a private `inner: Arc<Inner>` that all clones share is idiomatic Rust: `std::thread::Thread` keeps its state in a private `Inner`, `Arc`/`Rc` point to `ArcInner`/`RcInner`, and dependencies of this workspace (`crossbeam-utils`, `regex-automata`, `serde_json`, `clap_builder`) do the same. **This repo already uses it** in exactly this role: `Branches` has `inner: Arc<Inner<D, H>>` (`crates/branch/src/manager.rs:53,82`) and `MemoryDatabase` has `inner: Arc<Inner>` (`crates/storage/src/memory.rs:14,23`). `GolemDb` is the one place that breaks the pattern. "Engine" also overstates the struct: it is a thin adapter that forwards each `Api` call to `Records` or `Branches` (its own comment: "Business rules, locking, and transaction boundaries remain in record and branch, not in this adapter"). The field is typed `Arc<dyn Api + Send + Sync>`, so today only its name hints at what it holds |
 | N10 | **"backend"** | dropped. **store** where it means the store instance being opened; **store implementation** where it means the memory or MDBX implementation as such | "Backend" had two senses: the store a caller passes in (`open_backend`, `from_backend`, "a backend instance") and an implementation of the `Store` trait ("`MemoryStore` is the initial backend", "memory and optional MDBX backends"). Neither is one of the N7 words. Identifiers follow: `StorageError::Backend` becomes **`StorageError::Implementation`** (the catch-all for failures inside a store implementation, not MDBX-specific: test faults and the seal buffer use it too), the private helper `backend(libmdbx::Error)` becomes **`mdbx_error`**, the bench helper `backend(…)` becomes **`bench_store(…)`** |
+| N11 | **Configuration types** | `OpenConfig` becomes **`Config`**, `GenesisConfig` becomes **`Genesis`**; **`OpenMode` stays**, now `#[non_exhaustive]` | `Genesis` follows the Ethereum-client convention for the parsed genesis file (`alloy_genesis::Genesis`). `Config` relies on the crate path for context, like `sled::Config`. A bare `Mode` would be ambiguous: the API spec also has a key assignment mode and a paging mode. `#[non_exhaustive]` lets a read-only mode (G9) be added without breaking callers |
+| N12 | **Constructors** | **`Database::open(store, &config)`**, **`Database::open_memory(&genesis)`**, **`Database::from_store(store, &config)`**; removed `open_database`, the `open` alias and `open_with_options` | `open` takes anything that converts into `StoreConfig`: a path means MDBX with default options (`Database::open("./data", &config)`), `StoreConfig::Mdbx { path, options }` tunes capacity, `StoreConfig::Memory` is throwaway. The store is a separate argument so that `from_store` never has to ignore a field of `Config`. `open_memory` takes only a genesis: a fresh store makes the mode meaningless. Documented opening corner cases: missing vs. empty directory under `ExistingOnly`; one open per MDBX directory per process; another process gets separate branches and `Conflict`; `from_store` trusts its store and does not get `open`'s path guarantees; a store backs one open database at a time (sequential reuse is fine) |
+| N13 | **Store configuration** | **`StoreConfig`** (`Memory`, `Mdbx { path, options }`); `StoreConfig`, `Config` and `MdbxOptions` are **`#[non_exhaustive]`**; `Config::with_mode` | Non-breaking later: a new store (new variant), a store-neutral option (field of `Config`), an MDBX option (field of `MdbxOptions`, built from `Default`). `Config` holds what applies to every store (genesis, mode); store settings are node-local and never part of the genesis identity. MDBX on reopen: a larger `max_map_size` takes effect, a smaller one is ignored; a changed `growth_step` takes effect in both directions (measured) |
+| N14 | **Development genesis** | **`Genesis::DEV`**, an associated const; no `Default` for `Genesis` | Genesis is consensus-relevant: a `Default` could change between releases and silently split nodes. Named presets follow reth (`MAINNET`, `SEPOLIA`, `DEV`). `DEV` is for development, tests and examples only and may change between releases. A deployment's genesis (Arkiv's) lives with the deployment, not in GolemDB (P04) |
+| N15 | **Lower-level opening layer** | `open_store` and `OpenedStore` public only with the **`internals`** feature; the free functions `open_memory`, `open_database`, `open`, `open_with_options` **removed** | Resolves R3. Only this crate's tests used the layer; they enable the feature through a self dev-dependency. Trusted tooling can opt in |
+| N16 | **Full store** | **`StorageError::Full`** (from `MDBX_MAP_FULL`) → **`ApiError::StoreFull`**; `StorageError` becomes `#[non_exhaustive]` | `StoreFull` is environmental, not deterministic: it must never become part of a result other nodes see. The failed commit writes nothing; after reopening with a larger cap the node continues from its last commit. Operations: B6 |
+| N17 | **Store file** | **`StoreConfig::load(path)`** / **`from_yaml(text)`**, errors as **`OpenError::StoreYaml`** | Separate from the genesis file: genesis never changes, store settings may change between restarts. `mdbx:` with `path` and optional `options`, or `memory`; omitted options keep their defaults, unknown fields are rejected; `load` resolves a relative path against the file's directory |
 
-**Status (2026-10-03).** Applied in code on `matthiaszimmermann/refactor/namings` (PR #29): N4,
-N5, N6, N9, N10, and N7 for the code and its READMEs. N3 needed no change. Pending, with
-instructions in [naming-migration.md](naming-migration.md): N7 and N8 in the API and metering specs
-(register S16), N1 (product name, P10), N2 (repo and doc file renames, T07).
+**Status (2026-10-04).** Applied in code on `matthiaszimmermann/refactor/namings` (PR #29): N4–N6,
+N9–N17, and N7 for the code and its READMEs. N3 needed no change. Pending, with instructions in
+[naming-migration.md](naming-migration.md): N7 and N8 in the API and metering specs (register S16),
+`StoreFull` in the API spec's error set (F31), N1 (product name, P10), N2 (repo and doc file renames,
+T07).
 
-**N4–N6, N9 and N10 renames in code:**
+**Renames in code (N4–N6, N9–N16):**
 
 | Today | New |
 | --- | --- |
@@ -100,6 +115,12 @@ instructions in [naming-migration.md](naming-migration.md): N7 and N8 in the API
 | `StorageError::Backend` ("storage backend error") | `StorageError::Implementation` ("store implementation error") (N10) |
 | `fn backend(libmdbx::Error)` (private, `storage/src/mdbx.rs`) | `mdbx_error` (N10) |
 | `fn backend(…)` (`index/benches/index.rs`), `each_backend` (`api/tests/facade.rs`) | `bench_store(…)`, `each_store` (N10) |
+| `OpenConfig`, `GenesisConfig` | `Config`, `Genesis` (N11) |
+| `Database::open_database(path, &config)`, `Database::open(path, &config)` (alias), `Database::open_with_options(path, &config, options)` | `Database::open(store, &config)` (N12) |
+| `Database::open_memory(&config)` | `Database::open_memory(&genesis)` (N12) |
+| free functions `open_memory`, `open_database`, `open`, `open_with_options` | removed (N15) |
+| `open_store`, `OpenedStore` (always public) | public with the `internals` feature (N15) |
+| `MDBX_MAP_FULL` as `StorageError::Implementation(…)` / `ApiError::Internal` | `StorageError::Full` / `ApiError::StoreFull` (N16) |
 
 **N7 replacing "engine":** 15 uses in the API spec, about 60 in code (mostly comments), about 80 in
 the design, which is deferred with the program/data distinction.
@@ -142,7 +163,7 @@ storage traits.
 
 ## Target naming
 
-The end state after N1–N10, written with the new names only, so it can be discussed on its own.
+The end state after N1–N17, written with the new names only, so it can be discussed on its own.
 
 **Words**
 
@@ -156,6 +177,7 @@ The end state after N1–N10, written with the new names only, so it can be disc
 | **internal** | storage rows that are neither user cells nor reserved records: trie nodes, metadata | `api` opening checks ("internal rows", "internal values") |
 | **trusted library code** | privileged code that bypasses checks (design §4's term) | `branch`, `record` and `api` docs, e.g. `OpenedStore::into_store()` |
 | **reserved** | the records 0–63 and their `#`/`@` names, as opposed to user records and names | design, spec, `parse_reserved` |
+| **genesis file** / **store file** | the deployment's YAML (identical on every node, never changes) / one node's YAML (may change between restarts) | `Genesis::load`, `StoreConfig::load` |
 
 **Repository and documents**
 
@@ -184,11 +206,16 @@ The end state after N1–N10, written with the new names only, so it can be disc
 | --- | --- |
 | `golemdb_api::Database` | the cloneable handle a caller opens; implements `Api` |
 | `golemdb_api::Api` | the trait with record and branch operations |
-| `golemdb_api::OpenedStore<S>` | a store that passed genesis validation, not yet wrapped in a `Database` |
-| `OpenedStore::into_database()` | wrap it in a `Database` (the normal path) |
-| `OpenedStore::into_store()` | hand the raw store to trusted code |
-| `Database::from_store(store, &config)` | open a `Database` over a caller-supplied store |
-| `open_store(store, &config)` | the lower-level form, returning `OpenedStore<S>` |
+| `Database::open(store, &config)` | open on a built-in store; `store` is a path (MDBX, default options) or a `StoreConfig` |
+| `Database::open_memory(&genesis)` | a fresh in-memory database, for tests |
+| `Database::from_store(store, &config)` | open on a caller-supplied (trusted) store |
+| `Config` | `genesis` + `mode`; `Config::new(genesis)`, `with_mode(mode)` |
+| `Genesis`, `Genesis::DEV` | the deployment's genesis (`load`, `from_yaml`); the development preset |
+| `OpenMode` | `CreateIfMissing` (default), `ExistingOnly`, `CreateNew` |
+| `StoreConfig` | `Memory`, `Mdbx { path, options }`; `StoreConfig::mdbx(path)`, `load`, `from_yaml` |
+| `MdbxOptions` | `max_tables`, `max_map_size`, `growth_step`; start from `Default` |
+| `ApiError::StoreFull`, `OpenError::StoreYaml` | the store reached its cap; an invalid store file |
+| `open_store`, `OpenedStore<S>` (`internals` feature) | the lower-level layer: validate a store, then `into_database()` or `into_store()` |
 | `golemdb_storage::Store` | the store trait; implemented by `MemoryStore` and `MdbxStore` |
 | `CellNameRef::parse_user`, `parse_reserved`, `raw` | the three ways to make a cell name |
 | `CallerAssigned`, `Generated` | key assignment modes (spec; not yet in code) |
@@ -199,7 +226,7 @@ The end state after N1–N10, written with the new names only, so it can be disc
 ```rust
 pub struct Database {
     inner: Arc<dyn Api + Send + Sync>, // shared by all clones
-    genesis: GenesisConfig,
+    genesis: Genesis,
     info: OpenInfo,
 }
 
@@ -212,23 +239,22 @@ struct Inner<S, H> {                    // private; implements Api by forwarding
 **A caller's view**
 
 ```rust
-use golemdb_api::{Api, Database, OpenConfig, ReadTarget, Projection};
+use golemdb_api::{Api, Config, Database, Genesis, Projection, ReadTarget, StoreConfig};
 
-let db = Database::open_memory(&config)?;
+let db = Database::open_memory(&Genesis::DEV)?;                       // tests
+let config = Config::new(Genesis::load("genesis.yaml")?);
+let db = Database::open(StoreConfig::load("store.yaml")?, &config)?;  // a node
 let branch = db.begin()?;
 db.create(branch, key, record)?;
 db.commit(branch)?;
 let saved = db.get(ReadTarget::Head, key, Projection::All)?;
 ```
 
-**Not decided yet**
+**Still open**
 
-- **Constructors on `Database`.** Today there are `open_memory`, `open_database`, `open` (an alias)
-  and `open_with_options`. `Database::open_database` repeats the type name; one option is
-  `open(path)` plus `open_with_options`, dropping the alias.
-- **The free functions** (`open_memory`, `open_database`, `open`, `open_with_options`) share names
-  with the `Database` constructors but return `OpenedStore<S>` (R3). Renaming them, or moving them
-  onto `OpenedStore`, would remove that clash.
+- **Read-only open** (G9): prepared by `OpenMode` being `#[non_exhaustive]`; not designed yet.
+- **Store usage reporting and the `StoreFull` runbook** (B6).
+- The constructor and free-function questions recorded here earlier are settled by N12 and N15.
 
 ---
 
@@ -281,28 +307,29 @@ does not have to diff it against the spec.
 | E1 | **Immutable-data keys**: `immutable_data_append(…, key: Option<ImmutableDataKey>, …)`, `ImmutableDataAddress::Key` | Spec signatures are `(b, seg, row)` and `(seg, ordinal)`; no keys. The README links to the spec as describing "pruning and rewind of key bindings", which the spec does not contain |
 | E2 | **`ReadTarget::Head`** | Spec has branch handle or `CommitId`. A useful addition (head resolved and read in one snapshot); the spec should adopt it |
 | E3 | **Errors `Sealed`, `NoFrameToRollback`, `CommitUnavailable`, `NotImplemented`** | Not in the spec's shared error set. `Sealed` conflicts with C2; the other three need a row each |
-| E4 | **Opening API**: `OpenConfig`, `OpenMode`, `GenesisConfig` (YAML), `OpenError`, `Database::open_*`, `Database::from_store`, `open_store`, `OpenedStore` | The spec has no opening section. Probably right for a call-level spec, but the genesis inputs are consensus-relevant (Part B) |
+| E4 | **Opening API**: `Config`, `OpenMode`, `Genesis` (YAML, `DEV`), `StoreConfig` (YAML), `OpenError`, `Database::open`/`open_memory`/`from_store`; `open_store`/`OpenedStore` with `internals` | The spec has no opening section. Probably right for a call-level spec, but the genesis inputs are consensus-relevant (Part B) |
 | E5 | **`Projection::only` accepts raw byte names** | Needed to read reserved records' binary cell keys; spec says only "cell names" |
 
 ## A4. README accuracy
 
-Confirmed by running the code: all four examples (quickstart, inputs, catalogue, YAML genesis);
+Confirmed by running the code: all six examples (quickstart, inputs, catalogue, YAML genesis, node
+sizing, store file);
 `blake3` YAML; `Conflict` then `HandleInvalid`; `CommitUnavailable` for a non-head commit;
 `NotFound` for an empty projection on a missing record; empty `create` rejected; reserved records
 readable by `get`; dyn compatibility (`Database` wraps `Arc<dyn Api + Send + Sync>`,
-`crates/api/src/database.rs:28`); trie-path checking on reopen (B3); the claims about
+`crates/api/src/database.rs:30`); trie-path checking on reopen (B3); the claims about
 `tests/consumer.rs`, `tests/facade.rs` and `tests/facade_errors.rs`.
 
 | # | Finding | Where |
 | --- | --- | --- |
 | R1 | **The opening summary lists only record and branch operations.** The four `immutable_data_*` methods appear only under *Current scope* | README lines 5–6 |
 | R2 | **"previous-root history" is overstated.** Reopen checks one `#roots` entry, the one for `head − 1` | `crates/api/src/genesis.rs:203-213` |
-| R3 | **Only two free opening functions are named** (`open_database`, `open_store`). `open_memory`, `open` and `open_with_options` are exported too. `golemdb_api::open_database` returns `OpenedStore` while `Database::open_database` returns `Database`: same name, different return type. The renames made this more visible: `Database::open_database` now also repeats the type name (Part 0, *Not decided yet*) | `crates/api/src/lib.rs:59-61` |
-| R4 | **Error messages print twice.** Converting `RecordError::InvalidArgument` copies the message into `message` and keeps the same error as `source`, so a chain reporter prints "cannot remove the last user cell" twice | `crates/api/src/error.rs:85-88` |
+| R3 | ~~**Free opening functions mirrored the constructors** (`open_memory`, `open_database`, `open`, `open_with_options`) under the same names but returned `OpenedStore`.~~ **Resolved** by N12 and N15: the free functions are removed, `Database` has three constructors, and the README describes the `internals` layer | `crates/api/src/lib.rs:53-56` |
+| R4 | **Error messages print twice.** Converting `RecordError::InvalidArgument` copies the message into `message` and keeps the same error as `source`, so a chain reporter prints "cannot remove the last user cell" twice | `crates/api/src/error.rs:96-99` |
 | R5 | **Rollback edge cases undocumented** | see C4 |
 | R6 | **"Adding required methods requires updating implementations and mocks" understates the cost.** The private `Inner` implements the public `Api` and `Database` forwards each method by hand, so one new method means edits in the trait, `Database`, `Inner` and every mock | `crates/api/src/database.rs` |
 | R7 | **Misleading message for the name `$`**: rejected correctly, but with "cell name is empty" | `crates/cells/src/name.rs:53-54` |
-| R8 | **"All four iterations are implemented"** is project-internal jargon a reader of the crate cannot decode | README line 325 |
+| R8 | **"All four iterations are implemented"** is project-internal jargon a reader of the crate cannot decode | README line 372 |
 | R9 | **The README does not say that databases created now may not reopen under a later build** | see item 1 at the top |
 
 ## A5. Spec rules the implementation follows
@@ -322,7 +349,7 @@ Not checked: custom type ids 64–127; the "one class of failure surfaces late" 
 | # | Finding |
 | --- | --- |
 | S1 | `CHANGES.md` F30 records that `rewind` is not in v1 and lists `golem-db-api.md` *Commits* and *Operations* as updated. On this branch the spec still says "Reorgs use `rewind`" and lists `rewind` in the operations table. The F30 edit has either not reached this branch or not been made |
-| S2 | The README points to the spec for immutable-data key bindings, pruning and rewind (README line 322); the spec has none of these (see E1) |
+| S2 | The README points to the spec for immutable-data key bindings, pruning and rewind (README line 369); the spec has none of these (see E1) |
 | S3 | The spec's `HandleInvalid` row says "a consumed branch handle, or one whose origin is no longer the head", while its *Branches* section says only the losers' `commit` ⇒ `Conflict`. Read together, a stale branch's first `commit` is both. The implementation resolves this by call order (C3) |
 
 ## A7. Tests and tooling
@@ -377,7 +404,7 @@ Nothing writes `#rootIndex`, the metering records, history tables or change-set 
 ## B2. How opening works
 
 - **One writer transaction** covers detection, validation and initialization
-  (`crates/api/src/open.rs:66-92`), so concurrent initializers serialize and genesis is atomic.
+  (`crates/api/src/open.rs:68-94`), so concurrent initializers serialize and genesis is atomic.
   Panics during preparation drop the transaction before unwinding.
 - **Pristine detection:** no `head` row plus completely empty storage creates genesis. No head but
   some tables or rows is `CorruptState`. MDBX counts even an empty foreign table as not pristine.
@@ -420,7 +447,7 @@ subtrees are not verified, which matches the README apart from R2.
 | G6 | §4 `#roots`: value `StateRoot ‖ IndexRoot` (64 B); type tag of reserved layouts open (D09) | `bytes` cell, 64 bytes | A reasonable choice that is now effectively normative: it is inside every `StateRoot`. Record it in D09 |
 | G7 | §2/§4: `hash_fn` is a `u16` ID; numbers not assigned | `1` = Keccak-256, `2` = BLAKE3 | Must be written down for a second implementation (P07). Also note that `genesis_id` and every root depend on it |
 | G8 | §8: `EMPTY_ROOT` is "a normative constant every implementation must agree on"; value open (D09) | `H("")` under the deployment's hash (`crates/merkle/src/trie.rs:25-31`), used for both tries | Record it in D09. It is the genesis `IndexRoot`, so it is already in every head |
-| G9 | §4 *Conventions*: read-only opens via MDBX `RDONLY` for replicas and tooling | every open uses `begin_write`, even a reopen that writes nothing (`crates/api/src/open.rs:70`); no read-only option exists in `golemdb-storage` | **Conflict.** Either add a read-only open path that validates under a read transaction, or drop the convention |
+| G9 | §4 *Conventions*: read-only opens via MDBX `RDONLY` for replicas and tooling | every open uses `begin_write`, even a reopen that writes nothing (`crates/api/src/open.rs:72`); no read-only option exists in `golemdb-storage` | **Conflict.** Either add a read-only open path that validates under a read transaction, or drop the convention |
 | G10 | §4: reserved keys are names zero-padded to 32 bytes; ID ranges 0–31 / 32–63 / ≥ 64; `#nextRecordID` starts at 64 | as specified (`crates/cells/src/system.rs`) | ✓ |
 | G11 | §4 `#roots`: lag-one, written at the start of commit `n+1` from `head` | written at `seal` of commit `n+1` from the origin head; refuses an existing cell | ✓ |
 | G12 | §4: `#alloc` changes only at commits that create a record; deletes never rewind it | as specified | ✓ |
@@ -452,6 +479,20 @@ subtrees are not verified, which matches the README apart from R2.
 | B5.5 | **Reopen takes the writer lock** (G9). Besides blocking read-only opens, a reopen waits for any in-flight commit from another handle on the same environment |
 | B5.6 | **The `hash_fn` mapping is private to `api`** and checked twice (`hash_id` and `matches!(hash, 1 \| 2)`). Moving it next to `HashAlgorithm` in `golemdb-merkle` gives one definition |
 
+## B6. Operations
+
+Findings from the `StoreFull` work (N16) and the MDBX reopen experiments. Recovery is possible
+without data loss: the failed commit writes nothing, and after a restart with a larger
+`max_map_size` (or more disk, or a move to a larger host) the node continues from its last commit
+and catches up.
+
+| # | Finding |
+| --- | --- |
+| OPS-1 | **No way to query store usage.** Neither `Database` nor `MdbxStore` reports used size against the cap, so an operator can only watch the size of `mdbx.dat` from outside, and the file never shrinks. Monitoring at, say, 80% of the cap needs a usage report |
+| OPS-2 | **Fleet-wide `StoreFull`.** Nodes processing the same chain grow at almost the same rate. If they share one cap value (the default, or a deployment template), they reach `StoreFull` at nearly the same block and the whole network stops. The cap must be set per node from its own disk, never fleet-wide |
+| OPS-3 | **No runbook yet** (deferred from N16): stop the node; add disk or move to a larger host (a stopped store is safe to copy: `mdbx.dat` without `mdbx.lck`); raise `max_map_size`; restart with `ExistingOnly`. The reserve on the disk must cover at least one `growth_step` and every other file there, including the future segment files of design §11 |
+| OPS-4 | **Raising the cap needs a restart.** MDBX can change the size limits of an open environment, so growing at runtime may be possible; its behaviour with active readers and an open writer is unverified |
+
 ---
 
 # Part C: code comments per file
@@ -463,7 +504,7 @@ can be referenced from issues and PRs.
 
 | # | Lines | Comment |
 | --- | --- | --- |
-| GEN-1 | 79-83, `prepare` | **The hash function is passed twice**: as `config.genesis.hash_function` and as the `hasher` argument. Nothing checks they agree. A mismatched pair would write `hash_fn = 2` while computing roots and `genesis_id` with Keccak. Safe today only because the one caller (`open.rs:71-74`) matches them. Suggested fix: add `const ALGORITHM: HashAlgorithm` to `HashProvider` and derive the `hash_fn` ID from `H::ALGORITHM`, so `prepare` takes the hasher alone |
+| GEN-1 | 79-83, `prepare` | **The hash function is passed twice**: as `config.genesis.hash_function` and as the `hasher` argument. Nothing checks they agree. A mismatched pair would write `hash_fn = 2` while computing roots and `genesis_id` with Keccak. Safe today only because the one caller (`open.rs:73-76`) matches them. Suggested fix: add `const ALGORITHM: HashAlgorithm` to `HashProvider` and derive the `hash_fn` ID from `H::ALGORITHM`, so `prepare` takes the hasher alone |
 | GEN-2 | 63, 86, 95-102, 121-133 | **Superblock keys are string literals** (`b"head"`, `b"format"`, `b"hash_fn"`, `b"roaring"`, `b"genesis_id"`), each written two or three times. `b"head"` also duplicates the private `HEAD_KEY` in `crates/branch/src/head.rs:7`, and the `"Superblock"` table name is defined in both files (B5.2). A typo in one place would compile and only fail at runtime. Suggested fix: one Superblock module owning the table name, the row keys and their value types, used by both `genesis.rs` and `head.rs`. The domain tag `"golemdb/genesis/v1\0"` (line 63) belongs with the other domain-separation constants |
 | GEN-3 | 15-20, 126 | **Hash-function IDs appear as bare numbers twice**: the mapping in `hash_id` and the separate check `matches!(hash, 1 \| 2)`. Adding a third algorithm means updating both. Suggested fix: one `HashAlgorithm::from_id` / `to_id` pair next to the enum in `golemdb-merkle` (B5.6), with the check written as `from_id(hash).is_none()` |
 | GEN-4 | 115, 199 | **The empty root is written as `hasher.hash(&[])`** rather than through the trie's own definition (`RootRef::Empty.hash(hasher)`). The values agree today, but if `EMPTY_ROOT` is ever pinned differently in D09 (G8), these two sites would silently disagree with the trie |
@@ -475,6 +516,9 @@ can be referenced from issues and PRs.
 2. Record G2, G6, G7 and G8 in D09 and Appendix A (G1 is done).
 3. Decide C1/C2 and C3 (D15), then align the code or the spec.
 4. Add the spec's missing error rows (E3) and decide on immutable-data keys (E1, S2).
-5. Extend the README's *Current scope* with the unmarked items from A2, and fix R1–R9.
+5. Extend the README's *Current scope* with the unmarked items from A2, and fix R1, R2, R4–R9
+   (R3 is resolved).
 6. Land F30 in the spec on this branch (S1).
 7. Include the README as a doctest (T1).
+8. Apply the documentation side of Part 0 with [naming-migration.md](naming-migration.md), and
+   address the operational findings OPS-1 to OPS-4 (B6).

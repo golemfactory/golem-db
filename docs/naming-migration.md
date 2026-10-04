@@ -1,7 +1,7 @@
 # Naming migration: instructions for the documentation
 
-Instructions for bringing the design documents in line with the naming decisions in
-[implementation-review.md](implementation-review.md) Part 0 (N1–N10). The code side is done on
+Instructions for bringing the design documents in line with the naming and API decisions in
+[implementation-review.md](implementation-review.md) Part 0 (N1–N17). The code side is done on
 branch `matthiaszimmermann/refactor/namings` (PR #29). This file says what to change in the
 documents, where, and how to check the result. It is written so that an agent can execute it.
 
@@ -44,6 +44,9 @@ The documents mention none of these today. If an edit needs to name a code item,
 | `open_backend`, `GolemDb::from_backend` | `open_store`, `Database::from_store` |
 | `StorageError::Backend` | `StorageError::Implementation` |
 | `CellNameRef::parse_engine` | `parse_reserved` |
+| `OpenConfig`, `GenesisConfig` | `Config`, `Genesis` (`Genesis::DEV` for development) |
+| `Database::open_database`, `open_with_options` | `Database::open(store, &config)` with `StoreConfig` |
+| MDBX "map full" as an internal error | `StorageError::Full` / `ApiError::StoreFull` |
 
 ## 3. API spec (`golem-db-api.md`)
 
@@ -71,6 +74,16 @@ Every occurrence of "engine" (15), "the store" (2) and the two identifiers. Repl
 | 707 | `Internal` … "engine fault" | "database fault" |
 
 The key mode `CallerAssigned` stays. "Golem DB" (3) waits for section 8.
+
+**Add `StoreFull` to the shared error set** (*Common conventions*, the *Errors* table). The code
+reports a full store as `ApiError::StoreFull` (review N16). Insert this row before `Internal`:
+
+| error | raised when |
+| --- | --- |
+| `StoreFull` | the store reached its size cap. Environmental, not deterministic: it surfaces at `commit`, the commit writes nothing, and it must never become part of a result other nodes see |
+
+The paragraph *One class of failure surfaces late* already names "storage exhaustion" among the
+failures that can only surface at `commit`; add "(`StoreFull`)" after it.
 
 ## 4. Metering spec (`golem-db-metering.md`)
 
@@ -109,6 +122,13 @@ free ones if that changed.
 |---|---|---|---|---|---|---|
 | P10 | wai | Product name: "Golem DB" or **GolemDB** (precedents RocksDB, FoundationDB, SurrealDB, LanceDB)? Decides doc prose, doc titles, and the repo name `golemdb` (N2) | implementation-review.md Part 0 (N1, N2) | Product | "GolemDB": packages and code already use `golemdb` | naming-migration.md section 8 |
 
+**Fix** (kind K1), once the `StoreFull` row has landed in the API spec: add this row to *Closed →
+Done*, as K1 rows go straight there:
+
+| ID | Kind | Change | Sources | Closed by | Landed in |
+|---|---|---|---|---|---|
+| F31 | K1 | `[API]` `StoreFull` in the shared error set: a full store surfaces at `commit`, writes nothing, and is environmental | implementation-review.md N16 | The error table lists `StoreFull`; the late-failure paragraph names it | api.md *Common conventions* |
+
 **Tasks**, in the *Tasks* table:
 
 | ID | Status | Task | Origin | Link |
@@ -117,6 +137,10 @@ free ones if that changed.
 
 **Triage log**, newest first, in the existing style:
 
+> - **2026-10-04 (API shape).** Also in PR #29: `Database::open(store, &config)`,
+>   `open_memory(&genesis)` and `from_store` as the only constructors; `StoreConfig` with a store
+>   file (`StoreConfig::load`); `Config` / `Genesis` (with `Genesis::DEV`); the lower-level opening
+>   layer behind an `internals` feature; `ApiError::StoreFull`. Spec follow-up: F31.
 > - **2026-10-03 (naming).** Code renames landed in PR #29 (`matthiaszimmermann/refactor/namings`):
 >   storage `Database` → `Store` (`MemoryStore`, `MdbxStore`), facade `GolemDb` → `Database`,
 >   private `Engine` → `Inner`, "backend" → store / store implementation
@@ -152,6 +176,7 @@ grep -niw 'engine' docs/golem-db-metering.md
 grep -n 'storage engine\|MDBX database environment' docs/golem-db-design.md
 ```
 
-If D11's removal has not landed, also check that `machineId` became `nodeId` in the API spec and
+`grep -c StoreFull docs/golem-db-api.md` must print at least 2 (the error row and the late-failure
+paragraph). If D11's removal has not landed, also check that `machineId` became `nodeId` in the API spec and
 §13 of the design. After section 8: `grep -rn 'Golem DB' docs/` prints only quoted historical
 text.
