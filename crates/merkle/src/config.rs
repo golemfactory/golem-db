@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt, path::Path};
 
 /// Standalone hash configuration for low-level runners. The public API's
-/// GenesisConfig also includes cell limits and persists the selected algorithm
+/// Genesis also includes cell limits and persists the selected algorithm
 /// in protocol metadata when opening a database.
 /// Match the identifier once before entering the processing loop; each runner
 /// instantiation uses a compile-time-known provider. The configuration is not a

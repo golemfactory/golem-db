@@ -10,12 +10,12 @@ use crate::{OpenError, OpenResult};
 /// limit or hash algorithm is silently selected by the opener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GenesisConfig {
+pub struct Genesis {
     pub hash_function: HashAlgorithm,
     pub cell_limits: CellLimits,
 }
 
-impl GenesisConfig {
+impl Genesis {
     pub fn from_yaml(yaml: &str) -> OpenResult<Self> {
         serde_saphyr::from_str(yaml).map_err(OpenError::Yaml)
     }
@@ -55,7 +55,10 @@ impl GenesisConfig {
     }
 }
 
+/// How opening treats existing storage. Non-exhaustive so that further modes,
+/// such as a read-only open, can be added without breaking callers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OpenMode {
     /// Initialize pristine storage, otherwise validate and reopen.
     #[default]
@@ -67,13 +70,13 @@ pub enum OpenMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenConfig {
-    pub genesis: GenesisConfig,
+pub struct Config {
+    pub genesis: Genesis,
     pub mode: OpenMode,
 }
 
-impl OpenConfig {
-    pub fn new(genesis: GenesisConfig) -> Self {
+impl Config {
+    pub fn new(genesis: Genesis) -> Self {
         Self {
             genesis,
             mode: OpenMode::CreateIfMissing,

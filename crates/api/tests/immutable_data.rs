@@ -87,7 +87,7 @@ fn check(api: &dyn Api, branch: BranchId) {
 
 fn contract(store: impl Store + Send + Sync + 'static, hash_function: HashAlgorithm) {
     let forbid_io = Arc::new(AtomicBool::new(false));
-    let config = OpenConfig::new(GenesisConfig {
+    let config = Config::new(Genesis {
         hash_function,
         cell_limits: CellLimits {
             max_cell_name_len: 32,

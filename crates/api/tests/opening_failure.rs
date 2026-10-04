@@ -6,11 +6,11 @@ use std::{
     },
 };
 
-use golemdb_api::{CellLimits, GenesisConfig, HashAlgorithm, OpenConfig, OpenError, open_store};
+use golemdb_api::{CellLimits, Config, Genesis, HashAlgorithm, OpenError, open_store};
 use golemdb_storage::{MemoryStore, ReadTransaction, StorageError, Store, Table, WriteTransaction};
 
-fn config() -> OpenConfig {
-    OpenConfig::new(GenesisConfig {
+fn config() -> Config {
+    Config::new(Genesis {
         hash_function: HashAlgorithm::Keccak256,
         cell_limits: CellLimits {
             max_cell_name_len: 32,

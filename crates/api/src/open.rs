@@ -4,7 +4,7 @@ use golemdb_branch::Head;
 use golemdb_merkle::{Blake3Hasher, HashAlgorithm, Keccak256Hasher};
 use golemdb_storage::{MemoryStore, Store, WriteTransaction};
 
-use crate::{CommitId, GenesisConfig, OpenConfig, OpenResult};
+use crate::{CommitId, Config, Genesis, OpenResult};
 
 /// Snapshot of opening, not a live head monitor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ impl OpenInfo {
 /// Consume this handle with into_database to connect it to the public facade.
 pub struct OpenedStore<S> {
     store: S,
-    genesis: GenesisConfig,
+    genesis: Genesis,
     info: OpenInfo,
 }
 
@@ -41,7 +41,7 @@ impl<S> OpenedStore<S> {
     pub fn info(&self) -> &OpenInfo {
         &self.info
     }
-    pub fn genesis(&self) -> &GenesisConfig {
+    pub fn genesis(&self) -> &Genesis {
         &self.genesis
     }
     /// Return the validated store for trusted library code. Writes through it
@@ -63,7 +63,7 @@ impl<S: Store + Send + Sync + 'static> OpenedStore<S> {
 /// environment; never open the same MDBX directory twice within one process.
 /// Inspect, validate, and initialize under one writer to serialize with other
 /// initializers and committers. Reopening does not commit or rewrite any rows.
-pub fn open_store<S: Store>(store: S, config: &OpenConfig) -> OpenResult<OpenedStore<S>> {
+pub fn open_store<S: Store>(store: S, config: &Config) -> OpenResult<OpenedStore<S>> {
     config
         .genesis
         .validate(store.max_key_size(), store.max_value_size())?;
@@ -95,20 +95,20 @@ pub fn open_store<S: Store>(store: S, config: &OpenConfig) -> OpenResult<OpenedS
 /// To reopen shared memory state, pass a store clone to open_store instead.
 ///
 /// ```
-/// use golemdb_api::{GenesisConfig, OpenConfig, open_memory};
-/// let genesis = GenesisConfig::from_yaml("\
+/// use golemdb_api::{Config, Genesis, open_memory};
+/// let genesis = Genesis::from_yaml("\
 /// hash_function: keccak-256
 /// cell_limits:
 ///   max_cell_name_len: 32
 ///   max_str_len: 64
 ///   max_bytes_len: 128
 /// ")?;
-/// let opened = open_memory(&OpenConfig::new(genesis))?;
+/// let opened = open_memory(&Config::new(genesis))?;
 /// assert!(opened.info().created);
 /// assert_eq!(opened.info().commit_id, 0);
 /// # Ok::<(), golemdb_api::OpenError>(())
 /// ```
-pub fn open_memory(config: &OpenConfig) -> OpenResult<OpenedStore<MemoryStore>> {
+pub fn open_memory(config: &Config) -> OpenResult<OpenedStore<MemoryStore>> {
     open_store(MemoryStore::new(), config)
 }
 
@@ -117,7 +117,7 @@ pub fn open_memory(config: &OpenConfig) -> OpenResult<OpenedStore<MemoryStore>> 
 /// See open_with_options for lifecycle and shared-environment constraints.
 pub fn open_database(
     path: impl AsRef<std::path::Path>,
-    config: &OpenConfig,
+    config: &Config,
 ) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     open_with_options(path, config, golemdb_storage::MdbxOptions::default())
 }
@@ -126,7 +126,7 @@ pub fn open_database(
 #[cfg(feature = "mdbx")]
 pub fn open(
     path: impl AsRef<std::path::Path>,
-    config: &OpenConfig,
+    config: &Config,
 ) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     open_database(path, config)
 }
@@ -136,7 +136,7 @@ pub fn open(
 #[cfg(feature = "mdbx")]
 pub fn open_with_options(
     path: impl AsRef<std::path::Path>,
-    config: &OpenConfig,
+    config: &Config,
     options: golemdb_storage::MdbxOptions,
 ) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     // Do not create a missing directory for ExistingOnly. Initialization itself

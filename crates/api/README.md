@@ -19,10 +19,10 @@ The examples use persistent MDBX storage. Enable the `mdbx` feature on
 Use a fresh database directory for the catalogue examples.
 
 ```rust
-use golemdb_api::{Api, CellLimits, CellValue, Database, GenesisConfig,
-    HashAlgorithm, OpenConfig, Projection, ReadTarget, RecordInput, RecordKey};
+use golemdb_api::{Api, CellLimits, CellValue, Config, Database, Genesis,
+    HashAlgorithm, Projection, ReadTarget, RecordInput, RecordKey};
 
-let config = OpenConfig::new(GenesisConfig {
+let config = Config::new(Genesis {
     hash_function: HashAlgorithm::Keccak256,
     cell_limits: CellLimits {
         max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
@@ -95,12 +95,12 @@ another branch can still win the commit race.
 
 ```rust
 use golemdb_api::{
-    Api, ApiError, CellLimits, CellValue, Database, GenesisConfig, HashAlgorithm,
-    OpenConfig, OpenMode, PatchInput, Projection, ReadTarget, RecordInput, RecordKey,
+    Api, ApiError, CellLimits, CellValue, Config, Database, Genesis, HashAlgorithm,
+    OpenMode, PatchInput, Projection, ReadTarget, RecordInput, RecordKey,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = OpenConfig::new(GenesisConfig {
+    let mut config = Config::new(Genesis {
         hash_function: HashAlgorithm::Keccak256,
         cell_limits: CellLimits {
             max_cell_name_len: 32,
@@ -229,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Opening and genesis
 
-Provide deployment settings explicitly, as `GenesisConfig` or a caller-selected YAML file:
+Provide deployment settings explicitly, as `Genesis` or a caller-selected YAML file:
 
 ```yaml
 hash_function: keccak-256
@@ -240,14 +240,14 @@ cell_limits:
 ```
 
 `blake3` is also supported. Missing, duplicate, and unknown fields are rejected.
-Use `GenesisConfig::load(path)` or `GenesisConfig::from_yaml(text)`; the loader
+Use `Genesis::load(path)` or `Genesis::from_yaml(text)`; the loader
 does not search for files or read environment overrides.
 
 ```rust
-use golemdb_api::{Database, GenesisConfig, OpenConfig};
+use golemdb_api::{Config, Database, Genesis};
 
-let genesis = GenesisConfig::load("genesis.yaml")?;
-let config = OpenConfig::new(genesis); // CreateIfMissing
+let genesis = Genesis::load("genesis.yaml")?;
+let config = Config::new(genesis); // CreateIfMissing
 let db = Database::open_database("./golemdb", &config)?;
 # Ok::<(), golemdb_api::OpenError>(())
 ```

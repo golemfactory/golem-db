@@ -6,7 +6,7 @@ use golemdb_index::Index;
 use golemdb_merkle::{Hash, HashAlgorithm, HashProvider, RootRef};
 use golemdb_storage::{ReadCursor, ReadTransaction, Table, WriteTransaction};
 
-use crate::{GenesisConfig, OpenConfig, OpenError, OpenInfo, OpenMode, OpenResult};
+use crate::{Config, Genesis, OpenError, OpenInfo, OpenMode, OpenResult};
 
 const SUPERBLOCK: Table = Table("Superblock");
 const FORMAT: u32 = 1;
@@ -19,7 +19,7 @@ fn hash_id(algorithm: HashAlgorithm) -> u16 {
     }
 }
 
-fn initial_cells(config: &GenesisConfig) -> BTreeMap<CellKey, CellValue> {
+fn initial_cells(config: &Genesis) -> BTreeMap<CellKey, CellValue> {
     let mut cells = BTreeMap::new();
     for record in system::ALL {
         cells.insert(
@@ -56,7 +56,7 @@ fn allocator_key() -> CellKey {
 /// Identity is independent of YAML formatting, field order, paths, and store
 /// options. It commits to format IDs and all sorted, length-framed genesis cells.
 fn identity(
-    config: &GenesisConfig,
+    config: &Genesis,
     cells: &BTreeMap<CellKey, CellValue>,
     hasher: &impl HashProvider,
 ) -> Hash {
@@ -78,7 +78,7 @@ fn identity(
 
 pub(crate) fn prepare(
     tx: &mut impl WriteTransaction,
-    config: &OpenConfig,
+    config: &Config,
     hasher: &impl HashProvider,
 ) -> OpenResult<OpenInfo> {
     let cells = initial_cells(&config.genesis);

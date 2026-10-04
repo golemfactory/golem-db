@@ -68,7 +68,7 @@ fn diagnostic(error: ApiError) {
 fn failure_contract(store: impl Store + Send + Sync + 'static) {
     let fail_reads = Arc::new(AtomicBool::new(false));
     let fail_writes = Arc::new(AtomicBool::new(false));
-    let config = OpenConfig::new(GenesisConfig {
+    let config = Config::new(Genesis {
         hash_function: HashAlgorithm::Blake3,
         cell_limits: CellLimits {
             max_cell_name_len: 32,

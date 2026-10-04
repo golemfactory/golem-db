@@ -11,8 +11,8 @@ const SUPERBLOCK: Table = Table("Superblock");
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const YAML: &str = "hash_function: keccak-256\ncell_limits:\n  max_cell_name_len: 32\n  max_str_len: 64\n  max_bytes_len: 128\n";
 
-fn config() -> OpenConfig {
-    OpenConfig::new(GenesisConfig::from_yaml(YAML).unwrap())
+fn config() -> Config {
+    Config::new(Genesis::from_yaml(YAML).unwrap())
 }
 
 fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
@@ -38,12 +38,12 @@ fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
 
 #[test]
 fn yaml_is_explicit_strict_and_has_canonical_identity() {
-    let first = GenesisConfig::from_yaml(YAML).unwrap();
-    let reordered = GenesisConfig::from_yaml("# same deployment\ncell_limits: {max_bytes_len: 128, max_str_len: 64, max_cell_name_len: 32}\nhash_function: keccak-256\n").unwrap();
+    let first = Genesis::from_yaml(YAML).unwrap();
+    let reordered = Genesis::from_yaml("# same deployment\ncell_limits: {max_bytes_len: 128, max_str_len: 64, max_cell_name_len: 32}\nhash_function: keccak-256\n").unwrap();
     assert_eq!(first, reordered);
     assert_eq!(
-        open_memory(&OpenConfig::new(first)).unwrap().info(),
-        open_memory(&OpenConfig::new(reordered)).unwrap().info()
+        open_memory(&Config::new(first)).unwrap().info(),
+        open_memory(&Config::new(reordered)).unwrap().info()
     );
     for bad in [
         "",
@@ -52,10 +52,7 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
         "hash_function: sha256\ncell_limits: {}",
         "hash_function: blake3\nhash_function: keccak-256\ncell_limits: {}",
     ] {
-        assert!(matches!(
-            GenesisConfig::from_yaml(bad),
-            Err(OpenError::Yaml(_))
-        ));
+        assert!(matches!(Genesis::from_yaml(bad), Err(OpenError::Yaml(_))));
     }
     for bad in [
         YAML.replace("max_str_len: 64", "max_str_len: 64\n  unexpected: 1"),
@@ -63,21 +60,21 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
         YAML.replace("max_str_len: 64", "max_str_len: 64\n  max_str_len: 65"),
         YAML.replace("max_str_len: 64", "max_str_len: -1"),
     ] {
-        assert!(GenesisConfig::from_yaml(&bad).is_err());
+        assert!(Genesis::from_yaml(&bad).is_err());
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("genesis.yaml");
     std::fs::write(&path, YAML).unwrap();
-    assert_eq!(GenesisConfig::load(&path).unwrap(), first);
+    assert_eq!(Genesis::load(&path).unwrap(), first);
     assert!(matches!(
-        GenesisConfig::load(dir.path().join("missing")),
+        Genesis::load(dir.path().join("missing")),
         Err(OpenError::Io(_))
     ));
 }
 
 fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     db: S,
-    config: OpenConfig,
+    config: Config,
     hasher: H,
 ) -> OpenInfo {
     let opened = open_store(db.clone(), &config).unwrap();
@@ -134,7 +131,7 @@ fn lifecycle<S: Store + Clone, H: HashProvider + Copy>(
     let before = snapshot(&db);
     let reopened = open_store(
         db.clone(),
-        &OpenConfig {
+        &Config {
             mode: OpenMode::ExistingOnly,
             ..config
         },
@@ -186,7 +183,7 @@ fn modes(db: impl Store + Clone) {
     assert!(matches!(
         open_store(
             db.clone(),
-            &OpenConfig {
+            &Config {
                 mode: OpenMode::ExistingOnly,
                 ..config
             }
@@ -196,7 +193,7 @@ fn modes(db: impl Store + Clone) {
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
     let opened = open_store(
         db.clone(),
-        &OpenConfig {
+        &Config {
             mode: OpenMode::CreateNew,
             ..config
         },
@@ -207,7 +204,7 @@ fn modes(db: impl Store + Clone) {
     assert!(matches!(
         open_store(
             db.clone(),
-            &OpenConfig {
+            &Config {
                 mode: OpenMode::CreateNew,
                 ..config
             }
@@ -258,7 +255,7 @@ fn partial_or_foreign_state_is_never_initialized() {
                 OpenMode::CreateNew,
             ] {
                 assert!(matches!(
-                    open_store(db.clone(), &OpenConfig { mode, ..config() }),
+                    open_store(db.clone(), &Config { mode, ..config() }),
                     Err(OpenError::CorruptState(_))
                 ));
             }
@@ -463,7 +460,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         drop(db);
         let opened = open(
             dir.path(),
-            &OpenConfig {
+            &Config {
                 mode: OpenMode::ExistingOnly,
                 ..cfg
             },
@@ -504,7 +501,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     assert!(matches!(
         open(
             &missing,
-            &OpenConfig {
+            &Config {
                 mode: OpenMode::ExistingOnly,
                 ..config()
             }

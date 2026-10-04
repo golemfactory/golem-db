@@ -7,8 +7,8 @@ use golemdb_storage::MemoryStore;
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const MISSING: RecordKey = RecordKey([0x43; 32]);
 
-fn config(hash_function: HashAlgorithm) -> OpenConfig {
-    OpenConfig::new(GenesisConfig {
+fn config(hash_function: HashAlgorithm) -> Config {
+    Config::new(Genesis {
         hash_function,
         cell_limits: CellLimits {
             max_cell_name_len: 32,
@@ -377,7 +377,7 @@ fn durable_facade_reopens_committed_state_and_discards_pending_work() {
         };
         let db = Database::open_database(
             dir.path(),
-            &OpenConfig {
+            &Config {
                 mode: OpenMode::ExistingOnly,
                 ..cfg
             },

@@ -6,10 +6,10 @@ use golemdb_record::Records;
 use golemdb_storage::Store;
 
 use crate::{
-    Api, ApiError, BranchId, BranchInfo, CommitId, GenesisConfig, HashAlgorithm,
-    ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenConfig,
-    OpenInfo, OpenResult, OpenedStore, PatchInput, Projection, ReadTarget, Record, RecordInput,
-    RecordKey, Result, SealInfo,
+    Api, ApiError, BranchId, BranchInfo, CommitId, Config, Genesis, HashAlgorithm,
+    ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenInfo,
+    OpenResult, OpenedStore, PatchInput, Projection, ReadTarget, Record, RecordInput, RecordKey,
+    Result, SealInfo,
 };
 
 /// A handle to an open database. Cheap to clone; all clones share the same open
@@ -26,14 +26,14 @@ use crate::{
 #[derive(Clone)]
 pub struct Database {
     inner: Arc<dyn Api + Send + Sync>,
-    genesis: GenesisConfig,
+    genesis: Genesis,
     info: OpenInfo,
 }
 
 impl Database {
     /// Initialize a fresh memory store. For a shared existing store use
     /// from_store; for another handle to the same database use clone.
-    pub fn open_memory(config: &OpenConfig) -> OpenResult<Self> {
+    pub fn open_memory(config: &Config) -> OpenResult<Self> {
         crate::open_memory(config)?.into_database()
     }
 
@@ -41,7 +41,7 @@ impl Database {
     /// Separate calls create separate branch registries, even over a shared store.
     pub fn from_store<S: Store + Send + Sync + 'static>(
         store: S,
-        config: &OpenConfig,
+        config: &Config,
     ) -> OpenResult<Self> {
         crate::open_store(store, config)?.into_database()
     }
@@ -49,30 +49,27 @@ impl Database {
     /// Open durable storage. Close all handles before independently reopening the
     /// same MDBX directory within one process; use clone to share an open database.
     #[cfg(feature = "mdbx")]
-    pub fn open_database(
-        path: impl AsRef<std::path::Path>,
-        config: &OpenConfig,
-    ) -> OpenResult<Self> {
+    pub fn open_database(path: impl AsRef<std::path::Path>, config: &Config) -> OpenResult<Self> {
         crate::open_database(path, config)?.into_database()
     }
 
     /// Alias for open_database.
     #[cfg(feature = "mdbx")]
-    pub fn open(path: impl AsRef<std::path::Path>, config: &OpenConfig) -> OpenResult<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>, config: &Config) -> OpenResult<Self> {
         Self::open_database(path, config)
     }
 
     #[cfg(feature = "mdbx")]
     pub fn open_with_options(
         path: impl AsRef<std::path::Path>,
-        config: &OpenConfig,
+        config: &Config,
         options: crate::MdbxOptions,
     ) -> OpenResult<Self> {
         crate::open_with_options(path, config, options)?.into_database()
     }
 
     /// Immutable deployment configuration validated at opening.
-    pub fn genesis(&self) -> &GenesisConfig {
+    pub fn genesis(&self) -> &Genesis {
         &self.genesis
     }
 
