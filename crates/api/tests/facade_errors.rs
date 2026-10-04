@@ -134,3 +134,44 @@ fn mdbx_facade_retains_error_sources_and_can_retry_failed_commit() {
     let dir = tempfile::tempdir().unwrap();
     failure_contract(golemdb_storage::MdbxStore::open(dir.path()).unwrap());
 }
+
+// A full store is reported as StoreFull, leaves the head unchanged, and accepts
+// the same commit once reopened with a larger cap.
+#[cfg(feature = "mdbx")]
+#[test]
+fn full_store_reports_store_full_and_recovers_with_a_larger_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(Genesis::DEV);
+    let open = |max_map_size: usize| {
+        let mut options = MdbxOptions::default();
+        options.max_map_size = max_map_size;
+        options.growth_step = 64 * 1024;
+        let store = StoreConfig::Mdbx {
+            path: dir.path().into(),
+            options,
+        };
+        Database::open(store, &config).unwrap()
+    };
+    // 600 records of 128 payload bytes: well beyond a 256 KiB cap (400 just
+    // exceed it), so the test keeps failing the commit if encodings shrink.
+    let write = |db: &Database| -> golemdb_api::Result<CommitId> {
+        let branch = db.begin()?;
+        for i in 0u32..600 {
+            let mut key = [0; 32];
+            key[..4].copy_from_slice(&i.to_be_bytes());
+            let cells = RecordInput::new().field("v", CellValue::from_bytes(&[7; 128]))?;
+            db.create(branch, RecordKey(key), cells)?;
+        }
+        db.commit(branch)
+    };
+
+    let db = open(256 * 1024);
+    let head = db.head().unwrap();
+    assert!(matches!(write(&db), Err(ApiError::StoreFull)));
+    assert_eq!(db.head().unwrap(), head);
+    drop(db);
+
+    let db = open(64 * 1024 * 1024);
+    assert_eq!(db.head().unwrap(), head);
+    assert_eq!(write(&db).unwrap(), head + 1);
+}

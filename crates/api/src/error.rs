@@ -3,6 +3,7 @@ use std::error::Error;
 use golemdb_branch::BranchError;
 use golemdb_cells::{CellNameError, CellParseError};
 use golemdb_record::RecordError;
+use golemdb_storage::StorageError;
 
 use crate::CommitId;
 
@@ -35,6 +36,16 @@ pub enum ApiError {
     NoFrameToRollback,
     #[error("commit {requested} unavailable: only current head {head} is supported")]
     CommitUnavailable { requested: CommitId, head: CommitId },
+    /// The store reached its size cap; the operation (in practice `commit`)
+    /// wrote nothing and the head is unchanged.
+    ///
+    /// This error is environmental, not deterministic: it depends on one node's
+    /// store configuration, not on the operation or the state. It must never
+    /// become part of a result other nodes see, such as a failed transaction.
+    /// The node should stop committing; once the store is reopened with a
+    /// larger cap, it continues from its last commit.
+    #[error("store is full: its size cap is reached")]
+    StoreFull,
     #[error("internal database error: {source}")]
     Internal {
         #[source]
@@ -90,6 +101,7 @@ impl From<RecordError> for ApiError {
                 Self::CommitUnavailable { requested, head }
             }
             RecordError::Branch(error) => error.into(),
+            RecordError::Storage(StorageError::Full) => Self::StoreFull,
             error => Self::internal(error),
         }
     }
@@ -102,6 +114,7 @@ impl From<BranchError> for ApiError {
             BranchError::Conflict => Self::Conflict,
             BranchError::Sealed => Self::Sealed,
             BranchError::NoFrameToRollback => Self::NoFrameToRollback,
+            BranchError::Storage(StorageError::Full) => Self::StoreFull,
             error => Self::internal(error),
         }
     }

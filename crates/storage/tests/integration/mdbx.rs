@@ -547,7 +547,7 @@ fn map_full_aborts_all_pending_rows() {
     tx.put(A, b"a", b"before failure").unwrap();
     assert!(matches!(
         tx.put(A, b"huge", &vec![0; 2 * 1024 * 1024]),
-        Err(StorageError::Implementation(_))
+        Err(StorageError::Full)
     ));
     tx.abort();
     assert!(db.begin_read().unwrap().get(A, b"a").unwrap().is_none());

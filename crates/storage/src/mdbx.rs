@@ -151,6 +151,7 @@ impl MdbxStore {
 fn mdbx_error(error: libmdbx::Error) -> StorageError {
     match error {
         libmdbx::Error::KeyExist => StorageError::AlreadyExists,
+        libmdbx::Error::MapFull => StorageError::Full,
         error => StorageError::Implementation(Box::new(error)),
     }
 }
