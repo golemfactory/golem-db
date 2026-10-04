@@ -2,8 +2,11 @@
 
 `golemdb-api` defines one synchronous, dyn-compatible `Api` trait:
 
-- Records: create, get, patch, delete.
+- Records: create, get, patch, delete. Each takes a `RecordOp` and returns a
+  `Metered` outcome: the result together with a receipt.
 - Branches: head, begin, branch_info, checkpoint, rollback, seal, commit, discard.
+- Immutable data: append, get, range_of, rows_of. Interface only; see
+  [Current scope](#current-scope).
 
 Consumers accept `&dyn Api` or `Arc<dyn Api + Send + Sync>`. The trait does not
 impose threading bounds; consumers add them when needed. Adding required methods
@@ -14,8 +17,9 @@ one branch registry, so handles work across clones and threads. The hash is
 selected on opening and stays a concrete type within the database. Import
 `Api` to use its methods on `Database`.
 
-The examples use persistent MDBX storage. Enable the `mdbx` feature on
-`golemdb-api`; `Database::open(path, &config)` opens an MDBX store in that directory.
+The quickstart and the catalogue example use persistent MDBX storage. Enable the
+`mdbx` feature on `golemdb-api`; `Database::open(path, &config)` opens an MDBX store
+in that directory.
 Use a fresh database directory for the catalogue examples.
 
 ```rust
@@ -75,6 +79,18 @@ How keys are assigned is fixed in genesis (`record_keys`). With caller-assigned 
 create names its key with `.key(k)`; with generated keys it names none, and the
 database returns the key it derived. A create that does not match the mode fails with
 `KeyModeMismatch`; the modes are exclusive, so a generated create never collides.
+
+```rust
+use golemdb_api::{Api, Database, Genesis, ReadTarget, RecordKeys, RecordOp};
+
+let genesis = Genesis { record_keys: RecordKeys::Generated { seed: [7; 32] }, ..Genesis::DEV };
+let db = Database::open_memory(&genesis)?;
+let branch = db.begin()?;
+let key = db.create(branch, RecordOp::create().field("price", 50i32)).into_result()?;
+let record = db.get(ReadTarget::Branch(branch), RecordOp::get(key)).into_result()?;
+assert_eq!(record.meta().unwrap().cells, 1);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 A record is its key, zero or more user cells, and two cells the database
 maintains: `#key` and `#meta`. `#meta` holds four counts over the user cells (cells,
@@ -210,7 +226,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.delete(branch, RecordOp::delete(mouse)).into_result()?;
 
     // Branch reads see the changes immediately; head still contains commit 1.
-    let pending_laptop = db.get(ReadTarget::Branch(branch), RecordOp::get(laptop)).into_result()?;
+    let pending_laptop = db
+        .get(ReadTarget::Branch(branch), RecordOp::get(laptop))
+        .into_result()?;
     assert_eq!(pending_laptop.cells[b"price_cents".as_slice()].as_i32(), Some(110_000));
     assert_eq!(db.get(ReadTarget::Head, RecordOp::get(laptop)).into_result()?, saved_laptop);
     assert!(matches!(
@@ -242,7 +260,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(updated_laptop.cells[b"stock".as_slice()].as_u32(), Some(5));
     assert!(!updated_laptop.cells.contains_key(b"description".as_slice()));
 
-    let unchanged_keyboard = db.get(ReadTarget::Head, RecordOp::get(keyboard).only(["name", "price_cents"])).into_result()?;
+    let unchanged_keyboard = db
+        .get(ReadTarget::Head, RecordOp::get(keyboard).only(["name", "price_cents"]))
+        .into_result()?;
     assert_eq!(unchanged_keyboard, saved_keyboard);
 
     let new_monitor = db.get(ReadTarget::Head, RecordOp::get(monitor)).into_result()?;
@@ -293,7 +313,8 @@ There are three constructors:
   converts into a `StoreConfig`: a path means MDBX with default options (with the `mdbx`
   feature), `StoreConfig::Memory` a throwaway database, and
   `StoreConfig::Mdbx { path, options }` MDBX with tuned capacity. The default
-  `MdbxOptions` cap the store at 1 GiB. A larger `max_map_size` takes effect on reopening, a smaller one is ignored.
+  `MdbxOptions` cap the store at 1 GiB. A larger `max_map_size` takes effect on
+  reopening, a smaller one is ignored.
 - `Database::open_memory(&genesis)` opens a fresh in-memory database, the standard for
   tests. Each call starts empty, so it takes no `OpenMode`.
 - `Database::from_store(store, &config)` opens a caller-supplied store, for custom or
@@ -358,7 +379,8 @@ create MDBX environment files.
 
 All detection, validation, and initialization occurs under one storage writer.
 Creation writes the fixed reserved-record catalogue from cells, identities and
-bindings, the configured limits, allocator at 64, and a real cell trie. Every
+bindings, the configured limits and key mode (`#keyMode`, and `#keySeed` for generated
+keys), allocator at 64, and a real cell trie. Every
 genesis cell is a field, so the index root is empty. The transaction writes format,
 hash, Roaring, genesis identity, and head metadata before publishing commit 0.
 `#roots` and `#rootIndex` contain their identity cells but no history entries.
@@ -370,7 +392,7 @@ trie nodes and canonical bitmap containers. Limits are user-cell admission polic
 system root-history bytes do not consume the configured user bytes allowance.
 
 Reopening compares the canonical genesis identity, validates format IDs, required
-reserved cells, allocator, current roots, and previous-root history. Required
+reserved cells, allocator, current roots, and the previous commit's root entry. Required
 cells are checked against their committed trie paths. This is startup validation,
 not a full audit of every user row or index subtree. It never rewrites parameters
 or resets allocation. Formatting or field order in YAML does not affect identity;
@@ -407,18 +429,20 @@ immediately**, including calls with invalid handles or unknown segments. Nothing
 is validated, staged, allocated, read, or written. Segment configuration, files,
 key indexes, and commit integration are deferred. The
 [immutable-data specification](../../docs/golem-db-api.md#immutable-data) describes
-the future behavior, including pruning and rewind of key bindings.
+the future behavior; it does not cover the optional row keys yet.
 
-All four iterations are implemented: typed cells, the facade contract and builders,
-atomic opening/genesis, and a cloneable `Database` with shared branch state.
-Metering (real costs, budget enforcement, the ledger), generated keys, OCC, and transport
-serialization are deferred; receipts already report each call's effects.
+Implemented: typed cells, record operations with receipts, empty records and `#meta`,
+both key modes, atomic opening and genesis, and a cloneable `Database` with shared
+branch state. Deferred: metering (real costs, budget enforcement, the ledger),
+historical reads, query and count, proofs, OCC, and transport serialization.
 
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks
-for consumer error paths. For tests, replace the storage opening with
-`Database::open_memory(&genesis)?` to get a fresh in-memory database (`Genesis::DEV` for tests that need no particular limits). Arkiv can pass `Arc::new(Database::open_memory(&genesis)?)`
-as `Arc<dyn Api + Send + Sync>` to run behavioral tests with real database semantics.
+for consumer error paths; `Metered::unmetered(result, commit)` builds a mock's outcome.
+For tests, replace the storage opening with `Database::open_memory(&genesis)?` to get a
+fresh in-memory database (`Genesis::DEV` for tests that need no particular limits).
+Arkiv can pass `Arc::new(Database::open_memory(&genesis)?)` as
+`Arc<dyn Api + Send + Sync>` to run behavioral tests with real database semantics.
 The [facade contract tests](tests/facade.rs) run the same scenarios against memory
 and MDBX with both hash algorithms. The [error tests](tests/facade_errors.rs)
 exercise store diagnostics and retries through the real facade.

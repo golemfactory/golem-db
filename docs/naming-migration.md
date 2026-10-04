@@ -1,7 +1,7 @@
 # Naming migration: instructions for the documentation
 
 Instructions for bringing the design documents in line with the naming and API decisions in
-[implementation-review.md](implementation-review.md) Part 0 (N1–N17). The code side is done on
+[implementation-review.md](implementation-review.md) Part 0 (N1–N21). The code side is done on
 branch `matthiaszimmermann/refactor/namings` (PR #29). This file says what to change in the
 documents, where, and how to check the result. It is written so that an agent can execute it.
 
@@ -180,3 +180,45 @@ grep -n 'storage engine\|MDBX database environment' docs/golem-db-design.md
 paragraph). If D11's removal has not landed, also check that `machineId` became `nodeId` in the API spec and
 §13 of the design. After section 8: `grep -rn 'Golem DB' docs/` prints only quoted historical
 text.
+
+## 10. Record operations (PR #30)
+
+The record-operations work ([record-ops.md](record-ops.md), review N18–N21) decides several points
+the specs leave open. Apply on the spec branch, matching by phrase as above.
+
+**API spec (`golem-db-api.md`):**
+- *Record keys* table: besides `EngineAssigned` → `Generated` (section 3), state that the mode is
+  fixed in genesis (`record_keys`) and give the derivation:
+  `H("golemdb/record-key/v1" ‖ seed ‖ id)` with the deployment's hash, the 32-byte genesis seed
+  and the new record's ID as `u64` big-endian. Add why the modes are exclusive: generated keys
+  are predictable, so a caller-assigned create could otherwise claim a future generated key.
+- `create`, the sentence "The `#meta` encoding and read visibility remain to be…": replace with
+  the decision: `#meta` holds four `u64` big-endian counts over the user cells (cells, cell bytes,
+  indexed cells, index bytes), 32 bytes as a `bytes32` field, and a full `get` returns it like
+  `#key`.
+- *Common conventions*, receipt: the Rust API returns the D4 details (cells created, updated and
+  deleted; index joins and leaves; cell and index bytes written and deleted) with every receipt,
+  not only on request; the spec's opt-in remains valid for transports. The details count effects:
+  a set to the current value and a failed call count nothing.
+- `budget?` and `OutOfBudget`: present in the Rust API before metering enforces them (cost 0).
+
+**Design (`golem-db-design.md`):**
+- §3 *Record identity* / Record Model: the `#meta` layout above, and the completeness argument: a
+  client with a trusted root that receives the binding, `#meta` and `cells + 2` distinct cells
+  with inclusion proofs has the whole record, because `#meta` is committed state. Conditions:
+  every mutation maintains the counts exactly; the count covers user cells only; the client's
+  root is trusted. Not covered: projections, withheld records, query results.
+- §4 `#params` table: add `#keyMode` (`u32`: 0 caller-assigned, 1 generated) and `#keySeed`
+  (`bytes32`, generated mode only), both fixed at genesis and part of the genesis identity.
+
+**D09 / Appendix A:** the `#meta` encoding and its type tag (`FixedBytes(W32)`); the record-key
+derivation and its domain tag; the `#keyMode` values.
+
+**Metering spec (`golem-db-metering.md`):** `Details` matches R9/D4 except "index terms created",
+which needs an index lookup at call time and follows later.
+
+**`CHANGES.md`:** one structure row next to S16 (take the next free ID, S17 at `0ade839`):
+
+| ID | Status | Pri | Change | Sources | Acceptance check | Link |
+|---|---|---|---|---|---|---|
+| S17 | triaged | P2 | Record operations in the specs: key-mode derivation and exclusivity, `#meta` encoding and visibility, `#keyMode` / `#keySeed` in `#params`, receipt details always returned in the Rust API, the `#meta` completeness argument | record-ops.md; implementation-review.md N18–N21 | The items of naming-migration.md section 10 are in the specs; D09 lists the two encodings | naming-migration.md section 10 |

@@ -6,7 +6,9 @@ on the vocabulary and API shape of [implementation-review.md](implementation-rev
 takes its record model and counting rules from the metering spec (`golem-db-metering.md`, Record
 Model, D4, D5).
 
-Status: concept agreed 2026-10-04, not implemented.
+Status: concept agreed 2026-10-04; **implemented** on the branch in three commits: `e476b8e`
+(Group 1), `d7effe8` (Group 2), `6ada31e` (Group 3). Section 9 lists where the implementation
+adds to or differs from this concept.
 
 ## 1. Record model
 
@@ -34,9 +36,9 @@ fixed-size and accounted separately), as defined by the metering spec (D4):
 | Field | Value |
 | --- | --- |
 | `cells` | number of user cells |
-| `cell_bytes` | Σ over user cells of `(8 + |name|) + (1 + |value|)` |
+| `cell_bytes` | Σ over user cells of `(8 + \|name\|) + (1 + \|value\|)` |
 | `indexed_cells` | number of user cells that are attributes (one index entry each) |
-| `index_bytes` | Σ over indexed cells of `|name| + 2 + |value|` |
+| `index_bytes` | Σ over indexed cells of `\|name\| + 2 + \|value\|` |
 
 Encoding: the four fields in this order, each `u64` big-endian, 32 bytes, stored as a
 `FixedBytes(W32)` cell like `#key`. Normative (the layout is under the state root), so it belongs in
@@ -284,3 +286,34 @@ For the spec branch, to be added to [naming-migration.md](naming-migration.md) o
 - **D09 / Appendix A:** the `#meta` encoding and type tag; the key derivation and its domain tag.
 - **Metering spec:** `Details` matches R9/D4 except index terms created (later); budget and
   `OutOfBudget` exist in the API before enforcement.
+
+## 9. Implementation notes
+
+Where the implementation adds to or deviates from sections 1–7:
+
+- **Operation markers** live in a module: `RecordOp<op::Create>`, `op::Patch`, `op::Get`,
+  `op::Delete`, so generic names like `Get` stay out of the crate root. Callers rarely write them;
+  inference picks them from the constructor.
+- **`KeyModeMismatch` exists from Group 1:** before key modes, a create without a key was already
+  a mismatch with the (implicit) caller-assigned mode, so no interim error was needed.
+- **Accessors for mocks:** `RecordOp::record_key()`, `max_cost()`, `value(name)` (create and
+  patch) and `removes(name)` (patch), and `Metered::unmetered(result, commit)`.
+- **`RecordMeta`** is a public type (re-exported by `golemdb-api`) with `to_value` /
+  `from_value`, and `Record::meta()` decodes `#meta` from a full read or from
+  `RecordOp::get(key).only(["#meta"])`, so clients can check completeness or the delete bound.
+- **`Details` and `RecordMeta` share one counting path:** the record layer computes a write's
+  effects once; the receipt reports them and `#meta` applies them. A patch writes `#meta` only
+  when it changed, so no-op patches still add no undo entries.
+- **Strictness:** a user record without `#meta`, a count that would fall below zero, a missing or
+  invalid `#keyMode` / `#keySeed`, and a generated key that is already bound are reported as
+  corrupt state, not repaired.
+- **`Branches::hasher()`** gives the record layer the deployment's hash function for the key
+  derivation; `Records::create_generated` sits next to `Records::create`.
+- **The key mode is checked first** in a create, before names, values and allocation, so a
+  mismatch writes nothing and allocates no ID.
+- **`Genesis` gained a required field** (`record_keys`), so callers building `Genesis { … }` by
+  hand must add it (or use `..Genesis::DEV`). `Genesis` will grow further (`#minRetention`,
+  segments); making it `#[non_exhaustive]` with a constructor would stop such breaks and is an
+  open decision.
+- **Every database created before Group 3 fails to reopen** with `GenesisMismatch`, because
+  genesis now contains `#keyMode`. Databases are disposable at this stage (review item 1).
