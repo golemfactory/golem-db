@@ -20,7 +20,7 @@ pub enum ApiError {
     AlreadyExists,
     /// A `create` that does not match the database's key mode: a missing key
     /// where keys are caller-assigned, or a key where the database generates
-    /// them. Today every database uses caller-assigned keys.
+    /// them (`Genesis::record_keys`).
     #[error("the create's key does not match the database's key mode")]
     KeyModeMismatch,
     /// The call's cost would exceed its budget; nothing was applied, and the
@@ -102,6 +102,7 @@ impl From<RecordError> for ApiError {
         match error {
             RecordError::NotFound => Self::NotFound,
             RecordError::AlreadyExists => Self::AlreadyExists,
+            RecordError::KeyModeMismatch => Self::KeyModeMismatch,
             RecordError::Reserved => Self::Reserved,
             RecordError::InvalidArgument(ref message) => Self::InvalidArgument {
                 message: message.clone(),

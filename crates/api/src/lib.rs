@@ -41,7 +41,7 @@ mod open_error;
 mod record_op;
 mod types;
 
-pub use config::{Config, Genesis, OpenMode, StoreConfig};
+pub use config::{Config, Genesis, OpenMode, RecordKeys, StoreConfig};
 pub use database::Database;
 pub use error::{ApiError, Result};
 pub use golemdb_cells::CellLimits;
@@ -78,9 +78,10 @@ pub use golemdb_record::{Details, ReadTarget, Record, RecordKey, RecordMeta};
 /// Adding a required method requires updating concrete implementations and mocks.
 pub trait Api {
     /// Stage a new record with zero or more user cells and return its key. The
-    /// database adds the record's `#key` and `#meta` cells. The key must be named
-    /// with `RecordOp::key` (`KeyModeMismatch` otherwise): every database uses
-    /// caller-assigned keys today.
+    /// database adds the record's `#key` and `#meta` cells. Name the key with
+    /// `RecordOp::key` when the database uses caller-assigned keys, and omit it
+    /// when it generates them (`Genesis::record_keys`); otherwise the create
+    /// fails with `KeyModeMismatch`.
     fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey>;
 
     /// Read pending or committed state. Head selection and materialization share

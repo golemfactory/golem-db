@@ -42,6 +42,20 @@ fn initial_cells(config: &Genesis) -> BTreeMap<CellKey, CellValue> {
             CellValue::from_u32(value),
         );
     }
+    let (mode, seed) = match config.record_keys {
+        crate::RecordKeys::CallerAssigned => (0, None),
+        crate::RecordKeys::Generated { seed } => (1, Some(seed)),
+    };
+    cells.insert(
+        CellKey::new(system::PARAMS.id, reserved::KEY_MODE),
+        CellValue::from_u32(mode),
+    );
+    if let Some(seed) = seed {
+        cells.insert(
+            CellKey::new(system::PARAMS.id, reserved::KEY_SEED),
+            CellValue::from_bytes32(seed),
+        );
+    }
     cells.insert(
         allocator_key(),
         CellValue::from_u64(system::FIRST_USER_RECORD_ID),

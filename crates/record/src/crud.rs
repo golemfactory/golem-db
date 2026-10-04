@@ -7,7 +7,8 @@ use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
     CellPatch, Details, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordMeta,
-    RecordPatch, Result, state,
+    RecordPatch, Result,
+    state::{self, KeyMode},
 };
 
 /// Cloneable record facade; clones share the supplied branch manager.
@@ -58,10 +59,10 @@ impl<S: Store, H: HashProvider> Records<S, H> {
         }
     }
 
-    /// Create a record with zero or more user cells, plus its `#key` and
-    /// `#meta` cells and its binding. Exact reserved keys are rejected before
-    /// branch access; all other validation follows handle checks. Names and
-    /// values are checked in byte order before identity/allocation reads.
+    /// Create a record with a caller-assigned key, zero or more user cells,
+    /// plus its `#key` and `#meta` cells and its binding. Exact reserved keys
+    /// are rejected before branch access; all other validation follows handle
+    /// checks. Fails with `KeyModeMismatch` if the database generates keys.
     /// Returns the key and the write's effects on user cells.
     pub fn create(
         &self,
@@ -70,17 +71,54 @@ impl<S: Store, H: HashProvider> Records<S, H> {
         values: RecordCells,
     ) -> Result<(RecordKey, Details)> {
         reject_reserved(key)?;
+        self.insert(branch, Some(key), values)
+    }
+
+    /// Create a record whose key the database generates from the genesis seed
+    /// and the new record's ID. Fails with `KeyModeMismatch` if the database
+    /// uses caller-assigned keys. Returns the generated key and the effects.
+    pub fn create_generated(
+        &self,
+        branch: BranchId,
+        values: RecordCells,
+    ) -> Result<(RecordKey, Details)> {
+        self.insert(branch, None, values)
+    }
+
+    /// The key mode is checked first; names and values are checked in byte
+    /// order before identity and allocation reads.
+    fn insert(
+        &self,
+        branch: BranchId,
+        assigned: Option<RecordKey>,
+        values: RecordCells,
+    ) -> Result<(RecordKey, Details)> {
+        let hasher = self.branches.hasher();
         self.branches
             .write(branch, |cell_writer| {
                 let cell_reader = cell_writer.as_read();
+                let mode = state::key_mode(&cell_reader)?;
+                if matches!(mode, KeyMode::CallerAssigned) != assigned.is_some() {
+                    return Err(RecordError::KeyModeMismatch);
+                }
                 let limits = state::limits(&cell_reader)?;
                 for (name, value) in &values {
                     validate(&limits, name, Some(value))?;
                 }
-                if state::resolve(&cell_reader, key)?.is_some() {
-                    return Err(RecordError::AlreadyExists);
-                }
                 let (id, next) = state::next_id(&cell_reader)?;
+                let key = match (mode, assigned) {
+                    (KeyMode::Generated(seed), _) => generated_key(hasher, &seed, id),
+                    (KeyMode::CallerAssigned, key) => key.expect("checked above"),
+                };
+                if state::resolve(&cell_reader, key)?.is_some() {
+                    return Err(match mode {
+                        KeyMode::CallerAssigned => RecordError::AlreadyExists,
+                        // Unique IDs make a repeated generated key impossible.
+                        KeyMode::Generated(_) => {
+                            RecordError::CorruptState("generated key already bound")
+                        }
+                    });
+                }
                 if cell_writer
                     .scan_prefix(&id.to_be_bytes())?
                     .next()
@@ -192,6 +230,14 @@ impl<S: Store, H: HashProvider> Records<S, H> {
             })
             .map_err(Into::into)
     }
+}
+
+/// Domain tag of generated record keys (normative, with the derivation).
+const RECORD_KEY_DOMAIN: &[u8] = b"golemdb/record-key/v1";
+
+/// `H(domain ‖ seed ‖ id)` with `id` as `u64` big-endian.
+fn generated_key(hasher: &impl HashProvider, seed: &[u8; 32], id: u64) -> RecordKey {
+    RecordKey(hasher.hash_parts(&[RECORD_KEY_DOMAIN, seed, &id.to_be_bytes()]))
 }
 
 fn reject_reserved(key: RecordKey) -> Result<()> {

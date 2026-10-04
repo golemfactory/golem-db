@@ -71,8 +71,10 @@ one. Values come from Rust types, and the type decides the cell type, so write
 Builder steps never fail: the first invalid name, duplicate name (including a set and
 a removal of the same name) or invalid value is reported by the call as
 `InvalidArgument`. Deployment limits and record rules are checked by the call as well.
-A create must name its key: every database uses caller-assigned keys today, and a
-create without one fails with `KeyModeMismatch`.
+How keys are assigned is fixed in genesis (`record_keys`). With caller-assigned keys a
+create names its key with `.key(k)`; with generated keys it names none, and the
+database returns the key it derived. A create that does not match the mode fails with
+`KeyModeMismatch`; the modes are exclusive, so a generated create never collides.
 
 A record is its key, zero or more user cells, and two cells the database
 maintains: `#key` and `#meta`. `#meta` holds four counts over the user cells (cells,
@@ -124,7 +126,7 @@ another branch can still win the commit race.
 ```rust
 use golemdb_api::{
     Api, ApiError, CellLimits, Config, Database, Genesis, HashAlgorithm, OpenMode,
-    ReadTarget, RecordKey, RecordOp,
+    ReadTarget, RecordKey, RecordKeys, RecordOp,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -135,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_str_len: 128,
             max_bytes_len: 1024,
         },
+        record_keys: RecordKeys::CallerAssigned,
     });
     config.mode = OpenMode::CreateNew;
     let db = Database::open("./golemdb-catalogue", &config)?;
@@ -264,9 +267,14 @@ cell_limits:
   max_cell_name_len: 32
   max_str_len: 64
   max_bytes_len: 128
+record_keys: caller_assigned
 ```
 
 `blake3` is also supported. Missing, duplicate, and unknown fields are rejected.
+`record_keys` is `caller_assigned` or, for keys the database generates,
+`generated: { seed: "0x…" }` with a 32-byte seed (64 hex digits). Generated keys are
+`H("golemdb/record-key/v1" ‖ seed ‖ id)`: unique within the database and different
+between deployments with different seeds. The seed is not secret.
 Use `Genesis::load(path)` or `Genesis::from_yaml(text)`; the loader
 does not search for files or read environment overrides.
 

@@ -142,6 +142,11 @@ fn initialize(db: &impl Store) {
             field(CellType::Uint(Width::W4), &value.to_be_bytes()),
         );
     }
+    put(
+        system::PARAMS.id,
+        reserved::KEY_MODE,
+        field(CellType::Uint(Width::W4), &0u32.to_be_bytes()),
+    );
     put(system::ALLOC.id, reserved::NEXT_RECORD_ID, u64_value(64));
     let hash = Keccak256Hasher;
     let mut tx = db.begin_write().unwrap();

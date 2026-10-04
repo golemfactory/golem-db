@@ -6,6 +6,8 @@ pub enum RecordError {
     NotFound,
     #[error("record key already exists")]
     AlreadyExists,
+    #[error("the create's key does not match the database's key mode")]
+    KeyModeMismatch,
     #[error("reserved records cannot be modified through CRUD")]
     Reserved,
     #[error("invalid argument: {0}")]

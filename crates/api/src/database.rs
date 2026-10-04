@@ -233,9 +233,10 @@ impl<S: Store, H: HashProvider> Inner<S, H> {
 impl<S: Store, H: HashProvider> Api for Inner<S, H> {
     fn create(&self, branch: BranchId, op: RecordOp<op::Create>) -> Metered<RecordKey> {
         let outcome = op.into_create().and_then(|(key, cells)| {
-            // Every database uses caller-assigned keys until key modes exist.
-            let key = key.ok_or(ApiError::KeyModeMismatch)?;
-            Ok(self.records.create(branch, key, cells)?)
+            Ok(match key {
+                Some(key) => self.records.create(branch, key, cells)?,
+                None => self.records.create_generated(branch, cells)?,
+            })
         });
         self.write_receipt(branch, outcome)
     }

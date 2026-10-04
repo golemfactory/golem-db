@@ -91,6 +91,11 @@ impl<S, H> Clone for Branches<S, H> {
 }
 
 impl<S: Store, H: HashProvider> Branches<S, H> {
+    /// The deployment's hash function, shared with the layers above.
+    pub fn hasher(&self) -> &H {
+        &self.inner.hasher
+    }
+
     /// Open a manager over an initialized head. Performs no writes and fails
     /// if the head is missing, malformed, or unreadable.
     pub fn new(store: S, hasher: H) -> Result<Self> {

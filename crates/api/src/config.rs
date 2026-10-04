@@ -7,12 +7,68 @@ use serde::{Deserialize, Serialize};
 use crate::{OpenError, OpenResult};
 
 /// Immutable deployment settings. Every YAML field is required; no admission
-/// limit or hash algorithm is silently selected by the opener.
+/// limit, hash algorithm or key mode is silently selected by the opener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Genesis {
     pub hash_function: HashAlgorithm,
     pub cell_limits: CellLimits,
+    pub record_keys: RecordKeys,
+}
+
+/// How a database assigns record keys, fixed for its whole life.
+///
+/// The modes are exclusive. Generated keys are predictable (the seed is a
+/// readable `#params` cell), so if callers could also assign keys, one could
+/// claim a future generated key first. With exclusive modes that cannot happen,
+/// and a generated create never fails with `AlreadyExists`.
+///
+/// ```yaml
+/// record_keys: caller_assigned
+/// # or
+/// record_keys:
+///   generated:
+///     seed: "0x0000…"   # 32 bytes, 64 hex digits
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecordKeys {
+    /// Every create names its key; an existing key fails with `AlreadyExists`.
+    CallerAssigned,
+    /// The database derives each key as `H("golemdb/record-key/v1" ‖ seed ‖ id)`,
+    /// with the deployment's hash and the new record's ID as `u64` big-endian.
+    /// Keys are unique within the database and differ between deployments with
+    /// different seeds. A create must not name a key.
+    Generated {
+        #[serde(with = "hex_seed")]
+        seed: [u8; 32],
+    },
+}
+
+/// A 32-byte seed as a `0x`-prefixed hex string.
+mod hex_seed {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(seed: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        let hex: String = seed.iter().map(|byte| format!("{byte:02x}")).collect();
+        serializer.serialize_str(&format!("0x{hex}"))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let digits = text
+            .strip_prefix("0x")
+            .ok_or_else(|| D::Error::custom("seed must start with 0x"))?;
+        if digits.len() != 64 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(D::Error::custom("seed must be 32 bytes: 64 hex digits"));
+        }
+        let mut seed = [0; 32];
+        for (index, byte) in seed.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&digits[index * 2..index * 2 + 2], 16)
+                .map_err(D::Error::custom)?;
+        }
+        Ok(seed)
+    }
 }
 
 impl Genesis {
@@ -27,6 +83,7 @@ impl Genesis {
             max_str_len: 64,
             max_bytes_len: 128,
         },
+        record_keys: RecordKeys::CallerAssigned,
     };
 
     pub fn from_yaml(yaml: &str) -> OpenResult<Self> {

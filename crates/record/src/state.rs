@@ -70,6 +70,33 @@ pub(crate) fn limits<R: ReadTransaction>(cell_reader: &CellRead<'_, R>) -> Resul
     })
 }
 
+/// How a database assigns record keys, from `#params`.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyMode {
+    CallerAssigned,
+    Generated([u8; 32]),
+}
+
+pub(crate) fn key_mode<R: ReadTransaction>(cell_reader: &CellRead<'_, R>) -> Result<KeyMode> {
+    let param = |name| {
+        cell_reader
+            .get(&CellKey::new(system::PARAMS.id, name))?
+            .ok_or(RecordError::CorruptState("required #params cell missing"))
+    };
+    let mode = param(reserved::KEY_MODE)?;
+    match mode.as_u32().filter(|_| !mode.is_indexable()) {
+        Some(0) => Ok(KeyMode::CallerAssigned),
+        Some(1) => {
+            let seed = param(reserved::KEY_SEED)?;
+            seed.as_bytes32()
+                .filter(|_| !seed.is_indexable())
+                .map(KeyMode::Generated)
+                .ok_or(RecordError::CorruptState("invalid #keySeed"))
+        }
+        _ => Err(RecordError::CorruptState("invalid #keyMode")),
+    }
+}
+
 pub(crate) fn meta_key(id: u64) -> CellKey {
     CellKey::new(id, reserved::META)
 }

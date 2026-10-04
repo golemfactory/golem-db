@@ -15,6 +15,7 @@ fn config(hash_function: HashAlgorithm) -> Config {
             max_str_len: 64,
             max_bytes_len: 128,
         },
+        record_keys: RecordKeys::CallerAssigned,
     })
 }
 

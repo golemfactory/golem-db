@@ -167,6 +167,10 @@ pub mod reserved {
     pub const MAX_BYTES_LEN: CellNameRef<'static> = CellNameRef(b"#maxBytesLen");
     /// Chain parameter: the cap [`CellNameRef::parse_user`] is given.
     pub const MAX_CELL_NAME_LEN: CellNameRef<'static> = CellNameRef(b"#maxCellNameLen");
+    /// Chain parameter: how record keys are assigned (0 caller, 1 generated).
+    pub const KEY_MODE: CellNameRef<'static> = CellNameRef(b"#keyMode");
+    /// Chain parameter: the seed of generated record keys (generated mode only).
+    pub const KEY_SEED: CellNameRef<'static> = CellNameRef(b"#keySeed");
 
     pub const ALL: &[CellNameRef<'static>] = &[
         KEY,
@@ -175,5 +179,7 @@ pub mod reserved {
         MAX_STR_LEN,
         MAX_BYTES_LEN,
         MAX_CELL_NAME_LEN,
+        KEY_MODE,
+        KEY_SEED,
     ];
 }
