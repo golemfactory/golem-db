@@ -3,13 +3,15 @@ use std::sync::Arc;
 use golemdb_branch::Branches;
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
 use golemdb_record::Records;
-use golemdb_storage::Store;
+use golemdb_storage::{MemoryStore, Store};
+
+use crate::open::OpenedStore;
 
 use crate::{
     Api, ApiError, BranchId, BranchInfo, CommitId, Config, Genesis, HashAlgorithm,
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenInfo,
-    OpenResult, OpenedStore, PatchInput, Projection, ReadTarget, Record, RecordInput, RecordKey,
-    Result, SealInfo, StoreConfig,
+    OpenResult, PatchInput, Projection, ReadTarget, Record, RecordInput, RecordKey, Result,
+    SealInfo, StoreConfig,
 };
 
 /// A handle to an open database. Cheap to clone; all clones share the same open
@@ -51,10 +53,12 @@ impl Database {
     ///   the store already has is ignored.
     pub fn open(store: impl Into<StoreConfig>, config: &Config) -> OpenResult<Self> {
         match store.into() {
-            StoreConfig::Memory => crate::open_memory(config)?.into_database(),
+            StoreConfig::Memory => {
+                crate::open::open_store(MemoryStore::new(), config)?.into_database()
+            }
             #[cfg(feature = "mdbx")]
             StoreConfig::Mdbx { path, options } => {
-                crate::open_with_options(path, config, options)?.into_database()
+                crate::open::open_mdbx(&path, config, options)?.into_database()
             }
         }
     }
@@ -64,7 +68,7 @@ impl Database {
     /// To reopen in-memory state, keep a clone of a `MemoryStore` and pass it
     /// to `from_store`; to share an open database, use `clone`.
     pub fn open_memory(genesis: &Genesis) -> OpenResult<Self> {
-        crate::open_memory(&Config::new(*genesis))?.into_database()
+        crate::open::open_store(MemoryStore::new(), &Config::new(*genesis))?.into_database()
     }
 
     /// Open a database on a caller-supplied store, for custom or wrapped
@@ -83,7 +87,7 @@ impl Database {
         store: S,
         config: &Config,
     ) -> OpenResult<Self> {
-        crate::open_store(store, config)?.into_database()
+        crate::open::open_store(store, config)?.into_database()
     }
 
     /// Immutable deployment configuration validated at opening.

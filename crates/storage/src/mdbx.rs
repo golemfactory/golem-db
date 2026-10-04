@@ -9,18 +9,26 @@ use crate::{
 
 /// MDBX capacity settings, not table declarations or logical storage quotas.
 ///
-/// `max_map_size` caps the store's size; writes beyond it fail. The default of
-/// 1 GiB suits tests and examples, not a production node. Raising the cap takes
-/// effect when the store is reopened; a smaller value than the store already
-/// has is ignored, so a store never shrinks.
+/// All three settings apply when the store is opened and can be changed by
+/// reopening it, with the one exception noted on `max_map_size`.
 ///
 /// Non-exhaustive: start from `MdbxOptions::default()` and set fields, so new
 /// options can be added without breaking callers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MdbxOptions {
+    /// Maximum number of named tables. Default 128.
     pub max_tables: u64,
+    /// The cap on the store's size; writes beyond it fail. The default of
+    /// 1 GiB suits tests and examples, not a production node: size the cap
+    /// from the node's disk, leaving a reserve. A larger value takes effect on
+    /// reopening; a smaller value than the store already has is ignored, so a
+    /// store never shrinks its cap.
     pub max_map_size: usize,
+    /// How much the file grows at a time when it runs out of space, up to
+    /// `max_map_size`. Default 16 MiB; production nodes typically use 256 MiB
+    /// to 1 GiB. A new value, larger or smaller, takes effect on reopening;
+    /// the file can exceed the stored data by up to one step.
     pub growth_step: usize,
 }
 

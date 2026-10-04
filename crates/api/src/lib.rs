@@ -50,9 +50,10 @@ pub use immutable_data::{
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow,
 };
 pub use input::{PatchInput, RecordInput};
-pub use open::{OpenInfo, OpenedStore, open_memory, open_store};
-#[cfg(feature = "mdbx")]
-pub use open::{open, open_database, open_with_options};
+pub use open::OpenInfo;
+/// The lower-level opening layer, for trusted tooling and tests.
+#[cfg(feature = "internals")]
+pub use open::{OpenedStore, open_store};
 pub use open_error::{OpenError, OpenResult};
 pub use types::{Projection, SealInfo};
 

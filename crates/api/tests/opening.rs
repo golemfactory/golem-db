@@ -42,8 +42,12 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
     let reordered = Genesis::from_yaml("# same deployment\ncell_limits: {max_bytes_len: 128, max_str_len: 64, max_cell_name_len: 32}\nhash_function: keccak-256\n").unwrap();
     assert_eq!(first, reordered);
     assert_eq!(
-        open_memory(&Config::new(first)).unwrap().info(),
-        open_memory(&Config::new(reordered)).unwrap().info()
+        open_store(MemoryStore::new(), &Config::new(first))
+            .unwrap()
+            .info(),
+        open_store(MemoryStore::new(), &Config::new(reordered))
+            .unwrap()
+            .info()
     );
     for bad in [
         "",
@@ -252,7 +256,9 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         b"head",
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_store();
+            let db = open_store(MemoryStore::new(), &config())
+                .unwrap()
+                .into_store();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(SUPERBLOCK, key, b"x").unwrap();
@@ -275,7 +281,9 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         ),
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_store();
+            let db = open_store(MemoryStore::new(), &config())
+                .unwrap()
+                .into_store();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(
@@ -302,7 +310,9 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
         (b"hash_fn", 99u16.to_be_bytes().to_vec()),
         (b"roaring", 99u16.to_be_bytes().to_vec()),
     ] {
-        let db = open_memory(&config()).unwrap().into_store();
+        let db = open_store(MemoryStore::new(), &config())
+            .unwrap()
+            .into_store();
         let mut tx = db.begin_write().unwrap();
         tx.put(SUPERBLOCK, key, &bytes).unwrap();
         tx.commit().unwrap();
@@ -314,7 +324,7 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
                 | OpenError::UnsupportedRoaring(99))
         ));
     }
-    let opened = open_memory(&config()).unwrap();
+    let opened = open_store(MemoryStore::new(), &config()).unwrap();
     let root = opened.info().state_root;
     let db = opened.into_store();
     let mut tx = db.begin_write().unwrap();
@@ -390,9 +400,10 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = config();
         cfg.genesis.hash_function = hash;
-        let memory = *open_memory(&cfg).unwrap().info();
+        let memory = *open_store(MemoryStore::new(), &cfg).unwrap().info();
         {
-            let db = open(dir.path(), &cfg).unwrap();
+            let db =
+                open_store(golemdb_storage::MdbxStore::open(dir.path()).unwrap(), &cfg).unwrap();
             assert_eq!(db.info(), &memory);
         }
         let db = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
@@ -432,7 +443,8 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         };
         assert_eq!(branches, 1);
         drop(db);
-        let opened = open(dir.path(), &cfg.with_mode(OpenMode::ExistingOnly)).unwrap();
+        let store = golemdb_storage::MdbxStore::open(dir.path()).unwrap();
+        let opened = open_store(store, &cfg.with_mode(OpenMode::ExistingOnly)).unwrap();
         assert_eq!(opened.info().commit_id, 1);
         assert_eq!(opened.info().genesis_id, memory.genesis_id);
         let db = opened.into_store();
@@ -466,7 +478,10 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("absent");
     assert!(matches!(
-        open(&missing, &config().with_mode(OpenMode::ExistingOnly)),
+        Database::open(
+            missing.as_path(),
+            &config().with_mode(OpenMode::ExistingOnly)
+        ),
         Err(OpenError::NotInitialized)
     ));
     assert!(!missing.exists());

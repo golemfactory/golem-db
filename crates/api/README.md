@@ -316,11 +316,11 @@ changed deployment settings return `GenesisMismatch`.
 failures. `Database::info()` describes the opening snapshot; call `head()` for the
 live head, or `get(ReadTarget::Head, ...)` for a consistent current record read.
 
-The free opening functions remain lower-level setup helpers returning
-`OpenedStore`: `open_database` accepts an MDBX path, while `open_store`
-accepts a store instance. Use `into_database()` to consume one as a facade, or
-`into_store()` to hand the validated store to trusted library code. Ordinary
-consumers use the associated `Database` constructors and the `Api` methods.
+Ordinary consumers use the three `Database` constructors and the `Api` methods.
+Trusted tooling and this crate's own tests can enable the `internals` feature for
+the lower-level layer: `open_store(store, &config)` validates or initializes a store
+and returns an `OpenedStore`, whose `into_database()` opens the database and whose
+`into_store()` hands the validated store back to trusted library code.
 
 ## Current scope
 

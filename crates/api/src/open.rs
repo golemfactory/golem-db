@@ -2,7 +2,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use golemdb_branch::Head;
 use golemdb_merkle::{Blake3Hasher, HashAlgorithm, Keccak256Hasher};
-use golemdb_storage::{MemoryStore, Store, WriteTransaction};
+use golemdb_storage::{Store, WriteTransaction};
 
 use crate::{CommitId, Config, Genesis, OpenResult};
 
@@ -29,8 +29,9 @@ impl OpenInfo {
 }
 
 /// A validated store, ready to open as a database. This setup boundary is for
-/// trusted library code; ordinary data consumers use Database's constructors.
-/// Consume this handle with into_database to connect it to the public facade.
+/// trusted library code and is public only with the `internals` feature;
+/// ordinary consumers use `Database`'s constructors. Consume this handle with
+/// into_database to connect it to the public facade.
 pub struct OpenedStore<S> {
     store: S,
     genesis: Genesis,
@@ -59,7 +60,8 @@ impl<S: Store + Send + Sync + 'static> OpenedStore<S> {
     }
 }
 
-/// Open a caller-supplied store. Clone an existing store to share its
+/// Validate or initialize a caller-supplied store (public only with the
+/// `internals` feature). Clone an existing store to share its
 /// environment; never open the same MDBX directory twice within one process.
 /// Inspect, validate, and initialize under one writer to serialize with other
 /// initializers and committers. Reopening does not commit or rewrite any rows.
@@ -91,58 +93,17 @@ pub fn open_store<S: Store>(store: S, config: &Config) -> OpenResult<OpenedStore
     })
 }
 
-/// Open a fresh in-memory database using the same genesis transaction as MDBX.
-/// To reopen shared memory state, pass a store clone to open_store instead.
-///
-/// ```
-/// use golemdb_api::{Config, Genesis, open_memory};
-/// let genesis = Genesis::from_yaml("\
-/// hash_function: keccak-256
-/// cell_limits:
-///   max_cell_name_len: 32
-///   max_str_len: 64
-///   max_bytes_len: 128
-/// ")?;
-/// let opened = open_memory(&Config::new(genesis))?;
-/// assert!(opened.info().created);
-/// assert_eq!(opened.info().commit_id, 0);
-/// # Ok::<(), golemdb_api::OpenError>(())
-/// ```
-pub fn open_memory(config: &Config) -> OpenResult<OpenedStore<MemoryStore>> {
-    open_store(MemoryStore::new(), config)
-}
-
+/// MDBX at `path`, validated or initialized. Behind `Database::open`.
 #[cfg(feature = "mdbx")]
-/// Open persistent storage with default local MDBX capacity settings.
-/// See open_with_options for lifecycle and shared-environment constraints.
-pub fn open_database(
-    path: impl AsRef<std::path::Path>,
-    config: &Config,
-) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
-    open_with_options(path, config, golemdb_storage::MdbxOptions::default())
-}
-
-/// Alias for open_database.
-#[cfg(feature = "mdbx")]
-pub fn open(
-    path: impl AsRef<std::path::Path>,
-    config: &Config,
-) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
-    open_database(path, config)
-}
-
-/// Capacity settings are local store options and do not affect genesis identity.
-/// ExistingOnly may open an empty environment but will never initialize it.
-#[cfg(feature = "mdbx")]
-pub fn open_with_options(
-    path: impl AsRef<std::path::Path>,
+pub(crate) fn open_mdbx(
+    path: &std::path::Path,
     config: &Config,
     options: golemdb_storage::MdbxOptions,
 ) -> OpenResult<OpenedStore<golemdb_storage::MdbxStore>> {
     // Do not create a missing directory for ExistingOnly. Initialization itself
-    // is always determined from the contents under the storage writer lock.
+    // is always determined from the contents under the store's writer lock.
     if config.mode == crate::OpenMode::ExistingOnly
-        && !path.as_ref().try_exists().map_err(crate::OpenError::Io)?
+        && !path.try_exists().map_err(crate::OpenError::Io)?
     {
         return Err(crate::OpenError::NotInitialized);
     }
