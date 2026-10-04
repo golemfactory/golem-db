@@ -26,6 +26,7 @@ struct BranchState {
 }
 
 impl BranchState {
+    /// Writes, checkpoints and rollback need an unsealed branch; reads do not.
     fn require_open(&self) -> Result<()> {
         if self.sealed.is_some() {
             Err(BranchError::Sealed)
@@ -163,13 +164,18 @@ impl<S: Store, H: HashProvider> Branches<S, H> {
 
     /// Read cells from one validated branch snapshot. Callback errors are kept
     /// separate from errors admitting the operation (such as a stale ID).
+    ///
+    /// A sealed branch stays readable: sealing freezes the overlay, so reads
+    /// see exactly the state that was sealed. One exception: the lag-one
+    /// `#roots` cell that `seal` writes for the origin commit lives in the
+    /// sealed result, not in the overlay, so `#roots` does not show the new
+    /// root until the commit is published.
     pub fn read<T, E>(
         &self,
         branch_id: BranchId,
         operation: impl FnOnce(&CellRead<'_, S::Read<'_>>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, OperationError<E>> {
         self.with_branch(branch_id, |state, origin| {
-            state.require_open().map_err(OperationError::Branch)?;
             operation(&CellRead::new(&state.overlay, origin)).map_err(OperationError::Operation)
         })
         .map_err(OperationError::Branch)?
@@ -211,7 +217,8 @@ impl<S: Store, H: HashProvider> Branches<S, H> {
 
     /// Compute cell/index updates and stage physical rows without opening a
     /// store writer. Failure leaves the overlay and checkpoints untouched.
-    /// Success freezes cell access. Repeated sealing returns the cached result,
+    /// Success freezes the branch: writes, checkpoints and rollback return
+    /// `Sealed`, reads continue (see [`Branches::read`]). Repeated sealing returns the cached result,
     /// after validating head again; it does not reserve a commit number.
     pub fn seal(&self, branch_id: BranchId) -> Result<Arc<SealedCommit>> {
         self.with_branch(branch_id, |state, origin| {

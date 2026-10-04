@@ -162,12 +162,28 @@ fn compare_with_rebuild(db: impl Store + Clone + 'static, hash: impl HashProvide
     assert!(Arc::ptr_eq(&sealed, &branches.seal(branch).unwrap()));
     assert_eq!(sealed.cells.changed_cells.len(), 6); // Five actual user changes + #roots.
     assert_eq!(sealed.index.changed_terms.len(), 4);
-    assert!(matches!(
-        branches.read(branch, |_| -> Result<(), ()> {
-            panic!("sealed read admitted")
-        }),
-        Err(OperationError::Branch(BranchError::Sealed))
-    ));
+    // Reads see the sealed state, but not the #roots cell only the sealed
+    // result holds.
+    let roots_key = key(golemdb_cells::system::ROOTS.id, &7u64.to_be_bytes());
+    assert!(
+        sealed
+            .cells
+            .changed_cells
+            .iter()
+            .any(|change| change.key == roots_key)
+    );
+    let (name, removed, roots) = branches
+        .read(branch, |cells| {
+            Ok::<_, BranchError>((
+                cells.get(&key(64, b"name"))?,
+                cells.get(&key(69, b"remove"))?,
+                cells.get(&roots_key)?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(name, Some(value("new", true)));
+    assert_eq!(removed, None);
+    assert_eq!(roots, None);
     assert!(matches!(
         branches.write(branch, |_| -> Result<(), ()> {
             panic!("sealed write admitted")

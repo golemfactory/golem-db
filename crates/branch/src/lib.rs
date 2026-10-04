@@ -94,8 +94,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //! Repeated seal calls return the cached result after another head check.
-//! Sealed branches reject cell reads/writes, checkpoints, and rollback; metadata,
-//! commit, and discard remain available. An error or unwinding panic during
+//! Sealed branches reject cell writes, checkpoints, and rollback with `Sealed`;
+//! cell reads, metadata, commit, and discard remain available. Reads on a sealed
+//! branch do not show the new `#roots` cell, which only the sealed result holds. An error or unwinding panic during
 //! computation leaves the branch open with its overlay, version, and frames unchanged.
 
 //! # Committing

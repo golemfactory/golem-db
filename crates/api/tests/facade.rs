@@ -209,11 +209,15 @@ fn checkpoints_rollback_seal_and_discard_share_state_across_clones() {
         assert_eq!(sealed.commit_id, 1);
         assert_eq!(db.head().unwrap(), 0);
         assert!(clone.branch_info(branch).unwrap().sealed);
-        assert!(matches!(
+        // A sealed branch stays readable; writes are rejected with Sealed.
+        assert_eq!(
             db.get(ReadTarget::Branch(branch), RecordOp::get(KEY))
-                .into_result(),
-            Err(ApiError::Sealed)
-        ));
+                .into_result()
+                .unwrap()
+                .cells[b"price".as_slice()]
+            .as_i32(),
+            Some(50)
+        );
         assert!(matches!(
             db.patch(branch, RecordOp::patch(KEY)).into_result(),
             Err(ApiError::Sealed)

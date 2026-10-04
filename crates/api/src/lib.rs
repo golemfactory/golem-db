@@ -107,8 +107,10 @@ pub trait Api {
     /// Undo one frame. Repeated rollback moves to preceding frames.
     fn rollback(&self, branch: BranchId) -> Result<()>;
 
-    /// Freeze without publishing. Sealed branches reject record access,
-    /// checkpoints, and rollback; metadata, commit, and discard remain legal.
+    /// Freeze without publishing. Sealed branches reject writes, checkpoints,
+    /// and rollback with `Sealed`; `get`, metadata, commit, and discard remain
+    /// legal. A `get` on a sealed branch reads exactly the sealed state, except
+    /// that the reserved `#roots` record does not show the new root until commit.
     fn seal(&self, branch: BranchId) -> Result<SealInfo>;
 
     /// Publish and consume the branch. A live losing branch returns Conflict;

@@ -142,9 +142,11 @@ uninitialized storage at `./golemdb-catalogue`, so the two commits start at 1 an
 Use a different fresh directory to run this example again.
 
 Both commits explicitly call `seal` to compute their roots before publication.
-Sealing is optional (`commit` seals automatically if needed). It freezes branch
-record access without advancing the head or reserving the candidate commit ID;
-another branch can still win the commit race.
+Sealing is optional (`commit` seals automatically if needed). It freezes the
+branch without advancing the head or reserving the candidate commit ID; another
+branch can still win the commit race. A sealed branch stays readable with `get`;
+writes, checkpoints and rollback return `Sealed`. Reads see the sealed state, except
+that the reserved `#roots` record does not show the new root until commit.
 
 ```rust
 use golemdb_api::{
@@ -244,8 +246,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     assert!(db.get(ReadTarget::Head, RecordOp::get(mouse)).into_result().is_ok());
 
-    // Finish pending reads before sealing: a sealed branch rejects record
-    // reads/writes, checkpoints, and rollback. Head reads remain available.
+    // Finish pending writes before sealing: a sealed branch rejects writes,
+    // checkpoints, and rollback. Reads of the branch and the head remain available.
     let second_seal = db.seal(branch)?;
     println!("Candidate commit: {}", second_seal.commit_id);
     println!("State root: {:02x?}", second_seal.state_root);
@@ -459,10 +461,10 @@ describes them:
 - Immutable data: stubs only (above).
 - Transport serialization; adapters own it.
 
-Known differences from the specification, still to be decided: a sealed branch
-rejects reads as well as writes (`Sealed`), where the specification keeps it readable;
-and a stale branch reports `Conflict` only when `commit` is its first call after
-losing the race (see above).
+Known differences from the specification: writes to a sealed branch return
+`Sealed`, which the specification's error set does not have yet (it says
+`HandleInvalid`); and a stale branch reports `Conflict` only when `commit` is its
+first call after losing the race (see above), still to be decided.
 
 The [consumer test](tests/consumer.rs) demonstrates a single facade mock and
 commit failure injection behind `Arc<dyn Api + Send + Sync>`. Use scripted mocks

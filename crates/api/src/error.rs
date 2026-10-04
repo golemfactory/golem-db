@@ -40,6 +40,8 @@ pub enum ApiError {
     HandleInvalid,
     #[error("commit lost the publication race")]
     Conflict,
+    /// A write, checkpoint or rollback on a sealed branch. The handle stays
+    /// valid: it can still be read, committed or discarded.
     #[error("branch is sealed")]
     Sealed,
     #[error("no frame remains to roll back")]

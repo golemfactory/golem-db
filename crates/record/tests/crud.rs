@@ -433,10 +433,8 @@ fn lifecycle(db: impl Store + Clone) {
     records.create(competitor, OTHER, values("loser")).unwrap();
     assert_eq!(id(&branches, competitor, OTHER), 64);
     branches.seal(b).unwrap();
-    assert!(matches!(
-        records.get(ReadTarget::Branch(b), KEY, None),
-        Err(RecordError::Branch(BranchError::Sealed))
-    ));
+    // A sealed branch stays readable; writes are rejected.
+    assert!(records.get(ReadTarget::Branch(b), KEY, None).is_ok());
     assert!(matches!(
         records.delete(b, KEY),
         Err(RecordError::Branch(BranchError::Sealed))
