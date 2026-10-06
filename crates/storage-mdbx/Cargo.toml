@@ -1,0 +1,16 @@
+[package]
+name = "golemdb-storage-mdbx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+golemdb-storage.workspace = true
+libmdbx = "=0.6.6"
+# Match the binding's native version; used only to query physical size limits.
+mdbx-sys = "=13.11.0"
+
+[dev-dependencies]
+# Used by the public API documentation example.
+tempfile = "3"

@@ -46,3 +46,6 @@ pub use error::{MerkleError, Result};
 pub use hash::{Blake3Hasher, Hash, HashAlgorithm, HashProvider, Keccak256Hasher};
 pub use node::BranchNodeCompact;
 pub use trie::{LeafRef, RootRef, Trie, Walk};
+
+#[cfg(test)]
+mod tests;

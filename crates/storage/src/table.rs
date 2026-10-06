@@ -8,7 +8,8 @@ use crate::{Result, StorageError};
 pub struct Table(pub &'static str);
 
 impl Table {
-    pub(crate) fn validate(self) -> Result<()> {
+    /// Check the shared table-name contract before a backend accesses storage.
+    pub fn validate(self) -> Result<()> {
         if self.0.is_empty() || self.0.contains('\0') {
             return Err(StorageError::InvalidTableName(self));
         }

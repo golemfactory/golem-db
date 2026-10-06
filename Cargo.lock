@@ -501,6 +501,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "golemdb-branch"
+version = "0.1.0"
+dependencies = [
+ "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
+ "golemdb-storage",
+ "proptest",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "golemdb-cells"
 version = "0.1.0"
 dependencies = [
@@ -516,14 +528,27 @@ dependencies = [
 name = "golemdb-index"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "golemdb-cells",
  "golemdb-merkle",
  "golemdb-storage",
  "proptest",
  "roaring",
- "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "golemdb-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "golemdb-branch",
+ "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
+ "golemdb-storage",
+ "golemdb-storage-mdbx",
+ "proptest",
+ "tempfile",
 ]
 
 [[package]]
@@ -543,10 +568,14 @@ dependencies = [
 [[package]]
 name = "golemdb-storage"
 version = "0.1.0"
+
+[[package]]
+name = "golemdb-storage-mdbx"
+version = "0.1.0"
 dependencies = [
+ "golemdb-storage",
  "libmdbx",
  "mdbx-sys",
- "proptest",
  "tempfile",
 ]
 

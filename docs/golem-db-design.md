@@ -1,20 +1,73 @@
 # Golem DB — Technical Design
 
-This document records the **settled design** of the Golem DB storage engine: the schema, the
+This document is the **design record** of the Golem DB storage engine: the schema, the
 commitment, the history mechanism, and the reserved-record structure that carries the engine's own
 state. It supersedes the working draft [golem-db-architecture.md](../golem-db-architecture.md) and
 the change set collected in [golem-db-proposals.md](../golem-db-proposals.md) for everything it
-covers.
+covers. Its status is tracked **per chapter** in the register below; no chapter is called settled
+until it has passed the acceptance checks in [CHANGES.md](CHANGES.md). Requirement IDs cited here
+(SE-1, CS-5 and others) refer to the Golem DB requirements document,
+`arkiv-source-of-truth/golem-db.md`, which is maintained outside this repository.
 
-One layer built on top of what is described here — **metering and cost** — is not yet settled and is
+One layer built on top of what is described here — **metering and cost** — is not yet decided and is
 deliberately absent. Where a chapter has to mention it, it does so in prose or points at the working
 draft.
 
 A companion document, [golem-db-design-short.md](golem-db-design-short.md), carries the same chapter
-structure with the decisions alone: no explanation, no reasoning, no examples.
+structure with the decisions alone: no explanation, no reasoning, no examples. It currently lags this
+document and will be regenerated from the final text (`CHANGES.md` T03); until then, do not rely on it.
+
+## Who Should Read This, and How
+
+This document is for people who build, verify or integrate the engine: its implementers and
+reviewers, the conformance engineer writing vectors against it, and the host engineer who needs to
+know what happens beneath a call. It is **not** the caller's contract — what a caller can say and
+what comes back is [golem-db-api.md](golem-db-api.md), which points back here only where a
+mechanism explains an observable rule.
+
+| You want to | Read |
+| --- | --- |
+| **Use the engine** (host or SDK author) | [golem-db-api.md](golem-db-api.md) alone. Follow its _→ design §n_ pointers only when you need to know why |
+| **Get oriented** (first hour) | [§1](#1-fundamentals) · [§3](#3-records-and-cells) · the catalogue table in [§4](#record-classes-and-the-reserved-catalogue) · [Branches over the Head](#branches-over-the-head) and [Committing a Branch](#committing-a-branch) in §10 · [Resolving a Value as of a Commit](#resolving-a-value-as-of-a-commit) in §7 |
+| **Implement or review a component** | Its chapter, plus [§2](#2-system-schema) (every component), [§8](#8-state-commitment-and-global-root) (anything under commitment) and [§9](#9-trie-representation-canonical-vs-physical) (anything touching a trie). Check the chapter's line in [Status by Chapter](#status-by-chapter) before relying on a rule |
+| **Write conformance vectors** | [Bitmap Encoding](#bitmap-encoding) in §2 · the type grid in [§3](#cell-kinds-and-types) · reserved-record layouts in [§4](#4-system-admin-and-user-records) · [Domain Separation and Preimage Encoding](#domain-separation-and-preimage-encoding) in §8 — and `CHANGES.md` D09 for what is not yet pinned |
+| **See the decisions only** | [Status by Chapter](#status-by-chapter) and [Open Questions](#open-questions) for what is not yet decided; owners and status in [CHANGES.md](CHANGES.md). The decisions-only short document returns with `CHANGES.md` T03 |
+
+## Status by Chapter
+
+| Status | Meaning |
+| --- | --- |
+| **recorded** | Decided and written down. Not yet verified by conformance vectors and a reader pass; may still carry open items |
+| **open** | A decision listed in `CHANGES.md` bears on the chapter's contract; the chapter cannot be frozen until it lands |
+| **proposed** | Not adopted. Kept for the argument; adoption is a product decision |
+| **depends-on-metering** | Correct only under an assumed cost model that is not in this document |
+
+No chapter is **settled**. That word is reserved for a chapter with no open decision, passing
+vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
+
+| Chapter | Status | Open items (`CHANGES.md`) |
+| --- | --- | --- |
+| [1. Fundamentals](#1-fundamentals) | recorded, open | D05 (retention mechanism behind property 5); D13 (environment assumptions) |
+| [2. System Schema](#2-system-schema) | recorded, open | D09 (Roaring profile, encoding canon); D13 (MDBX durability model) |
+| [3. Records and Cells](#3-records-and-cells) | recorded, open | D09 (`bool` byte forms, shipped type-id map) |
+| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D08 (`#recordKeys` on delete); D10 (model activation semantics); D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`); D05 (retention mechanism behind `#minRetention`) |
+| [5. Indexing Cells for Filtering](#5-indexing-cells-for-filtering) | recorded, open | D01 (filter evaluation: predicate combination, bounds, cost shape); D14 |
+| [6. Merkleizing the Posting List](#6-merkleizing-the-posting-list-bitmaptrie) | recorded, open | D09 (odd-nibble padding, `EMPTY_ROOT`) |
+| [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D05 (retention, historical discovery, `Pruned`); D12 |
+| [8. State Commitment and Global Root](#8-state-commitment-and-global-root) | recorded, open | D06 (proof scope, non-inclusion witness); D09 (reserved-layout tags, absent pre-image) |
+| [9. Trie Representation](#9-trie-representation-canonical-vs-physical) | recorded | — |
+| [10. Write Branches and Checkpoint Frames](#10-write-branches-and-checkpoint-frames) | recorded, open | D02 (`rewind`: not in v1; semantics still to specify); D03 (crash recovery); D04 (concurrency contract); D07 (branch transitions); D08; D15; D16 |
+| [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D05 (shard-mark survival); D02 (`rewind`: not in v1); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
+| [12. Sorting](#12-sorting) | recorded, open | D14 (cost qualifications) |
+| [13. Paging](#13-paging) | recorded, open, depends-on-metering | D11 (cursor contract, fingerprint scope); D12 (live-paging guarantee) |
+| [Appendix A. Normative Surface](#appendix-a--normative-surface) | open | S05 (being assembled; the full list waits on D09) |
+
+The metering layer itself (property 7 in §1) is out of scope here: D10 records the shape this
+document assumes of it.
 
 ## Contents
 
+- **[Glossary](#glossary)**
 - **[1. Fundamentals](#1-fundamentals)**
   - [What Golem DB Is For](#what-golem-db-is-for)
   - [Abstract Primitives to Physical MDBX Mapping](#abstract-primitives-to-physical-mdbx-mapping)
@@ -43,7 +96,7 @@ structure with the decisions alone: no explanation, no reasoning, no examples.
   - [Binding a Container to Its Path](#binding-a-container-to-its-path)
   - [Update Mechanics (Copy-on-Write)](#update-mechanics-copy-on-write)
   - [Structural Deduplication and Zero-Cost History](#structural-deduplication-and-zero-cost-history)
-- **[7. Historical Data and Bitemporality](#7-historical-data-and-bitemporality)**
+- **[7. Point-in-Time History](#7-point-in-time-history)**
   - [Resolving a Value as of a Commit](#resolving-a-value-as-of-a-commit)
   - [Historical Query Execution Example](#historical-query-execution-example)
 - **[8. State Commitment and Global Root](#8-state-commitment-and-global-root)**
@@ -83,6 +136,57 @@ structure with the decisions alone: no explanation, no reasoning, no examples.
   - [Pinned and Live](#pinned-and-live) · [What pinning costs](#what-pinning-costs)
   - [The Cursor and the Warm Node](#the-cursor-and-the-warm-node)
   - [Open Question on Paging](#open-question-on-paging)
+- **[Open Questions](#open-questions)**
+- **[Appendix A — Normative Surface](#appendix-a--normative-surface)**
+
+---
+
+## Glossary
+
+Terms as this document uses them. Where a word is overloaded in the wider literature, the convention
+adopted here is stated and the document follows it.
+
+**Three deliberately disambiguated words:**
+
+- **node** (unqualified) — a machine running the engine. A vertex of a trie is always a **trie node**,
+  an **interior node** or a **leaf**; inside §6, §8 and §9, where the subject is trie structure,
+  "node" abbreviates "trie node" once the section has said so.
+- **interior node** — a trie vertex with two or more children, holding `prefix`, `state_mask`,
+  `tree_mask` and `child_hashes`. Called a "branch node" in Ethereum-client literature; that word is
+  avoided here because **branch** already means a write branch (§10). The struct keeps reth's name,
+  `BranchNodeCompact`.
+- **commit** (noun) — one durable, numbered state transition: `commitNr`, the unit of history and of
+  `#roots`. **commitment** — the cryptographic binding of a state to a 32-byte root. The verb
+  "commits" is used in the cryptographic sense only with a root or trie as subject ("the root commits
+  the allocator"); the state transition is "a branch commits" or "`commit(b)`".
+
+| Term | Meaning |
+| --- | --- |
+| **record** | The logical unit the API exposes; a container of cells identified by a 32-byte `recordKey` and addressed internally by a dense `recordID` (§3) |
+| **cell** | One named, individually typed value inside a record; the engine's unit of storage, indexing, commitment and history (§3) |
+| **cell key** | The cell's name, raw bytes, per the name grammar; trailing field of every key that embeds it (§3) |
+| **attribute / field** | The two cell kinds: an attribute is indexed and queryable, a field is never indexed (§3) |
+| **type tag** | The one-byte prefix of every cell value: kind bit plus 7-bit type code; part of the commitment (§3) |
+| **codec** | The encoder/decoder pair fixed for one type; one valid byte form per value; order-preserving where the value reaches a key (§1, §3) |
+| **index term** | `cellKey ‖ 0x00 ‖ typeTag ‖ cellValue` — one attribute value; the key of `Index` (§5) |
+| **posting list** | The set of `recordID`s holding an index term, stored as a `BitmapTrie` over Roaring containers (§5, §6) |
+| **container** | A `BitmapContainer` row: `hi48 ‖ roaring`, the leaf of a `BitmapTrie` holding one 48-bit region's 16-bit offsets (§2, §6) |
+| **trie** | A Merkle Patricia Trie. **Canonical trie:** path-addressed, the object the commitment is defined over. **Physical trie:** how nodes are stored — here content-addressed rows keyed by node hash (§9) |
+| **leaf** | A trie vertex holding one item's hash. **Virtual leaf:** a leaf never stored as a row, recomputed from `Cell` / `Index` (§8) |
+| **root** | The hash at the top of a trie. `StateRoot` (`CellTrie`), `IndexRoot` (`IndexTrie`), `bitmapHash` (one term's `BitmapTrie`), `GlobalRoot = Hash(0x06 ‖ StateRoot ‖ IndexRoot)` (§8) |
+| **domain prefix** | The one-byte tag that begins every hash preimage, separating kinds of preimage (§8) |
+| **head** | The most recent commit: `(commitNr, StateRoot, IndexRoot)` in the `Superblock` (§4) |
+| **superblock** | The one uncommitted table: format identifiers and the head (§4) |
+| **reserved records** | `recordID` 0–63: **system** records (0–31, `#`) written by the engine, **admin** records (32–63, `@`) written by admin operations; everything ≥ 64 is a **user** record (§4) |
+| **pre-image** | The value an item held immediately before a given commit changed it; what `CellChangeSet` / `IndexChangeSet` store, and what the branch log stores per operation (§7, §10) |
+| **history** | `CellHistory` / `IndexHistory`: per item, the Roaring set of commits that changed it — the reverse index over the change-sets (§7) |
+| **branch** (write branch) | A volatile, node-local write transaction over the head, identified by a **branch handle** `(commitNr, branchNr)`; several may be open, one commits (§10) |
+| **overlay** | A branch's in-memory work-in-progress state: touched cells, bindings, `#alloc`, index terms; absence means "ask committed state" (§10) |
+| **tombstone** | A `0x00` type tag in the overlay marking a cell deleted in the branch (§10) |
+| **frame / checkpoint** | A span of operations inside a branch, delimited by `checkpoint()`; the unit `rollback()` undoes (§10) |
+| **seal** | Computing a branch's roots without persisting: yields a `SealedCommit`; `commit` persists it (§10) |
+| **segment / shard / row / ordinal** | §11: an append-only sequence of opaque rows outside MDBX, stored as shard files per commit span, addressed by dense ordinal; **mark** = a segment's row count after a commit |
+| **retention / pruning** | Discarding history, orphaned trie nodes or shards older than a window; policy open (`CHANGES.md` D05) |
 
 ---
 
@@ -107,28 +211,33 @@ is built to deliver.
 | 2   | **Filtering and querying**       | Records are queryable by cell value, with equality, **range** and **prefix** predicates, plus sorting and paging — served by a reverse index over index terms rather than by scanning ([§5](#5-indexing-cells-for-filtering)).           |
 | 3   | **State commitment with proofs** | Every state has a single 32-byte root, and any cell or index term in it can be proved against that root to a party holding nothing but the root ([§8](#8-state-commitment-and-global-root)).                                             |
 | 4   | **Determinism**                  | The same content written in the same order yields byte-identical state and therefore an identical commitment, on every implementation and every machine — which is what makes the root agreeable between mutually distrusting parties.   |
-| 5   | **Full history**                 | Every past state is retained and directly addressable: point-in-time reads and queries at any commit, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-historical-data-and-bitemporality)). |
+| 5   | **History within a retention window** | Every state within the retention window is retained and directly addressable: point-in-time reads and queries at any commit in the window, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-point-in-time-history)). The minimum window is the instance parameter `#minRetention`, in commits ([§4](#params-recordid-0)); beyond it the consensus-path API refuses a historical read identically on every node, whatever a node retains. Longer history is served by a separate archival surface, not yet designed. Mechanism: `CHANGES.md` D05. |
 | 6   | **Branches**                     | Several write transactions run concurrently over the head state, each seeing its own work in progress, with reversible checkpoints inside them and exactly one winner at commit.                                                         |
 | 7   | **Budget-bounded execution**     | Every data-plane operation is priced in cost units against a versioned schedule and capped by a caller-supplied budget: exceeding it aborts with the cost spent and **no partial results**, so no call can consume unbounded work.       |
 
 The engine is built on top of [**libmdbx**](https://github.com/erthink/libmdbx) (Lightning
 Memory-Mapped Database Extended), an embedded key-value store structured as a collection of
-memory-mapped B+trees. To build a bitemporal, Merkleized, cell-based database engine on top of MDBX,
+memory-mapped B+trees. To build a historised, Merkleized, cell-based database engine on top of MDBX,
 Golem DB translates abstract logical database primitives into low-level MDBX physical byte
 structures.
 
 A note on granularity: while the high-level description and interface in
-[golem-db-api.md](../golem-db-api.md) present the **record** as the basic unit, the implementation
+[golem-db-api.md](golem-db-api.md) present the **record** as the basic unit, the implementation
 architecture operates on the **cell** as its basic unit. This carries a number of physical
 advantages (detailed in [§3](#3-records-and-cells)) and is the natural decomposition when building
 on a key-value store.
 
+> **Note — precedence between the two documents.** Where they overlap, the API is authoritative for
+> what a caller can say and observe; this document is authoritative for mechanism, storage layout
+> and every byte under commitment. A disagreement between them is a defect, recorded in
+> [CHANGES.md](CHANGES.md), not a choice left to the reader.
+
 **Scope of this document.** Property 7 is a real commitment of the design, but the chapter specifying
-it — the cost model and its op classes — is not yet settled and is not part of this document.
+it — the cost model and its op classes — is not yet decided and is not part of this document.
 
 ### Abstract Primitives to Physical MDBX Mapping
 
-To realise the record-level API of [golem-db-api.md](../golem-db-api.md) on a cell-based low-level
+To realise the record-level API of [golem-db-api.md](golem-db-api.md) on a cell-based low-level
 architecture, the engine introduces a schema of abstract entities — **tables**, each with one or
 more key parts and an assigned value. Those abstract entities map onto the physical MDBX layer as
 follows:
@@ -386,7 +495,8 @@ Two distinct Roaring encodings appear in the schema and must not be conflated:
 
 ### The `BranchNodeCompact` Structural Payload
 
-All three trie tables — `CellTrie`, `IndexTrie` and `BitmapTrie` — share one branch node format:
+All three trie tables — `CellTrie`, `IndexTrie` and `BitmapTrie` — share one interior-node format
+(the struct keeps reth's name, `BranchNodeCompact`):
 
 ```rust
 pub struct BranchNodeCompact {
@@ -394,7 +504,7 @@ pub struct BranchNodeCompact {
     pub prefix: SmallVec<[u8; 6]>, // Common nibble prefix shared by all children
     pub prefix_len: u8,            // Number of valid nibbles in prefix
     pub state_mask: u16,           // Bitmask of active child slots (bits 0..15)
-    pub tree_mask: u16,            // Bitmask indicating if slot is sub-branch (1) or leaf (0)
+    pub tree_mask: u16,            // Bitmask indicating if slot is interior node (1) or leaf (0)
     pub child_hashes: Vec<B256>,   // 32-byte hashes of active children (len = popcnt(state_mask))
 
     // ---- stored only: never part of any hash ----
@@ -404,7 +514,7 @@ pub struct BranchNodeCompact {
 ```
 
 - **Slot navigation.** `state_mask` uses 16 bits to denote active branch slots (`0x0`–`0xF`).
-- **Child categorization.** `tree_mask` bit _i_ = 1 means slot _i_ points to a sub-branch; bit _i_ = 0
+- **Child categorization.** `tree_mask` bit _i_ = 1 means slot _i_ points to an interior node; bit _i_ = 0
   means slot _i_ terminates in a leaf.
 - **Leaf paths.** `leaf_paths` carries the complete routing path of every child that terminates in a
   leaf, in the same ascending slot order as `child_hashes`; entry _j_ belongs to the _j_-th set bit of
@@ -452,14 +562,14 @@ grammar of [§3](#cell-names).
 
 ```
                                   LOGICAL RECORD
-              recordKey "user:100"  →  recordID 42
+              recordKey "user:100"  →  recordID 100
                      { Price: 100, Status: "Active" }
                                          │
                    ┌─────────────────────┴─────────────────────┐
                    │                                           │
                    ▼                                           ▼
              PRIMARY CELL 1                              PRIMARY CELL 2
-   Key  : 0x000000000000002A ‖ "Price"           Key : 0x000000000000002A ‖ "Status"
+   Key  : 0x0000000000000064 ‖ "Price"           Key : 0x0000000000000064 ‖ "Status"
    Value: typeTag ‖ 100                          Value: typeTag ‖ "Active"
 ```
 
@@ -517,8 +627,15 @@ Three things follow from identity being an ordinary cell rather than a side tabl
 - **A record cannot be committed under two keys.** Exactly one cell per record holds it.
 - **Identity is committed and historised like any other cell.** `#key` is routed and hashed by the
   ordinary rules of [§8](#8-state-commitment-and-global-root) — no new formula, no new domain byte,
-  no new table — so a proof that `recordID 42` holds `Price = 100` can be paired with a proof of the
+  no new table — so a proof that `recordID 100` holds `Price = 100` can be paired with a proof of the
   key that `recordID` stood for at that commit.
+
+**Empty user records are legal.** Record existence is independent of user-defined
+content: `create` may supply zero user cells, and removing the last user cell through
+`patch` does not delete the record. Its `#key`, `#recordKeys` binding and engine-maintained
+metadata remain; `get` succeeds for the existing record. Only `delete` removes its
+identity and binding from live state. The per-record `#meta` counts and charges for
+empty records are specified in the [metering record model](golem-db-metering.md#record-model).
 
 ### Cell Names
 
@@ -556,7 +673,7 @@ Names remain byte-exact, with no ambiguity at any point in the pipeline.
 ### Cell Kinds and Types
 
 Every cell value is prefixed by a single **type tag** byte carrying both properties
-[golem-db-api.md](../golem-db-api.md) attaches to a cell:
+[golem-db-api.md](golem-db-api.md) attaches to a cell:
 
 ```
         bit   7   6   5   4   3   2   1   0
@@ -573,11 +690,14 @@ A `field`'s tag is numerically its `typeCode`; an attribute's tag is `0x80 | typ
 codes start at `0x01`, so **no valid `typeTag` is `0x00`** — a reserved value the engine uses as an
 unambiguous "absent" marker wherever one is needed.
 
-Kind and type are fixed **per record**, not globally: the same cell name may be an `i32` in one
-record and a `dec256` in another, because a global name→type binding would let the first writer of
-`price` permanently deny that name to every other user. The tag therefore lives at exactly the
-granularity of the `Cell` table itself and needs no registry — validating a write is the point
-lookup of `(recordID, cellKey)` that the mutation performs anyway.
+Kind and type are declared **per write** and stored **per cell**, never bound globally to a name: the
+same cell name may be an `i32` in one record and a `dec256` in another, because a global name→type
+binding would let the first writer of `price` permanently deny that name to every other user. A later
+write to the same cell may declare a different kind or type — retyping is an ordinary write
+([golem-db-api.md](golem-db-api.md#cells)). The tag therefore lives at exactly the granularity of the
+`Cell` table itself and needs no registry: a value is validated against the codec its own write
+declares, and the existing tag is read only as the pre-image the change-set needs — the point lookup
+of `(recordID, cellKey)` that the mutation performs anyway.
 
 **The tag is part of the commitment.** It sits inside the hashed value, so the leaf hash binds not
 only what bytes are stored but how they are to be read. Without it, two databases holding identical
@@ -707,7 +827,7 @@ What the decomposition buys:
 
 1. **Granular delta modifications.** Updating a single cell (`Status` from `"Active"` to
    `"Suspended"`) writes only the mutated cell. The remaining cells of the record are untouched.
-2. **Independent bitemporal lineage.** History and change-sets are logged per cell. Field-level
+2. **Independent history per cell.** History and change-sets are logged per cell. Field-level
    time-travel queries incur no write amplification or log-replay overhead from un-mutated fields.
 3. **Projection acceleration.** A projection query (`SELECT Price WHERE …`) issues point-seeks
    strictly on `(recordID, "Price")`, skipping every un-requested cell on disk.
@@ -796,13 +916,19 @@ stored cells also changes commitment paths. Raw binary keys inside reserved reco
 | 1        | system | `#alloc`         | ID allocator                                             |
 | 2        | system | `#roots`         | root history                                             |
 | 3        | system | `#recordKeys`    | `recordKey → recordID` bindings                          |
-| 4–31     | system | _reserved_       |                                                          |
+| 4        | system | `#rootIndex`     | `GlobalRoot → commitNr` reverse index ([§11](#what-this-assumes-of-the-schema)) |
+| 5        | system | `#logDigests` — _open_ | per-commit digest of each segment's appended rows, lag-one (`CHANGES.md` D19) |
+| 6–31     | system | _reserved_       |                                                          |
 | 32       | admin  | `@meteringModel` | model activation index: modelVersion → activation commit |
 | 33       | admin  | `@modelWeight`   | individual weights, per model                            |
 | 34–63    | admin  | _reserved_       |                                                          |
 
+Record 5 is reserved for the log digest that requirement SE-1 asks of [§11](#11-commit-immutable-data-segments);
+its layout is decided in `CHANGES.md` D19.
+
 System records are ordered by **ascending mutability**: record 0 never changes and describes the
-deployment itself; 1–2 are touched by the commit machinery every commit; 3 grows per item. Bootstrap
+deployment itself; 1–2 are touched by the commit machinery (2 at every commit, 1 at every commit
+that creates a record); 3 grows per item. Bootstrap
 order happens to match — a node validates `#params` first, needs the allocator before it can create
 anything, roots before it can prove anything, and mappings last.
 
@@ -817,7 +943,7 @@ anything, roots before it can prove anything, and mappings last.
   is forbidden to users beyond those few exact strings.
 - **One meta cell, `#key`,** carrying that key — the same cell every user record has
   ([§3](#record-identity-the-key-cell)), so record identity stays committed uniformly across all
-  three classes. It is also what makes the database self-describing: an ordinary `get` of record 0's
+  three classes. It is also what makes the database self-describing: an ordinary `get` of record 1's
   `#key` returns `"#alloc"`, so the catalogue is provable rather than conventional, and the class
   character (`#` or `@`) lives in the key itself rather than in a separate display cell.
 - **Cell keys come in two forms.** Named system cells carry `#` (`#nextRecordID`); named admin
@@ -841,6 +967,9 @@ anything, roots before it can prove anything, and mappings last.
 | `#maxStrLen`      | `u32` (BE) | cap on `str` values (attribute values land in index keys) |
 | `#maxBytesLen`    | `u32` (BE) | cap on `bytes` values (field-only, never in an index key) |
 | `#maxCellNameLen` | `u32` (BE) | cap on user cell names                                    |
+| `#minRetention`   | `u64` (BE) | minimum retention window, in commits: the consensus-path API refuses reads at commits before `head − #minRetention`, identically on every node ([§1](#1-fundamentals) property 5; mechanism D05) |
+| `#shardSpan`      | `u64` (BE) | commits per segment shard file ([§11](#genesis-declaration)) |
+| `#immutableDataSegments` | layout open (D09) | segment declarations `(name, columns, compression)` ([§11](#genesis-declaration)) |
 
 **Chain parameters** — a third kind of configuration beside _code_ (protocol rules, changed by
 upgrade) and _governance data_ (weights, tuned at runtime): fixed per deployment at genesis,
@@ -853,8 +982,7 @@ a genesis-file mismatch surfaces as a root mismatch, not a silent divergence. Re
 Two rules:
 
 - **Immutable.** Written once from the genesis file; there is no admin operation to change a chain
-  parameter. Should one ever need to move, it graduates to the admin class with activation semantics
-  like the metering model — not designed now.
+  parameter (requirement CS-5: instance parameters are "writable through neither plane").
 - **Validated against physical ceilings at genesis.** The ceilings themselves stay in code, versioned
   by the `Superblock` `format` row: the engine refuses a genesis whose `#maxStrLen` (plus name and
   tag) cannot fit an MDBX index key. The caps are policy within physics; the physics is
@@ -938,7 +1066,7 @@ trailing name):
   `modelVersion` prefix, invisible to pricing until `@meteringModel` flips — and a name whose
   _meaning_ changed across models can never silently reuse the old value.
 - **Tuning is a `patch`,** effective next commit; the superseded weight lands in the change-set, so
-  the engine's own bitemporality versions the weights and no explicit weight-version scheme is
+  the engine's own history mechanism versions the weights and no explicit weight-version scheme is
   needed. The flip side, accepted deliberately: deep pricing audit is a _historical_ read, and past
   the retention window it becomes an archival-node service.
 - **Completeness is validated against the weight names the model's code expects** — at _activation_
@@ -1099,6 +1227,11 @@ first tier of a two-tier structure: it resolves an _index term_ to a single 32-b
 the list of records matching that term lives behind the commitment in the second tier
 ([§6](#6-merkleizing-the-posting-list-bitmaptrie)).
 
+> **Notation.** `WHERE …`, `SELECT …`, `FIND RECORDS … AT COMMIT …` and similar fragments throughout
+> this document are illustrative pseudo-syntax for a predicate, projection or historical read. Golem
+> DB has no query language; the caller's surface is the structured `query` call of
+> [golem-db-api.md](golem-db-api.md#query). Filter evaluation itself is specified in `CHANGES.md` D01.
+
 ### Structural Index Key Formulation
 
 An index entry maps a cell name/value pair to the set of `recordID`s whose cell holds that value — a
@@ -1113,8 +1246,8 @@ Two parts of that key earn their place beside the name and the value:
 - **`0x00`** separates the variable-length name from what follows. The name grammar of
   [§3](#cell-names) excludes `0x00`, so the separator is unambiguous by construction.
 - **`typeTag`** sits between the name and the value and is load-bearing rather than decorative.
-  Because kind and type are fixed per record, one cell name may carry different types in different
-  records; without the tag, a single term prefix would interleave incompatible encodings and a range
+  Because kind and type are declared per write rather than bound to the name, one cell name may carry
+  different types in different records, and in one record over time; without the tag, a single term prefix would interleave incompatible encodings and a range
   scan would walk across bytes belonging to another type. Ordering by `(name, type, value)` gives
   each type its own contiguous, correctly-ordered run, so a scan stays inside one encoding.
 
@@ -1212,7 +1345,7 @@ This value is simultaneously the leaf hash used in the parent's `child_hashes` *
 `hashedContainer` key under which the payload is stored — one hash serving both roles, not two
 separate domains.
 
-Branch nodes in `BitmapTrie` are hashed over their structural components, under their own domain
+Interior nodes in `BitmapTrie` are hashed over their structural components, under their own domain
 ([§8](#domain-separation-and-preimage-encoding)):
 
 ```
@@ -1221,13 +1354,13 @@ HASH_BITMAP_NODE = Hash( 0x05 ‖ prefix_len ‖ prefix ‖ state_mask ‖ tree_
 
 Binding the _whole_ path rather than the tail below the parent is the rule for all three tries;
 `hi48` is simply its form here. The property it buys is that a leaf hash is independent of trie
-shape, so a split or collapse above a leaf invalidates only branch nodes, never the leaf itself.
+shape, so a split or collapse above a leaf invalidates only interior nodes, never the leaf itself.
 
 **Worked example — the term `Price = 100`.** Three matching records:
 
 | recordID  | 48-bit path        | 16-bit offset |
 | --------- | ------------------ | ------------- |
-| 42        | `0x0000_0000_0000` | `0x002A`      |
+| 100       | `0x0000_0000_0000` | `0x0064`      |
 | 70 000    | `0x0000_0000_0001` | `0x1170`      |
 | 1 179 700 | `0x0000_0000_0012` | `0x0034`      |
 
@@ -1238,48 +1371,47 @@ flowchart TB
     subgraph PHYS["Physical MDBX rows — content-addressed"]
         direction TB
         IX["<b>Index</b> row<br/>─────────────────────<br/><b><i>key:</i></b> index term<br/>Price ‖ 0x00 ‖ tag ‖ 100<br/><b><i>value:</i></b> bitmapHash 0xR00T"]
-        PR["<b>BitmapTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xR00T<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: 0x0000_0000_00<br/>prefix_len: 10<br/>state_mask: 0b0000_0000_0000_0011<br/>tree_mask: 0b0000_0000_0000_0011<br/>child_hashes: [0xMID0, 0xMID1]"]
+        PR["<b>BitmapTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xR00T<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: 0x0000_0000_00<br/>prefix_len: 10<br/>state_mask: 0b0000_0000_0000_0011<br/>tree_mask: 0b0000_0000_0000_0001<br/>child_hashes: [0xMID0, 0xH333]"]
         PM0["<b>BitmapTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xMID0<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: []<br/>prefix_len: 0<br/>state_mask: 0b0000_0000_0000_0011<br/>tree_mask: 0b0000_0000_0000_0000<br/>child_hashes: [0xH111, 0xH222]"]
-        PM1["<b>BitmapTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xMID1<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: []<br/>prefix_len: 0<br/>state_mask: 0b0000_0000_0000_0100<br/>tree_mask: 0b0000_0000_0000_0000<br/>child_hashes: [0xH333]"]
-        PA["<b>BitmapContainer</b> row<br/>─────────────────────<br/><b><i>key:</i></b> container hash 0xH111<br/><b><i>value:</i></b> hi48 0x0000_0000_0000 ‖ roaring 002A"]
+        PA["<b>BitmapContainer</b> row<br/>─────────────────────<br/><b><i>key:</i></b> container hash 0xH111<br/><b><i>value:</i></b> hi48 0x0000_0000_0000 ‖ roaring 0064"]
         PB["<b>BitmapContainer</b> row<br/>─────────────────────<br/><b><i>key:</i></b> container hash 0xH222<br/><b><i>value:</i></b> hi48 0x0000_0000_0001 ‖ roaring 1170"]
         PC["<b>BitmapContainer</b> row<br/>─────────────────────<br/><b><i>key:</i></b> container hash 0xH333<br/><b><i>value:</i></b> hi48 0x0000_0000_0012 ‖ roaring 0034"]
 
         IX -- "value is the next key" --> PR
         PR -- "child_hashes[0]" --> PM0
-        PR -- "child_hashes[1]" --> PM1
+        PR -- "child_hashes[1]" --> PC
         PM0 -- "child_hashes[0]" --> PA
         PM0 -- "child_hashes[1]" --> PB
-        PM1 -- "child_hashes[0]" --> PC
     end
     subgraph CANON["Canonical MPT — path-addressed"]
         direction TB
-        N0["<b>BRANCH</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_00<br/><b><i>value:</i></b> Hash(0x05 ‖ branch payload)<br/>= 0xR00T"]
-        N1["<b>BRANCH</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_000<br/><b><i>value:</i></b> Hash(0x05 ‖ branch payload)<br/>= 0xMID0"]
-        N2["<b>BRANCH</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_001<br/><b><i>value:</i></b> Hash(0x05 ‖ branch payload)<br/>= 0xMID1"]
-        LA["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_0000<br/><b><i>value:</i></b> Hash(0x04 ‖ hi48 ‖ roaring 002A)<br/>= 0xH111"]
+        N0["<b>INTERIOR</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_00<br/><b><i>value:</i></b> Hash(0x05 ‖ node payload)<br/>= 0xR00T"]
+        N1["<b>INTERIOR</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_000<br/><b><i>value:</i></b> Hash(0x05 ‖ node payload)<br/>= 0xMID0"]
+        LA["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_0000<br/><b><i>value:</i></b> Hash(0x04 ‖ hi48 ‖ roaring 0064)<br/>= 0xH111"]
         LB["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_0001<br/><b><i>value:</i></b> Hash(0x04 ‖ hi48 ‖ roaring 1170)<br/>= 0xH222"]
         LC["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x0000_0000_0012<br/><b><i>value:</i></b> Hash(0x04 ‖ hi48 ‖ roaring 0034)<br/>= 0xH333"]
 
         N0 -- "nibble 0" --> N1
-        N0 -- "nibble 1" --> N2
+        N0 -- "nibble 1" --> LC
         N1 -- "nibble 0" --> LA
         N1 -- "nibble 1" --> LB
-        N2 -- "nibble 2" --> LC
     end
 
     classDef canon fill:#dae8fc,stroke:#6c8ebf,color:#000000
     classDef phys fill:#e1d5e7,stroke:#9673a6,color:#000000
     classDef idx fill:#d5e8d4,stroke:#82b366,color:#000000
-    class N0,N1,N2,LA,LB,LC canon
-    class PR,PM0,PM1,PA,PB,PC phys
+    class N0,N1,LA,LB,LC canon
+    class PR,PM0,PA,PB,PC phys
     class IX idx
 ```
 
 _Figure 5 — The same trie in both representations. **Left:** the canonical, path-addressed MPT the
 commitment is defined over. Every node is a **key** — the accumulated path that reaches it — bound to
-a **value** — the hash of that node's payload: a branch payload for a branch, `hi48 ‖ roaring` for a
-leaf. Edge labels are the nibble consumed at each step. **Right:** the same trie as physically
+a **value** — the hash of that node's payload: the structural payload for an interior node, `hi48 ‖ roaring` for a
+leaf. Edge labels are the nibble consumed at each step. Root slot 1 terminates directly in the leaf
+`0xH333` (`tree_mask` bit 1 = 0): a patricia trie has no single-child branch, and nibble 12 of that
+path is held by neither node — which is why the leaf payload carries `hi48`. **Right:** the same
+trie as physically
 stored. **Read across the two panels:** a canonical node's *value* — its hash — is
 the physical row's *key*. `0xR00T` is the value of the canonical root and the key of the
 `BitmapTrie` row that holds it; `0xH111` is the value of a canonical leaf and the key of a
@@ -1289,8 +1421,8 @@ yield the same root; the distinction is developed in
 
 ### Update Mechanics (Copy-on-Write)
 
-Inserting `recordID` 43 (`0x…002B`) into `Price = 100` illustrates the whole write path. It shares
-the 48-bit path of `recordID` 42, so exactly one container changes:
+Inserting `recordID` 101 (`0x…0065`) into `Price = 100` illustrates the whole write path. It shares
+the 48-bit path of `recordID` 100, so exactly one container changes:
 
 ```mermaid
 flowchart TB
@@ -1298,7 +1430,7 @@ flowchart TB
         direction TB
         A0["root 0xR00T1"]
         A1["0xMID2"]
-        A3["0xH1112<br/>{0x002A, 0x002B}"]
+        A3["0xH1112<br/>{0x0064, 0x0065}"]
         A0 --> A1
         A1 --> A3
     end
@@ -1307,21 +1439,19 @@ flowchart TB
         direction TB
         B0["root 0xR00T"]
         B1["0xMID0"]
-        B2["0xMID1"]
-        B3["0xH111<br/>{0x002A}"]
+        B3["0xH111<br/>{0x0064}"]
         B4["0xH222<br/>{0x1170}"]
         B5["0xH333<br/>{0x0034}"]
         B0 --> B1
-        B0 --> B2
+        B0 --> B5
         B1 --> B3
         B1 --> B4
-        B2 --> B5
     end
 
     CS["<b>IndexChangeSet</b><br/>key commitNr ‖ Price = 100<br/>value: 0xR00T (pre-image)"]
     IDX["<b>Index</b><br/>key Price = 100<br/>value: 0xR00T1"]
 
-    A0 -. "reuses" .-> B2
+    A0 -. "reuses" .-> B5
     A1 -. "reuses" .-> B4
     B0 -. "recorded as pre-image" .-> CS
     A0 -. "becomes the live root" .-> IDX
@@ -1330,13 +1460,13 @@ flowchart TB
     classDef kept fill:#e1d5e7,stroke:#9673a6,color:#000000
     classDef side fill:#d5e8d4,stroke:#82b366,color:#000000
     class A0,A1,A3 changed
-    class B0,B1,B2,B3,B4,B5 kept
+    class B0,B1,B3,B4,B5 kept
     class CS,IDX side
 ```
 
 _Figure 6 — Copy-on-write insert; **left:** the trie before, **right:** the nodes the write creates.
 Only the leaf on the affected path is rewritten (`0xH111` → `0xH1112`), and every node above it is
-re-hashed (`0xMID0` → `0xMID2`, `0xR00T` → `0xR00T1`). Untouched siblings — `0xMID1`, `0xH222`,
+re-hashed (`0xMID0` → `0xMID2`, `0xR00T` → `0xR00T1`). Untouched siblings — `0xH222` and
 `0xH333` — keep their keys and are referenced by both the old and the new root. `Index` advances to
 the new root while `IndexChangeSet` records the previous one under the mutating commit._
 
@@ -1356,15 +1486,19 @@ structural deduplication for free — the general mechanism is discussed in
    previously held, its root hash naturally collapses back to the original without leaving duplicate
    branches behind.
 3. **Zero-cost copy-on-write history.** Modifying a term creates a new root via CoW, as in Figure 6.
-   Unmodified branch nodes and containers keep their hashes and are shared between the old and new
+   Unmodified interior nodes and containers keep their hashes and are shared between the old and new
    roots rather than copied — so retaining the previous version of a term costs only the nodes on one
    path.
 
 ---
 
-## 7. Historical Data and Bitemporality
+## 7. Point-in-Time History
 
 Golem DB implements native point-in-time state resolution across both primary cells and index terms.
+There is **one time axis: the commit number.** The engine records when each item changed and what it
+held before; it has no notion of a value's validity period independent of the commit that wrote it, so
+this is not bitemporality in the temporal-database sense (transaction time plus valid time) — a host
+that needs valid time models it in ordinary cells.
 This requires four tables — two for cells, two for index terms — arranged in the same pattern on both
 sides:
 
@@ -1393,15 +1527,20 @@ For any item — a primary cell or an index term — its value at commit `T` fol
 The cost is one history lookup plus at most one change-set lookup, independent of how far back `T`
 lies — no intermediate commits are replayed.
 
-> **Retention affects queries and proofs differently.** Historical _queries_ depend only on
-> `CellHistory` and `CellChangeSet`; those rows are written once and never rewritten, and pruning them
-> discards that history irrecoverably. Historical _proofs_ additionally need the trie as it stood at
-> commit `T` — the branch nodes from the `#roots` cell for `T` ([§4](#roots-recordid-2)) down to the
-> leaf. While those nodes survive, a proof is a cheap descent. Once garbage collection reclaims them
-> (they are orphaned, being unreachable from the current root —
-> [§9](#the-canonical-trie-and-the-physical-trie)), the proof is not lost but becomes _expensive_: the
-> trie at `T` must be rebuilt by resolving every cell from history. Retaining trie nodes is therefore
-> what keeps historical proofs O(depth) rather than O(state).
+> **Retention affects reads differently by class.** A historical _point read_ depends only on
+> `CellHistory` and `CellChangeSet`. A historical _filtered query_ — the example below — additionally
+> depends on `IndexHistory` and `IndexChangeSet` to recover the term's `bitmapHash` as of `T`, and on
+> the `BitmapTrie` nodes and `BitmapContainer` rows reachable from that hash: the posting list at `T`
+> exists nowhere else ([§8](#which-tables-are-under-commitment)). History and change-set rows are
+> written once and never rewritten; pruning them discards that history irrecoverably. Historical
+> _proofs_ further need the `CellTrie` / `IndexTrie` nodes from the `#roots` cell for `T`
+> ([§4](#roots-recordid-2)) down to the leaf. Superseded trie and bitmap nodes are orphaned —
+> unreachable from the current root ([§9](#the-canonical-trie-and-the-physical-trie)) — and once
+> garbage collection reclaims them the read is not lost but becomes _expensive_: a proof must rebuild
+> the trie at `T`, and a filtered query must recover the term's membership at `T`, both by resolving
+> every cell from history — O(state) instead of O(depth). The minimum window is `#minRetention`
+> ([§4](#params-recordid-0)); which structures a deployment retains beyond it, and exactly what a read
+> past the window returns, is open (`CHANGES.md` D05).
 
 ```mermaid
 flowchart TB
@@ -1444,7 +1583,7 @@ flowchart TB
     class A3,A4,A5,A6,B3,B4,B5,B6,D3,D4,D5,D6 hist
 ```
 
-_Figure 7 — The bitemporal tables followed across three commits, one column per commit (100, 150,
+_Figure 7 — The history tables followed across three commits, one column per commit (100, 150,
 200 from left to right). Every commit appends its number to the history entry of each item it
 touches, and writes the superseded value into the change-set
 (`null` where the item did not previously exist). Note that the term `Price:50` accumulates the
@@ -1456,12 +1595,12 @@ price changes._
 The rule above applies uniformly to both tiers. Consider a filtering query evaluated against the
 state as of **commit 150**, over the data of Figure 7:
 
-```sql
-FIND RECORDS WHERE Price = 50 AT COMMIT 150 SELECT *
+```text
+FIND RECORDS WHERE Price = 50 AT COMMIT 150 SELECT *      (pseudo-syntax, §5 Notation)
 ```
 
-It resolves in three phases: time-travel the index term to obtain the matching `recordID`s, translate
-those to record keys, then time-travel each cell of each matching record.
+It resolves in three phases: time-travel the index term to obtain the matching `recordID`s, time-travel
+each record's `#key` cell to obtain its key, then time-travel each remaining cell of each matching record.
 
 ```
                                QUERY EXECUTION FLOW
@@ -1485,11 +1624,18 @@ those to record keys, then time-travel each cell of each matching record.
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ PHASE 2: recordID to recordKey Resolution                                   │
+│ PHASE 2: recordID to recordKey Resolution at Commit 150                     │
 │                                                                             │
-│ Read each record's `#key` cell:                                             │
-│   • Cell(111 ‖ "#key") ──► 0x111…abc                                        │
-│   • Cell(222 ‖ "#key") ──► 0x222…cde                                        │
+│ `#key` is an ordinary cell, resolved by the same rule as Phase 3:           │
+│   • CellHistory(111 ‖ "#key") ──► [100]                                     │
+│     no commit > 150 ──► live Cell(111 ‖ "#key") = 0x111…abc                 │
+│   • CellHistory(222 ‖ "#key") ──► [150]                                     │
+│     no commit > 150 ──► live Cell(222 ‖ "#key") = 0x222…cde                 │
+│                                                                             │
+│ Had record 222 been deleted at commit 300, its timeline would read          │
+│ [150, 300] and the key would come from CellChangeSet(300, 222 ‖ "#key");    │
+│ the live cell no longer exists, so a live read would return a match         │
+│ with no key.                                                                │
 └────────────────────────────────────┬────────────────────────────────────────┘
                                      │
                                      ▼
@@ -1566,10 +1712,10 @@ invariant holding across all three tries:
 > `hi48` for `BitmapTrie`.
 
 Binding the _complete_ path rather than only the portion below the parent has a consequence the
-engine depends on: a leaf hash is **independent of trie shape**. Splitting or collapsing branches
+engine depends on: a leaf hash is **independent of trie shape**. Splitting or collapsing interior nodes
 above a leaf leaves its hash untouched, so restructuring never has to re-read a cell's value.
 
-The top-level root committed in block headers combines the two:
+The top-level root a host publishes — for a chain, in its block header — combines the two:
 
 ```
 GlobalRoot = Hash( 0x06 ‖ StateRoot ‖ IndexRoot )
@@ -1577,19 +1723,20 @@ GlobalRoot = Hash( 0x06 ‖ StateRoot ‖ IndexRoot )
 
 ### Domain Separation and Preimage Encoding
 
-Every hash that produces a stored or committed value carries a one-byte **domain prefix**. This makes
-it cryptographically impossible for one kind of preimage to produce a hash matching another kind —
-preventing second-preimage attacks between leaves and branches, and keeping content-addressed keys
+Every hash that produces a stored or committed value carries a one-byte **domain prefix**. Under the
+collision resistance of `Hash`, no preimage of one kind can be found that hashes equal to a preimage
+of another kind —
+preventing second-preimage attacks between leaves and interior nodes, and keeping content-addressed keys
 disjoint across tables should the engine ever run on a key-value backend without namespaced tables.
 
 | Domain | Applies to                    | Preimage                                                      |
 | ------ | ----------------------------- | ------------------------------------------------------------- |
 | `0x00` | `CellTrie` leaf               | `trieKey ‖ typeTag ‖ cellValue`                               |
-| `0x01` | `CellTrie` branch             | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
+| `0x01` | `CellTrie` interior node      | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
 | `0x02` | `IndexTrie` leaf              | `trieKey ‖ bitmapHash`                                        |
-| `0x03` | `IndexTrie` branch            | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
+| `0x03` | `IndexTrie` interior node     | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
 | `0x04` | `BitmapTrie` leaf / container | `hi48 ‖ roaring`                                              |
-| `0x05` | `BitmapTrie` branch           | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
+| `0x05` | `BitmapTrie` interior node    | `prefix_len ‖ prefix ‖ state_mask ‖ tree_mask ‖ child_hashes` |
 | `0x06` | `GlobalRoot`                  | `StateRoot ‖ IndexRoot`                                       |
 
 Written out, the primary-state and index-term formulas are:
@@ -1603,7 +1750,7 @@ HASH_INDEX_NODE = Hash( 0x03 ‖ prefix_len ‖ prefix ‖ state_mask ‖ tree_m
 
 `leaf_paths` appears in none of these preimages — it is stored beside a node, never hashed with it.
 `0x06` matters for the same reason as the rest: the `GlobalRoot` preimage is otherwise 64 untagged
-bytes beginning with an arbitrary first byte of `StateRoot`, which may coincide with any node domain.
+bytes beginning with an arbitrary first byte of `StateRoot`, which may coincide with any trie-node domain.
 
 Domain prefixes separate _kinds_ of preimage; they do nothing about ambiguity _within_ a kind.
 Because preimages are flat concatenations rather than a self-describing encoding such as RLP, the
@@ -1628,13 +1775,13 @@ a trie holding no entries.
 ### Bare-Leaf Roots and Virtual Leaves
 
 Two structural facts about these tries shape how they are read and written: a single-item trie has no
-branch node at all, and in `CellTrie` and `IndexTrie` leaves are never stored.
+interior node at all, and in `CellTrie` and `IndexTrie` leaves are never stored.
 
 #### Single-item tries
 
-A patricia trie has no single-child branch node — an interior node with one child is pure extension
+A patricia trie has no single-child interior node — an interior node with one child is pure extension
 and collapses into that child's path. A trie holding exactly one item is therefore **a bare leaf,
-with no branch node**, and its root is that leaf's hash:
+with no interior node**, and its root is that leaf's hash:
 
 ```
 one cell        →  StateRoot = Hash( 0x00 ‖ trieKey ‖ typeTag ‖ cellValue ),  CellTrie holds no row
@@ -1642,15 +1789,17 @@ one index term  →  IndexRoot = Hash( 0x02 ‖ trieKey ‖ bitmapHash ),       
 no entries      →  EMPTY_ROOT
 ```
 
-Materialising a root branch node instead — a prefix plus a single slot — would produce a node the
+Materialising a root interior node instead — a prefix plus a single slot — would produce a node the
 canonical trie does not contain, and therefore a root the canonical merkleization never yields. This
 is not a rare state: for `BitmapTrie`, every term whose matching `recordID`s share a 48-bit prefix has
-exactly one container, which is every term while the database holds fewer than 65 536 records.
+exactly one container, which is every term while the allocator has minted fewer than 65 536
+`recordID`s. That is an allocation extent, not a live count — IDs are never reused, so after churn
+two live records can sit in different regions however few there are.
 
 The root's kind is not recorded anywhere and does not need to be. It is recovered by **probe and
 verify**:
 
-1. Look up the root hash in the trie table. A hit means a branch root — descend normally.
+1. Look up the root hash in the trie table. A hit means the root is an interior node — descend normally.
 2. A miss means a bare leaf (or an empty trie). Recompute the candidate leaf hash from the item
    itself and compare against the root.
 
@@ -1681,7 +1830,7 @@ entry point to descend from.
 #### Leaves are computed, not stored
 
 In `CellTrie` and `IndexTrie`, leaves are **not** stored as nodes. Raw cell values live in the flat
-`Cell` table and term roots in `Index`; branch nodes recompute their children's leaf hashes in RAM
+`Cell` table and term roots in `Index`; interior nodes recompute their children's leaf hashes in RAM
 during root updates and proof generation.
 
 The reason is storage: a leaf hash is already held once, in its parent's `child_hashes`.
@@ -1693,7 +1842,7 @@ unchanged — the leaf still exists logically, it is simply derived rather than 
 
 ```
 DYNAMIC LEAF CALCULATION IN RAM:
-Cell Identity:    recordID 42 ‖ "Price"
+Cell Identity:    recordID 100 ‖ "Price"
 Routing Path:     trieKey = Hash(identity) = 0x912a_adb0_3ce2... (64 nibbles)
 Cell Value:       typeTag(attribute, i32) ‖ 100
 
@@ -1704,8 +1853,8 @@ Because the preimage is the **whole** path, this hash depends only on the cell �
 trie happens to have split above it. A leaf hash is therefore computed exactly once per value change,
 by the writer who already holds both the identity and the value.
 
-**Worked example — `CellTrie` over three cells.** Two records, `user:100` (`recordID` 42) with
-`{Price: 100, Status: "Active"}` and `user:200` (`recordID` 43) with `{Price: 500}`, decompose into
+**Worked example — `CellTrie` over three cells.** Two records, `user:100` (`recordID` 100) with
+`{Price: 100, Status: "Active"}` and `user:200` (`recordID` 101) with `{Price: 500}`, decompose into
 three cells with routing paths `0x912a…3ce2`, `0x2197…9baa` and `0x9a95…1873`.
 
 ```mermaid
@@ -1714,15 +1863,15 @@ flowchart TB
         direction TB
         PR["<b>CellTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xR00T<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: []<br/>prefix_len: 0<br/>state_mask: 0b0000_0010_0000_0100<br/>tree_mask: 0b0000_0010_0000_0000<br/>child_hashes: [0xH222 · slot 2, 0xMID · slot 9]<br/>leaf_paths: [0x2197…9baa]"]
         PM["<b>CellTrie</b> row<br/>─────────────────────<br/><b><i>key:</i></b> node hash 0xMID<br/><b><i>value:</i></b> BranchNodeCompact<br/>prefix: []<br/>prefix_len: 0<br/>state_mask: 0b0000_0100_0000_0010<br/>tree_mask: 0b0000_0000_0000_0000<br/>child_hashes: [0xH111 · slot 1, 0xH333 · slot A]<br/>leaf_paths: [0x912a…3ce2, 0x9a95…1873]"]
-        PC["<b>Cell</b> rows<br/>─────────────────────<br/><b><i>key:</i></b> 42 ‖ Price · <b><i>value:</i></b> tag ‖ 100<br/><b><i>key:</i></b> 42 ‖ Status · <b><i>value:</i></b> tag ‖ 'Active'<br/><b><i>key:</i></b> 43 ‖ Price · <b><i>value:</i></b> tag ‖ 500"]
+        PC["<b>Cell</b> rows<br/>─────────────────────<br/><b><i>key:</i></b> 100 ‖ Price · <b><i>value:</i></b> tag ‖ 100<br/><b><i>key:</i></b> 100 ‖ Status · <b><i>value:</i></b> tag ‖ 'Active'<br/><b><i>key:</i></b> 101 ‖ Price · <b><i>value:</i></b> tag ‖ 500"]
         PR -- "child_hashes[1]" --> PM
         PR -. "leaf hash recomputed from" .-> PC
         PM -. "leaf hashes recomputed from" .-> PC
     end
     subgraph CANON["Canonical MPT — path-addressed"]
         direction TB
-        R["<b>BRANCH</b><br/>─────────────────────<br/><b><i>key:</i></b> path ⟨root⟩<br/><b><i>value:</i></b> Hash(0x01 ‖ branch payload)<br/>= 0xR00T"]
-        M["<b>BRANCH</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x9<br/><b><i>value:</i></b> Hash(0x01 ‖ branch payload)<br/>= 0xMID"]
+        R["<b>INTERIOR</b><br/>─────────────────────<br/><b><i>key:</i></b> path ⟨root⟩<br/><b><i>value:</i></b> Hash(0x01 ‖ node payload)<br/>= 0xR00T"]
+        M["<b>INTERIOR</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x9<br/><b><i>value:</i></b> Hash(0x01 ‖ node payload)<br/>= 0xMID"]
         L2["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x2197…9baa<br/><b><i>value:</i></b> Hash(0x00 ‖ path ‖ tag ‖ 'Active')<br/>= 0xH222"]
         L1["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x912a…3ce2<br/><b><i>value:</i></b> Hash(0x00 ‖ path ‖ tag ‖ 100)<br/>= 0xH111"]
         L3["<b>LEAF</b><br/>─────────────────────<br/><b><i>key:</i></b> path 0x9a95…1873<br/><b><i>value:</i></b> Hash(0x00 ‖ path ‖ tag ‖ 500)<br/>= 0xH333"]
@@ -1768,7 +1917,7 @@ shape-independent leaf hashes supply the rest:
   `leaf_paths[j]`: equal means an update in place, different means a split. Without it the two are
   indistinguishable, since the stored leaf hash covers the value that is about to change.
 
-Only leaf children need this. A branch child's path is already known from the walk — accumulated
+Only leaf children need this. An interior child's path is already known from the walk — accumulated
 prefix, slot nibble, and the child's own `prefix`.
 
 The cost is 32 bytes per leaf child, sitting in a copy-on-written node and therefore duplicated
@@ -1794,6 +1943,10 @@ hold state the root commits to, grey tables are derived or historical structures
 | `CellTrie`, `IndexTrie`                                          | Derived: their nodes are the materialised merkleization of `Cell` and `Index`. The **canonical** trie is committed; the table storing it is a physical layout choice ([§9](#9-trie-representation-canonical-vs-physical)) and can change without a state fork. |
 | `CellHistory`, `CellChangeSet`, `IndexHistory`, `IndexChangeSet` | They record **past** states, and the `GlobalRoot` commits the present one. Each historical state was committed by its own root when it was current.                                                                                                            |
 | `Superblock`                                                     | Format identifiers must be readable before decoding, and the head cannot commit to itself ([§4](#the-superblock)).                                                                                                                                             |
+
+The reserved records of [§4](#4-system-admin-and-user-records) live in `Cell`, so the commitment binds the
+engine's own bookkeeping as well as the user's data; a conformant engine must reproduce it byte for
+byte ([Appendix A](#appendix-a--normative-surface)).
 
 Three observations are easy to lose here.
 
@@ -1835,10 +1988,10 @@ Three upgrade paths are open. The first two are **non-breaking** — neither cha
 trie, so neither requires a state fork; the third changes what keys look like and is therefore a
 migration in its own right.
 
-1. **Reth-style leaf hash stripping in `CellTrie`.** Today a branch node stores a 32-byte hash for
+1. **Reth-style leaf hash stripping in `CellTrie`.** Today an interior node stores a 32-byte hash for
    every active child, leaves included — so a leaf hash is persisted once even though the value it
    commits to lives in `Cell` anyway. A future revision can strip those from
-   `BranchNodeCompact::child_hashes` on disk, persisting hashes _only_ for sub-branch children, and
+   `BranchNodeCompact::child_hashes` on disk, persisting hashes _only_ for interior-node children, and
    recompute leaf hashes from raw `Cell` values whenever a node is loaded. This substantially reduces
    `CellTrie`'s disk footprint, since leaves are the majority of children in a wide trie. The cost is
    that proofs against **historical** commits become more involved: recomputing a leaf hash requires
@@ -1872,7 +2025,7 @@ be changed without forking the state.
 
 **Canonically, a Merkle Patricia Trie is addressed by path.** A node's identity is the accumulated
 sequence of nibbles consumed from the root to reach it, and its value is the hash of its payload. Node
-hashes are defined recursively — a branch hashes its own structure together with its children's hashes
+hashes are defined recursively — an interior node hashes its own structure together with its children's hashes
 — so the single root hash binds the entire structure and every value beneath it. This is the only
 representation the protocol cares about: **the state commitment is a function of the canonical trie
 alone**, and the canonical definition says nothing about how nodes are laid out on disk.
@@ -1880,7 +2033,7 @@ alone**, and the canonical definition says nothing about how nodes are laid out 
 **Physically, the engine stores each node keyed by the hash of its own payload** (`Key = HASH_NODE`),
 which has three consequences:
 
-- **Nodes are immutable.** A node's key is derived from its content, so a modified node is a
+- **Trie nodes are immutable.** A node's key is derived from its content, so a modified node is a
   _different_ node with a different key. Writes never overwrite; they append.
 - **Updates are copy-on-write.** Changing a leaf re-hashes every node on its path to the root,
   producing a new root; every node _not_ on that path keeps its key and is referenced by both the old
@@ -1928,7 +2081,7 @@ migrated between them, which makes the consequences concrete:
   nibble path and hold only the current state's
   [`BranchNodeCompact`](https://reth.rs/docs/reth_trie/index.html) nodes — the same struct this engine
   adopts. History lives in change-sets and history indices, the pattern mirrored in
-  [§7](#7-historical-data-and-bitemporality). Historical proofs are therefore _derived_: reth reverts
+  [§7](#7-point-in-time-history). Historical proofs are therefore _derived_: reth reverts
   state in memory from those change-sets and recomputes the trie, bounded by a proof window
   (`--rpc.eth-proof-window`). Deep historical proofs are correspondingly expensive and memory-hungry,
   which is why downstream forks are building versioned trie-node stores to turn historical proof
@@ -1938,7 +2091,7 @@ The pattern is consistent: path-based storage wins on the footprint of the _curr
 to re-acquire history through a second structure — reverse diffs, change-sets, or a versioned node
 store. Golem DB deliberately takes the other branch. Content-addressing keeps every historical root
 directly walkable, so a proof at commit 150 is the same operation as a proof at the tip, and the
-change-set tables of [§7](#7-historical-data-and-bitemporality) exist to time-travel _values_, not to
+change-set tables of [§7](#7-point-in-time-history) exist to time-travel _values_, not to
 reconstruct tries. The bill for that choice is the disk footprint and the garbage collection named
 below.
 
@@ -1946,11 +2099,11 @@ below.
 
 | Property               | Content-addressed storage (chosen)                                                               | Path-based physical storage                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| **Bitemporal history** | **Native copy-on-write:** updating a node writes a new hash key; past state roots remain intact. | **Destructive in-place writes:** overwrites path keys; requires auxiliary change-set logs for history. |
+| **History**            | **Native copy-on-write:** updating a node writes a new hash key; past state roots remain intact. | **Destructive in-place writes:** overwrites path keys; requires auxiliary change-set logs for history. |
 | **Node prefix splits** | **Append-only:** writing a split node creates a new payload hash without deleting existing keys. | **Complex renames:** shrinking prefixes require deleting old path keys and re-inserting children.      |
 | **Deduplication**      | **Automatic:** identical sub-tries share physical MDBX keys (subject to the caveat above).       | **None:** storage footprint scales linearly per key path.                                              |
 | **Addressing a node**  | Only top-down: a node's key is unknown until its parent has been read.                           | Direct: any node can be point-sought by its path without walking the trie.                             |
-| **Disk footprint**     | Higher, due to orphaned historical branch nodes (requires periodic garbage collection).          | Minimal; holds only current state in place.                                                            |
+| **Disk footprint**     | Higher, due to orphaned historical interior nodes (requires periodic garbage collection).        | Minimal; holds only current state in place.                                                            |
 
 ---
 
@@ -2113,8 +2266,9 @@ sequenceDiagram
     H->>G: op2 — budget OK
     Note over G: B(N,1) modified — mod 3
     H->>G: op3 — budget FAILED
-    Note over G: mod 4 applied, then rollback()
-    Note over G: frame 2 undone — back at checkpoint 1
+    Note over G: nothing applied — the call aborts atomically, OutOfBudget returned
+    H->>G: rollback()
+    Note over G: frame 2 undone — mod 2 and mod 3 gone, back at checkpoint 1
 
     Note over H: TX3
     H->>G: op1 — budget OK
@@ -2133,9 +2287,11 @@ sequenceDiagram
 _Figure 10 — One block, from the host's side and the engine's. Block building opens branch `B(N,1)`
 over head commit `N`. Each transaction's operations apply in order against the branch's
 work-in-progress state, each metered against its budget. `TX1` lands one modification, sealed by
-`checkpoint 1`. `TX2` lands two more, then its third operation exceeds budget, and `rollback` returns
-the branch to `checkpoint 1` — discarding all of `TX2`. `TX3` re-advances from that same state and is
-sealed by `checkpoint 2`. Block completion commits the branch as `Commit N+1`._
+`checkpoint 1`. `TX2` lands two more, then its third operation exceeds budget and applies nothing;
+the host calls `rollback`, which returns the branch to `checkpoint 1` — discarding all of `TX2`.
+`TX3` re-advances from that same state and is
+sealed by `checkpoint 2`. Block completion commits the branch as `Commit N+1`. This is the simple
+case; Figure 11 below shows a transaction that must keep its fee through a failure._
 
 Four things in the figure are worth reading closely:
 
@@ -2144,8 +2300,11 @@ Four things in the figure are worth reading closely:
    no coordination between them.
 2. **A checkpoint marks a transaction boundary.** It appears at the _start_ of each new transaction,
    which is the same event as sealing the previous one.
-3. **Rollback discards the whole transaction, not just the failing operation.** `mod 2`, `mod 3` and
-   `mod 4` all disappear, because the frame — not the operation — is the unit of atomicity.
+3. **A failed call applies nothing; rollback discards the rest of the transaction.** `op3` aborts
+   atomically with `OutOfBudget` and leaves no modification behind — that is the engine's
+   call-level atomicity (property 7: no partial results). `mod 2` and `mod 3` _succeeded_; undoing
+   them is the host's decision, taken by calling `rollback()`. The frame is the unit of _batch_
+   atomicity, and the engine supplies the mechanism, not the decision.
 4. **State is genuinely restored, not compensated.** `TX3` produces `mod 2` and `mod 3` again, at the
    same positions `TX2` occupied. The branch really is back at `checkpoint 1` and re-advances from
    there; nothing of the abandoned transaction remains to be stepped over.
@@ -2156,6 +2315,42 @@ Four things in the figure are worth reading closely:
 > That needs one more checkpoint inside the transaction: seal the pre-execution patches, run the
 > operation batch, and roll back on failure — which undoes only the batch and leaves the patches
 > standing.
+
+```mermaid
+sequenceDiagram
+    participant H as Host — Arkiv / other chain
+    participant G as Golem DB
+
+    Note over G: branch B(N,1), TX1 applied
+
+    Note over H: TX2
+    H->>G: checkpoint()
+    Note over G: checkpoint 1 seals TX1
+    H->>G: fee op — debit the sender's full budget
+    Note over G: fee debited
+    H->>G: checkpoint()
+    Note over G: checkpoint 2 seals the fee
+    H->>G: op1 — budget OK
+    Note over G: user modification
+    H->>G: op2 — budget FAILED
+    Note over G: nothing applied — OutOfBudget returned, carrying spent
+    H->>G: rollback()
+    Note over G: user frame undone — back at checkpoint 2, fee still debited
+    H->>G: settle op — refund the unused budget, from spent
+    Note over G: refund applied
+
+    Note over H: TX3
+    H->>G: checkpoint()
+    Note over G: checkpoint 3 seals TX2 — fee and refund, no user effects
+```
+
+_Figure 11 — The same failure as `TX2` in Figure 10, for a transaction that must keep its fee. The
+host puts a second checkpoint inside the transaction, after its pre-execution patches, so the one
+`rollback()` after `OutOfBudget` undoes only the user operations. The engine reports the cost in
+`OutOfBudget{spent}`; it never charges anyone itself, so the settlement is an ordinary host write.
+A second `rollback()` would reach past `checkpoint 2` and undo the fee as well (see
+"`rollback()` is not idempotent" above). If D16 is decided as recommended, a rollback on the
+now-empty frame is instead an error and pops nothing._
 
 > **Checkpoints rather than `fork` / `merge`.** A checkpoint frame _is_ a forked child branch, minus
 > the handle and minus the second overlay, and the nesting any real caller needs is strictly
@@ -2182,7 +2377,7 @@ for what the branch has touched.
 | Deliberately **not** mirrored                                    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CellTrie`, `IndexTrie`                                          | These exist solely to produce `StateRoot` and `IndexRoot`, needed **only at commit**. Maintaining them per operation would re-hash a root-to-leaf path on every write and throw the intermediate roots away — a cell written five times would be hashed five times. Deferring merkleization to commit collapses that to one pass over the branch's _net_ touched set. Branches serve no proofs, so nothing reads a root in between. |
-| `CellHistory`, `CellChangeSet`, `IndexHistory`, `IndexChangeSet` | All four are keyed by `commitNr`, which a branch does not have. They are written at commit, from the branch's net diff.                                                                                                                                                                                                                                                                                                             |
+| `CellHistory`, `CellChangeSet`, `IndexHistory`, `IndexChangeSet` | All four record a `commitNr`, which a branch does not have: the change-set tables carry it in their key, the history tables append it to their `Roaring64` value. They are written at commit, from the branch's net diff.                                                                                                                                                                                                                                                                                                             |
 | `#roots`, the `Superblock` head                                  | Per-commit singletons, written once by the commit itself.                                                                                                                                                                                                                                                                                                                                                                           |
 
 #### Tombstones and the deleted-record set
@@ -2207,7 +2402,7 @@ remove. Deletion must therefore be recorded **positively**, at two granularities
 The set is written only by `delete`, and cleared for an ID only when a `delete` is rolled back. It is
 derivable from the change-set log by scanning it for `delete` entries, but is materialised because
 that scan would otherwise run on every read — it stands to the log exactly as `CellHistory` stands to
-`CellChangeSet` in [§7](#7-historical-data-and-bitemporality): a reverse index that turns a scan into
+`CellChangeSet` in [§7](#7-point-in-time-history): a reverse index that turns a scan into
 a lookup.
 
 Reading cell `c` of the record with id `R` — a caller-supplied `recordKey` is first resolved to `R`
@@ -2242,7 +2437,7 @@ different prefix.
 
 The overlay holds the _current_ branch state; it cannot undo anything on its own. Reversal is driven
 by an append-only log of operations paired with their pre-images — the branch-layer analogue of
-`CellChangeSet` ([§7](#7-historical-data-and-bitemporality)), keyed by checkpoint instead of by
+`CellChangeSet` ([§7](#7-point-in-time-history)), keyed by checkpoint instead of by
 commit:
 
 ```rust
@@ -2367,13 +2562,24 @@ adopted. A sealed branch is precisely a **computed-but-not-adopted state**: a no
 over the same head at once — competing candidates — and whichever is adopted commits while the rest
 die by first-committer-wins, leaving no trace. For a blockchain host the correspondence is exact:
 
-| Ethereum Engine API                          | ABCI (CometBFT)   | Golem DB                                      |
-| -------------------------------------------- | ----------------- | --------------------------------------------- |
-| `forkchoiceUpdated(head, payloadAttributes)` | `PrepareProposal` | `begin()`                                     |
-| execute the transactions                     | —                 | writes on the branch                          |
-| `getPayload` → payload carrying `stateRoot`  | proposal returned | **`seal(b)`**                                 |
-| `newPayload` on a validating node            | `ProcessProposal` | `begin` · replay · **`seal`** · compare roots |
-| `forkchoiceUpdated(newHead)`                 | `FinalizeBlock`   | **`commit(b)`**                               |
+| Ethereum Engine API                          | ABCI 2.0 (CometBFT v0.38)                          | Golem DB                                      |
+| -------------------------------------------- | -------------------------------------------------- | --------------------------------------------- |
+| `forkchoiceUpdated(head, payloadAttributes)` | `PrepareProposal`                                  | `begin()`                                     |
+| execute the transactions                     | inside `PrepareProposal` (immediate execution)     | writes on the branch                          |
+| `getPayload` → payload carrying `stateRoot`  | proposal returned; candidate state held            | **`seal(b)`**                                 |
+| `newPayload` on a validating node            | `ProcessProposal`                                  | `begin` · replay · **`seal`** · compare roots |
+| —                                            | `FinalizeBlock` → `app_hash` (nothing persisted)    | the decided candidate's `SealedCommit` roots  |
+| `forkchoiceUpdated(newHead)`                 | `Commit` ("persist application state")             | **`commit(b)`**                               |
+
+The ABCI column follows the v0.38 method spec: `FinalizeBlock` executes the decided block — or
+applies the candidate state from `PrepareProposal`/`ProcessProposal` — and returns `app_hash`;
+CometBFT then calls `Commit`, at the end of which the application "is expected to persist its
+state" ([abci++_methods, _FinalizeBlock_ usage and step 8 of "When does CometBFT call
+`FinalizeBlock`"; _Commit_ usage](https://github.com/cometbft/cometbft/blob/v0.38.x/spec/abci/abci%2B%2B_methods.md)).
+One difference from the Engine API is worth knowing: ABCI defers the app hash by a block —
+`ResponseFinalizeBlock.app_hash` for height _H_ becomes `Header.AppHash` of block _H+1_ — so a
+validator's `ProcessProposal` for _H_ has no proposed root to compare its own `seal` against; the
+comparison happens when block _H+1_'s header is checked.
 
 A validating node answers _valid_ from `seal` alone, with no durable write in the path at all.
 
@@ -2401,7 +2607,10 @@ experiences all nine as one operation.
    `Superblock` head — the lag-one rule of [§4](#roots-recordid-2). It happens before merkleization
    because that cell is part of the state the new root covers.
 4. **Net diff, from the overlay — not the log.** The overlay already _is_ the net result of every
-   surviving operation; a cell written five times appears once. The log plays no part here. Its one
+   surviving operation; a cell written five times appears once. The branch's `#alloc` cell is one of
+   those overlay cells — advanced per `create` ([above](#the-in-memory-overlay)) — so the allocator's
+   high-water mark enters the net diff here and is covered by the root like any other touched cell.
+   The log plays no part here. Its one
    contribution is free: the **oldest** log entry touching a given cell holds that cell's value at the
    origin commit, which is exactly the pre-image `CellChangeSet` needs — so the change-set pre-images
    require no additional reads of committed state.
@@ -2413,9 +2622,9 @@ experiences all nine as one operation.
    — _nothing above this line has touched disk_ —
 
 7. **Persist**, inside a single MDBX write transaction so the whole of it is atomic with respect to
-   readers and to crashes: every row computed in steps 3–6.
-8. **Advance the `Superblock` head** to `(commitNr, StateRoot, IndexRoot)`, and the `#alloc` cell to
-   the branch's private high-water mark. The guard of step 1 is re-checked here, since an arbitrary
+   readers and to crashes: every row computed in steps 3–6, the `#alloc` cell among them.
+8. **Advance the `Superblock` head** to `(commitNr, StateRoot, IndexRoot)`. The guard of step 1 is
+   re-checked here, since an arbitrary
    interval may have passed since the seal.
 9. **Invalidate every other open branch** whose origin is the superseded head. This needs no eager
    sweep: the handles carry the stale `commitNr`, so the next call on any of them detects it.
@@ -2442,7 +2651,7 @@ prefix, pays for one root-to-leaf rewrite per distinct leaf rather than one per 
 
 Everything up to here stores **state**: records decomposed into cells, indexed, committed and historised. A host built on this engine may also produce data that is not state at all. The motivating case is a blockchain — block headers, transaction bodies and receipts — but the shape generalises: an append-only log of large opaque values, produced one batch per commit, never queried by content, outside the commitment, and useful only for as long as the commits it belongs to are retained.
 
-This chapter proposes a home for such data that leaves Golem DB a generic engine. It gains **append-only, ordinal-addressed byte segments attached to commits**; it learns nothing about what a receipt is.
+This chapter gives such data a home that leaves Golem DB a generic engine — the **immutable log** of requirement SE-1. The engine gains **append-only, ordinal-addressed byte segments attached to commits**; it learns nothing about what any row means.
 
 ### Why Cells Are the Wrong Shape
 
@@ -2450,15 +2659,15 @@ Five properties put this data outside the cell model, and each is a separate arg
 
 - **Never queried by content.** No predicate ever selects a receipt by its fields, so every index term it would produce is dead weight. The `attribute`/`field` distinction of [§3](#cell-kinds-and-types) already lets a caller opt out of indexing, but that is the only cost it removes.
 - **Individually large.** A block body is orders of magnitude larger than a typical cell value.
-- **Outside the commitment.** Golem DB's `GlobalRoot` commits present state. A block body is not state; a chain commits it through its own header, not through the state root.
+- **Outside the commitment.** Golem DB's `GlobalRoot` commits present state. A block body is not state; a chain commits it through its own header, not through the state root. The rows themselves never enter the state trie. Whether a per-commit _digest_ of them does, and whether the engine or the host commits it, is open (`CHANGES.md` D19; record 5 is reserved for it).
 - **Retention-bound lifetime.** Its useful life tracks the commit-history retention window, not any record's lifetime.
 - **It may have to contain the commitment itself.** A block header carries the state root of the very commit it belongs to. Written as a cell that is circular — the cell would be part of the state whose root it is recording, so the root would have to be known before the cell that changes it. This is the same self-reference that keeps the head out of committed state, and unlike the four above it is not a matter of cost: it is structurally impossible.
 
 Performance points the same way. Three costs, none of which the cell model can avoid:
 
-- **Page-locality pollution.** MDBX is one B+tree per table. Large values inflate the tree that the queryable data shares, so a range scan over `Index` walks pages that are mostly payload it will never read.
-- **Copy-on-write write amplification.** Every cell write is a copy-on-write path rewrite ([§8](#depth-bounds-and-future-optimization-paths)) plus a change-set pre-image ([§7](#7-historical-data-and-bitemporality)). Both are the right price for data that is mutated and time-travelled; both are pure waste for data that is written once and never touched again.
-- **Forgone compression.** Cell values are hashed individually into the commitment, so they cannot be compressed against one another. A column of receipts compresses extremely well against a shared dictionary — but only if something is allowed to look across rows.
+- **Page-locality pollution.** MDBX is one B+tree per table. Large `field` values live in `Cell`, not on the pages an `Index` scan walks — but they inflate `Cell`, where record reconstruction, sort-value fetches and projection reads are point-seeks into the same tree, and they compete for the one page cache and memory map every table shares. The pressure falls on `Cell` locality and on the cache, not on the index scan itself.
+- **Copy-on-write write amplification.** Every cell write is a copy-on-write path rewrite ([§8](#depth-bounds-and-future-optimization-paths)) plus a change-set pre-image ([§7](#7-point-in-time-history)). Both are the right price for data that is mutated and time-travelled; both are pure waste for data that is written once and never touched again.
+- **Forgone compression.** Cell values are hashed individually into the commitment, and the chosen physical layout stores each as its own MDBX value, so nothing compresses them against one another. The commitment does not forbid a layout that compresses rows together and restores canonical bytes for hashing; such a layout would charge every point read a group decompression, which is the trade this design declines. A column of receipts compresses extremely well against a shared dictionary — but only if something is allowed to look across rows.
 
 ### The Model
 
@@ -2482,7 +2691,7 @@ bodies_500000_1000000     commits 500 000 … 999 999
 receipts_0_500000         …
 ```
 
-Ordinals run across a segment, not within a shard, so a shard covers a contiguous ordinal range as well as a contiguous commit range. Which shard holds ordinal _n_ is answered the same way everything else is — `mark` at the shard's first commit gives the ordinal it starts at ([§11](#the-system-segment)).
+Ordinals run across a segment, not within a shard, so a shard covers a contiguous ordinal range as well as a contiguous commit range. Which shard holds ordinal _n_ is answered the same way everything else is — a shard whose first commit is `S` starts at `mark(S−1)`, the mark of the commit _before_ it, since a mark is the exclusive end of its commit's run ([§11](#the-system-segment)).
 
 The shape mirrors the primary store one level down: **a row is to a segment what a record is to `Cell`, and a column is to a row what a cell is to a record.** The differences are exactly the ones that make a segment cheap — cells are named and sparse, columns are positional and fixed; cells are typed, columns are not; cells are mutable and historised, rows are written once.
 
@@ -2497,9 +2706,9 @@ The chapter specifies a **format contract** rather than a file layout. A conform
 - **Single-row decode**, so a point read does not decompress its neighbours ([§11](#genesis-declaration)).
 - **Sharded by commit span**, so pruning is a file deletion.
 
-The intended implementation is **reth's NippyJar**, the format behind its static files: an append-only columnar container with per-column compression — `zstd`, optionally with a trained dictionary, or `lz4` — and an offset list giving random access by row number, alongside a small configuration file describing the container. It satisfies all four requirements directly, and [arkiv-execution-client.md](../arkiv-execution-client.md) already identifies reth's static files as a full-fit reuse candidate: _"the immutable block ledger — a log every chain has."_ _That characterisation of NippyJar should be validated against reth's source before this document relies on it, per the standing caveat on reth claims._
+The intended implementation is **reth's NippyJar**, the format behind its static files: an append-only columnar container with per-column compression — `zstd`, optionally with a trained dictionary, or `lz4` — and an offset list giving random access by row number, alongside a small configuration file describing the container. It satisfies all four requirements directly, and [arkiv-execution-client.md](../arkiv-execution-client.md) already identifies reth's static files as a full-fit reuse candidate: _"the immutable block ledger — a log every chain has."_ (Characterisation of NippyJar unverified against reth's source: `CHANGES.md` T01.)
 
-> **Open — are columns typed?** As written they are not: a column holds raw bytes and the application owns their format entirely, which is what keeps the engine ignorant of what a receipt is. The alternative is that a segment declares a type from [§3](#cell-kinds-and-types) per column, so a column carries a `typeTag` exactly as a cell value does — which would make segments self-describing, let tooling render them without application code, and complete the record/cell parallel above. The cost is dragging the type system into a structure that exists precisely to hold opaque payloads, and pinning at genesis the encoding of data the application may want to version independently. Unresolved.
+> **Open — are columns typed?** Moved to [Open Questions](#open-questions), D17.
 
 ### Writing Against a Sealed Commit
 
@@ -2565,6 +2774,21 @@ range of `bodies` in commit 2  =  [5, 5)  =  empty
 
 `mark(−1)` is 0 by definition, so commit 0's range needs no special case.
 
+**Marks are absolute high-water values**, not counts of rows physically present. Pruning a shard deletes rows and renumbers nothing, so every saved mark keeps its meaning and `mark(n)[seg]` for a retained commit is unchanged by the loss of older shards.
+
+**A shard's first ordinal follows the same arithmetic.** A shard whose first commit is `S` starts at `mark(S−1)[seg]`, not `mark(S)[seg]` — the latter is the _end_ of commit `S`'s run, and the two differ whenever commit `S` appends anything:
+
+```
+shardSpan = 500 000
+mark(499 999)[bodies] = 3
+commit 500 000 appends 2 rows to `bodies`        ordinals 3,4
+mark(500 000)[bodies] = 5
+
+bodies_500000_1000000 starts at ordinal 3  =  mark(499 999)    not 5
+```
+
+An empty boundary commit hides the difference (`mark(S−1) = mark(S)`), which is why a check of this rule must use a nonempty one. `mark(S−1)` is held by the system segment's _previous_ shard; what survives of it once that shard is pruned is open (`CHANGES.md` D05).
+
 The row is written **unconditionally at every commit**, including commits that append nothing anywhere. That is what makes `ordinal == commitNr` hold, and it costs roughly eight bytes per segment per commit.
 
 Holding these marks in a **cell** record instead would have been the more uniform choice, and it is the wrong one: cells are live state and are never pruned, so a per-commit mark cell would accumulate forever exactly as `#roots` does. A segment prunes with its shard.
@@ -2578,7 +2802,7 @@ recovery, given MDBX head N  →  truncate the system segment to N+1 rows
                              →  read row N
                              →  truncate each segment to mark(N)[seg] rows
 
-rewind(to)                   →  the same, against `to`
+rewind(to)                   →  the same, against `to`       (not in v1: D02)
 ```
 
 Truncating "to `mark(N)[seg]` rows" is exact precisely because the mark is a count: keep ordinals `0 … mark−1`, discard the rest.
@@ -2598,7 +2822,7 @@ That is deliberate. A `one-per-commit` declaration would be marginally faster �
 
 **`truncate` and `prune` are not in the API.** Truncation is internal to crash recovery and `rewind`; pruning is the engine's existing retention mechanism, extended to drop whole shards whose commit span has fallen entirely outside the window. A host never asks for either.
 
-`rewind(to)` uses the **mirror of commit's ordering — MDBX first, then truncate segments** — for the same reason commit orders them the other way: in the window between the two, segments ahead of MDBX is recoverable and MDBX ahead of segments is not. A property falls out of this that is worth naming: cells and segments unwind _together_, cells by change-set replay and segments by truncation, so a host's own mapping cells revert alongside the commits they describe with no separate fix-up.
+`rewind(to)` is not in v1 (`CHANGES.md` D02); what follows is the mechanism it will use. It uses the **mirror of commit's ordering — MDBX first, then truncate segments** — for the same reason commit orders them the other way: in the window between the two, segments ahead of MDBX is recoverable and MDBX ahead of segments is not. A property falls out of this that is worth naming: cells and segments unwind _together_, cells by change-set replay and segments by truncation, so a host's own mapping cells revert alongside the commits they describe with no separate fix-up.
 
 Two additions to the shared surfaces:
 
@@ -2617,7 +2841,7 @@ Two additions to the shared surfaces:
 - **Compression is engine-owned**, declared per segment (`none` / `lz4` / `zstd` / `zstd-dict`). Rows go in and come out as plain bytes. This is where dictionary compression pays, and it needs to see across rows to work at all — which is exactly what the cell model cannot offer. **One constraint, not a tuning choice: compression must permit single-row decode.** If a shard compressed as a unit, a point read would decompress the whole shard.
 - **No row-size cap.** An oversize row surfaces at `commit` rather than at `immutable_data_append` — the same late-failure class [§10](#committing-a-branch) already documents for MDBX's own key and value limits, so it is consistent with the existing stance rather than a new hole.
 
-Because `#params` is immutable ([§4](#params-recordid-0)), **the segment set is fixed at genesis**, and a deployment should declare generously. For a chain that means declaring `withdrawals` and blob-sidecar segments from the start: a Cancun-style upgrade introducing a new per-block segment would otherwise require a new genesis. Should that prove too rigid, the declaration graduates to the admin class with activation semantics, exactly as the metering model does.
+Because `#params` is immutable ([§4](#params-recordid-0)), **the segment set is fixed at genesis**, and a deployment should declare generously. For a chain that means declaring `withdrawals` and blob-sidecar segments from the start: a Cancun-style upgrade introducing a new per-block segment would otherwise require a new genesis. Requirement CS-5 makes the declared segments instance parameters, so relaxing this would be a requirement change, not an engine option.
 
 ### What This Assumes of the Schema
 
@@ -2629,20 +2853,20 @@ Two additions beyond the segments themselves.
 | -------------------- | -------------------- | ------------------------------- |
 | `GlobalRoot: B256`   | `commitNr: u64` (BE) | which commit produced this root |
 
-Written lag-one alongside `#roots`; the `#recordKeys` construction of [golem-db-design.md §4](#recordkeys-recordid-3) applied to commits. It is well-defined because every commit writes the previous commit's `#roots` cell, so state changes at every commit and roots are therefore unique. It costs one cell and one trie path per commit, and buys root → commit lookup plus non-inclusion proofs for roots.
+Written lag-one alongside `#roots`; the `#recordKeys` construction of [§4](#recordkeys-recordid-3) applied to commits. It is well-defined because every commit writes the previous commit's `#roots` cell, so state changes at every commit and roots are therefore unique. It costs one cell and one trie path per commit, and buys root → commit lookup plus non-inclusion proofs for roots.
 
 What this gives a host is a **commit lookup by hash**, which is the shape a chain API needs to resolve a block number from a block hash. Whether it serves that directly depends on the host: `GlobalRoot` is the engine's own commit identity, so it works when the application defines its block hash as that root, and does not when the application's block hash covers a header carrying `parentHash`, `transactionsRoot`, a timestamp and other things Golem DB knows nothing about. In the second case the host keeps its own mapping and `#rootIndex` remains a general utility — a way to ask which commit produced a given root, and to prove that no commit produced one.
 
 ### Rejected Alternatives
 
-> **Commit first, then write the immutable data.** The obvious shape — `commit()` durably, then a second call — and the ordering is backwards. With two durable stores there is always a crash window, and only the direction matters: **MDBX ahead of segments is unrecoverable**, because a committed block whose body was never written cannot be reconstructed from anything the engine holds; **segments ahead of MDBX is trivially recoverable**, by truncating to the last committed mark. Appending and fsyncing segments before the MDBX transaction, and truncating on startup, is the pattern reth uses for static files. _That characterisation of reth should be validated against its source before this document relies on it_, per the standing caveat on reth claims in [arkiv-execution-client.md](../arkiv-execution-client.md).
+> **Commit first, then write the immutable data.** The obvious shape — `commit()` durably, then a second call — and the ordering is backwards. With two durable stores there is always a crash window, and only the direction matters: **MDBX ahead of segments is unrecoverable**, because a committed block whose body was never written cannot be reconstructed from anything the engine holds; **segments ahead of MDBX is trivially recoverable**, by truncating to the last committed mark. Appending and fsyncing segments before the MDBX transaction, and truncating on startup, is the pattern reth uses for static files. (Unverified against reth's source: `CHANGES.md` T02.)
 
 > **A blob cell type** — a cell whose value is the content hash of a payload held out of line. The hash, not an ordinal: an ordinal would leave the content uncommitted, so two databases holding different payloads would share a state root. With the hash, `CellTrie` commits the content exactly as it commits any other value and the cell row stays 32 bytes.
 >
 > Rejected on three counts, none of them about the commitment:
 >
-> - **Nothing prunes it.** Cells are live state. A hash cell outlives the blob it references, and no record's deletion removes it, so the references accumulate without bound while the payloads they name are reclaimed.
-> - **It has no pre-image.** Rollback and change-sets require the prior value of every mutation ([§10](#the-change-set-log-and-rollback)). An append-only blob has none to give.
+> - **Nothing prunes the payload.** A hash cell goes away when its record is deleted or the cell is patched, like any cell — but nothing removes the payload it named. Without reference counting across every cell that may hold the same hash, a lifecycle policy this chapter would then have to design, payloads accumulate while references come and go.
+> - **The payload has no pre-image.** The reference cell behaves like any cell: a create logs an absent pre-image ([§10](#the-change-set-log-and-rollback)). But rolling that create back must also unwrite the payload it pointed at, and an append-only blob store has no undo for it — the payload stays orphaned, which is the previous point again.
 > - **Content addressing is not ordinal addressing.** A hash locates one blob and carries no order. The rows a commit appended, contiguous reads and truncate-by-offset — the three mechanisms this chapter rests on — all require ordinals.
 
 ---
@@ -2689,7 +2913,8 @@ A sort term is a triple:
 (name, type, direction)
 ```
 
-The type is not decoration. Kind and type are fixed **per record** ([§3](#cell-kinds-and-types)), so
+The type is not decoration. Kind and type are properties of the stored cell, not of the name
+([§3](#cell-kinds-and-types)), so
 one cell name may carry an `i32` in one record and a `u256` in another, and the values under a single
 name need not share an encoding at all. A sort term names the encoding it wants, and every fetched
 cell is tested against it:
@@ -2757,32 +2982,32 @@ permutation.
 Six matched records, sorted by `(status ASC, amount DESC)`:
 
 ```
-match set  { 42, 43, 44, 45, 46, 47 }
+match set  { 100, 101, 102, 103, 104, 105 }
 
 LEVEL 1 — fetch `status` for all six                          6 fetches
 
-    42 "active"      44 "active"      45 "active"
-    43 "closed"      46 "closed"
-    47 "pending"
+    100 "active"     102 "active"     103 "active"
+    101 "closed"     104 "closed"
+    105 "pending"
 
-    groups:   active {42,44,45}    closed {43,46}    pending {47}
+    groups:   active {100,102,103}   closed {101,104}   pending {105}
               └── ≥2, descend ──┘  └─ ≥2, descend ┘  └ singleton, done ┘
 
 LEVEL 2 — fetch `amount` only within groups of ≥ 2            5 fetches
 
-    42 → 100    44 → 300    45 → 100          43 → 50    46 → 70
+    100 → 100   102 → 300   103 → 100          101 → 50   104 → 70
 
-    active, amount DESC :  44(300)  then  42(100) 45(100)  ← still tied
-    closed, amount DESC :  46(70)   43(50)
+    active, amount DESC :  102(300)  then  100(100) 103(100)  ← still tied
+    closed, amount DESC :  104(70)   101(50)
 
-TIE-BREAK — 42 and 45 remain tied; ascending recordID
+TIE-BREAK — 100 and 103 remain tied; ascending recordID
 
-RESULT     44   42   45   46   43   47
+RESULT     102   100   103   104   101   105
 
 fetches    6 + 5 = 11                       worst case  N × S = 12
 ```
 
-`47` is never read twice: `"pending"` is a group of one, so its position was settled at level 1 and
+`105` is never read twice: `"pending"` is a group of one, so its position was settled at level 1 and
 its `amount` is never fetched. That single saved lookup is the whole of the level-2 rule at small
 scale; over a match set where one value dominates, it is the difference between S passes and one.
 
@@ -2894,8 +3119,9 @@ An **offset** jumps. It indexes the sorted array directly, reaching any position
 the ones before it.
 
 A request may carry both, alongside an explicit `at`. Which of the overlapping values takes
-precedence is an interface decision rather than an architectural one and is settled with the API
-surface; what matters here is that a cursor's position, its commit and its routing hint are
+precedence is an interface decision rather than an architectural one and belongs to the API
+surface (not yet stated there: `CHANGES.md` D11); what matters here is that a cursor's position, its
+commit and its routing hint are
 independent of one another, so naming any of them directly leaves the rest in force.
 
 #### The position key
@@ -3031,7 +3257,7 @@ stores members in **ascending numeric order** — that ordering is what makes it
 sort by `amount DESC` puts `recordID`s in an order unrelated to their values, and an arbitrary
 permutation is not representable as a bitmap at all.
 
-| query        | what is held                 | size                                                                                                    | page k                               |
+| query        | what is held                 | size                                                                                                    | page                                |
 | ------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | **sorted**   | an explicit `Vec<recordID>`  | 8 B per matched record — 8 MB per million                                                               | binary search on the key, then slice |
 | **unsorted** | the Roaring match set itself | compressed; the dense monotonic IDs of [§2](#table-dictionary) run-compress to a small fraction of that | iterate from the key, skipping       |
@@ -3064,7 +3290,8 @@ The **operator** therefore captures the saving, not the caller.
 
 ### Open Question on Paging
 
-> **Open — what the fingerprint covers, and what may vary between pages.** The floor is fixed: a
+> **Open — what the fingerprint covers, and what may vary between pages** (tracked as D11 in
+> [Open Questions](#open-questions)). The floor is fixed: a
 > cursor's key is uninterpretable against a different ordering, so the fingerprint must cover
 > whatever determines membership and order. The ceiling is not. A **same-sequence** scope covers
 > only that, letting `projection` and `limit` differ from page to page because neither can move a
@@ -3080,3 +3307,62 @@ The **operator** therefore captures the saving, not the caller.
 > Naming the inputs that matter is correct only against today's query surface and under-covers
 > silently the moment a third is added, with no error to signal the gap; naming the small closed set
 > that provably cannot move a record within the sequence stays correct without revision.
+
+---
+
+## Open Questions
+
+Every decision this document does not yet make, in one place. Status, owner and acceptance check for
+each live in [CHANGES.md](CHANGES.md); this list carries the question itself so a reader need not
+leave the document to know what is open. [Status by Chapter](#status-by-chapter) maps the same IDs
+onto chapters.
+
+| ID | Question | Where it bites |
+| --- | --- | --- |
+| D01 | How predicates combine (conjunction only, ordered DNF, negation, match-all); bounds on groups, predicates, nesting; cost shape; whether a negated literal matches records where the cell is absent or of another type (MongoDB-style, recommended) or only records that have it (SQL-style) | §5 |
+| D02 | `rewind(to)` is **not in v1** (decided 2026-09-30), but its semantics are to be specified now, so the feature can be enabled later without a contract change. Open: what it undoes (cells, index, tries, history, `#roots`, segments); ordering across MDBX and segments; what happens to handles, cursors and caches; commit identity after rewind | §10, §11 |
+| D03 | Crash recovery: restart from the `Superblock` head; segment truncation; behaviour on segment-fsync or MDBX-write failure; retry idempotence; already-issued receipts | §10, §11 |
+| D04 | Concurrency contract: one MDBX read snapshot per branch and per query; where the commit guard's critical section starts relative to segment appends; arbitration of two sealed candidates | §10 |
+| D05 | Retention. **Decided (P06):** the minimum window is `#minRetention`, in commits, in `#params`, and the consensus path refuses beyond it on every node. Open: which structures survive per read class (point, filtered, proof, segments); earliest supported commit; reader and cursor protection from GC; `Pruned` vs `NotFound`; discovering terms and cell names deleted since T; where a shard's starting mark survives once the previous system-segment shard is pruned | §7, §11, §13 |
+| D06 | Proof scope: which classes are proven (membership, non-inclusion; not range completeness); how the server obtains a mismatching virtual leaf's tagged value at head and historically; cost | §8 |
+| D07 | Branch transitions: delete visibility over real overlay values; the net diff with restored or no-op entries after rollback; history of cancelled changes; create-then-delete in one commit | §10 |
+| D08 | `#recordKeys` on delete: does the binding survive (§4: re-creation `patch`es it) or is it removed (§10: the inverse of delete restores it)? | §4, §10 |
+| D09 | The normative encoding profile: Roaring version, container selection and run-opt rule; odd-nibble padding; `EMPTY_ROOT`; `typeTag` for reserved-record layouts; the absent pre-image encoding for `IndexChangeSet`; `bool` byte forms; the shipped type-id map; change-set key caps | §2, §3, §4, §6, §8 |
+| D10 | The metering shape this document assumes (op classes, byte term, budget abort, receipt); activation at `A` relative to producing vs. observing commit `A`; minimum install→activation window; behaviour on incomplete weights | §4, §5, §10, §13 |
+| D11 | Cursor contract: is the cursor in the receipt (then `machineId` must be deterministic); fingerprint scope — **same-sequence** (only what fixes membership and order, so `projection` and `limit` may vary) or **same-query** (everything but the paging position); whichever, expressed as an exclusion, not an enumeration; cursor + `offset` + `at` precedence. The argument is in [Open Question on Paging](#open-question-on-paging) | §13 |
+| D12 | Live paging guarantee: narrow "anomaly-free" to position-shift anomalies; membership and projection may still change; does a pinned cursor lease retention? | §13 |
+| D13 | Environment assumptions: MDBX durability and fsync model; who owns RAM caps for overlays, undo logs, sealed candidates, staged segment rows, warm sequences | §1, §2, §10 |
+| D14 | Cost qualifications: sort is N fetches plus O(N log N) comparisons; does the warm cache hold keys or refetch; history-bitmap growth | §12, §13 |
+| D15 | Stale handle: `Conflict` on commit vs `HandleInvalid` elsewhere — intentional? | §10 |
+| D16 | Should the engine refuse a second consecutive `rollback()`? | §10 |
+| D17 | Are segment columns typed? As written, no: a column is raw bytes and the application owns the format, which keeps the engine ignorant of what a receipt is. The alternative declares a §3 type per column, so a column carries a `typeTag` as a cell does — self-describing segments, tooling without application code, a complete record/cell parallel — at the cost of dragging the type system into a structure built for opaque payloads and pinning at genesis an encoding the application may want to version independently | §11 |
+| D19 | Per-commit log digest (requirement SE-1): how a digest of each segment's appended rows is defined, and whether the engine commits it (lag-one, in `#logDigests`, record 5) or the host does | §4, §11 |
+| P08 | **Standalone negation.** Arkiv's live DSL accepts `status != "open"` and `!` on its own; the API admits negated literals; nothing here says what a negation-only query is a complement *of*. Beside a positive predicate, negation is set difference from the running intermediate and needs nothing new. Standalone negation, `EXISTS` and match-all all need a posting list of every live record — an engine-maintained `#live` index term, one container write per create and per delete. Adopt it, or drop standalone `!=` from the product. Either way, record whether the live DSL's `!=` includes records without the attribute (D01) | §5, §6, §12 |
+| P09 | **Glob `~`.** The live DSL has it; a general glob has no bounded, deterministic cost shape. Proposed: a literal with one trailing wildcard compiles to the §5 prefix scan; anything else is `InvalidQuery` | §5 |
+| T01, T02 | reth claims to verify against source: NippyJar's format properties; static-file write ordering | §11 |
+
+Product decisions P01–P07 are decided and their text has landed (`CHANGES.md`, Closed).
+
+Two things are **not** open, though they read as parameters: the hash function
+([§2](#note-on-hashing)) and the concrete type-id assignment ([§3](#the-type-grid)) are deployment
+choices by design, recorded in the `Superblock` and the shipped map respectively.
+
+---
+
+## Appendix A — Normative Surface
+
+_Being assembled (`CHANGES.md` S05). This appendix will list everything that changes the
+`GlobalRoot` if it changes, and, explicitly, what an implementation is free to choose. The full list
+follows the encoding profile (D09); until then it holds the one statement already decided._
+
+**The commitment binds the engine's bookkeeping.** The reserved records of
+[§4](#4-system-admin-and-user-records) (`#params`, `#alloc`, `#roots`, `#recordKeys` and the rest of
+the catalogue) are committed cells like any user cell, so the `GlobalRoot` depends on their exact
+layout, not only on the user's data. An engine is conformant if and only if it computes the same
+`GlobalRoot` as this design for the same sequence of operations. Such an engine re-implements
+[§2](#2-system-schema)–[§4](#4-system-admin-and-user-records) and
+[§8](#8-state-commitment-and-global-root) byte for byte, and that is the conformance target. This
+follows from the requirements, not from preference: DI-2 puts every piece of engine state that
+affects results under the commitment, and NF-8 makes commitment vectors part of what a second engine
+must pass (`CHANGES.md` D18, P07).
+

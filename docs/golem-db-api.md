@@ -6,8 +6,8 @@ No rationale, no mechanics, no storage layout — every such question is answere
 - **[golem-db-design.md](golem-db-design.md)** — data model, schema, reserved records, history,
   commitment, branches, commit immutable data, sorting and paging (chapters 1–13). Cited as
   _design §n_.
-- **[golem-db-architecture.md](../golem-db-architecture.md)** — the cost model (chapter 10), decided
-  but not yet folded into the design document. Cited as _arch §n_.
+- **[golem-db-metering.md](golem-db-metering.md)** — authoritative cost formulas, budgets,
+  receipts, calibration requirements and pricing-schedule lifecycle. Cited as _metering Dn_.
 
 Writes and branch reads take a branch handle; queries and historical reads target a `CommitId`.
 Data-plane calls (`create` / `get` / `patch` / `delete`, `query`, `count`) return a metered result — a
@@ -118,7 +118,8 @@ Caller-visible rules:
   does not support ⇒ `InvalidQuery`.
 - `bytes` is **field-only**; an attribute of type `bytes` ⇒ `InvalidArgument`.
 - **NaN** ⇒ `InvalidArgument`; `-0.0` normalizes to `+0.0`.
-- **API scalars** (`CommitId`, `budget`, `limit`) are `u64`.
+- **API scalars** (`CommitId`, `limit`, costs and finite budget amounts) are `u64`.
+  **Budgets** are `Limited(u64)` or explicit `Unlimited` ([Cost and Budget](#cost-and-budget)).
 
 **Custom types** are registered as deployment configuration — there is no runtime registration call. A
 registration specifies `id` (64–127), `name`, `width`, `index class`, `codec` and `enc`, plus
@@ -156,8 +157,9 @@ limiting. → _design [§4](golem-db-design.md#what-the-engine-enforces)_
 ### Commits
 
 - `CommitId: u64` — 0 = genesis, +1 per commit, gapless, immutable, durable.
-- The lineage never forks; competing candidates are branches until one commits. Reorgs use `rewind`;
-  fork _choice_ is the host's job.
+- The lineage never forks; competing candidates are branches until one commits. There is no `rewind`
+  in v1, so a commit cannot be undone: a host commits only blocks it will not reorg. Fork _choice_ is
+  the host's job.
 - Every commit's roots stay readable from `#roots`, which is what makes proofs against past commits
   possible ([Proofs](#proofs)).
 
@@ -204,12 +206,13 @@ cannot see. Rollback cost is proportional to the operations undone, never to the
 | `seal`        | `(b) → SealedCommit`             | freezes the overlay and computes the roots, persisting nothing; optional — see below                                                      |
 | `commit`      | `(b) → CommitId`                 | implies a final checkpoint, and a `seal` if none was taken; origin must be the head, else `Conflict`; assigns head+1 atomically; consumed |
 | `discard`     | `(b)`                            | drops the branch wholesale; receipts already returned stay valid                                                                          |
-| `rewind`      | `(to: CommitId)`                 | host-restricted reorg mechanism, within the retention window                                                                              |
+| `rewind`      | `(to: CommitId)`                 | **not in v1.** Reserved for a host-restricted reorg mechanism within the retention window (design D02)                                   |
 | `branch_hash` | `(b) → B256`                     | digest of the branch's current state, computed on demand from the overlay                                                                 |
 | `branch_info` | `(b) → {origin, frame_depth}`    | introspection                                                                                                                             |
 
 **All branch operations are unmetered**, and `rollback` additionally **issues no refund**. `commit` is
-unmetered because it is pre-paid ([Cost and Budget](#cost-and-budget)).
+unmetered at the data plane: record-induced work is prepaid and block/commit overhead is
+host-funded ([Cost and Budget](#cost-and-budget)). Operation charges also cover undo work.
 
 #### `seal` — compute the roots without persisting
 
@@ -248,8 +251,15 @@ _arch [§9](../golem-db-architecture.md#end-to-end-example-one-block)_.
 
 ## CRUD Operations
 
-Write cost is closed-form, so an implementation may price a write and **refuse it before applying it**
-rather than applying and unwinding.
+Writes use a budgeted, read-only planning phase followed by atomic application. Admission
+and planning are charged even if the call is rejected; no mutation is applied unless the
+complete plan fits the budget. The [metering specification](golem-db-metering.md#d2-write-cost-model)
+is authoritative for cost structure and counting rules.
+
+Successful creates and patches must respect genesis-fixed limits on user-cell counts,
+indexed-cell counts, names and values. System cells are excluded from user-cell counts.
+Exact parameter names and metadata layout are defined with the schema; the metering
+requirements are in [D5](golem-db-metering.md#d5-record-shape-and-deletion-bound).
 
 ### `create` — insert a new record
 
@@ -257,13 +267,21 @@ rather than applying and unwinding.
 | --------- | ----------------------------------------------------------------------------- |
 | `branch`  | handle the write is applied to                                                |
 | `key?`    | new record's key; required in `CallerAssigned`, forbidden in `EngineAssigned` |
-| `cells`   | map name → `(kind, typeCode, value)`; ≥ 1 cell                                |
-| `budget?` | max cost for this call                                                        |
+| `cells`   | map name → `(kind, typeCode, value)`; may be empty (`{}`) |
+| `budget` | `Limited(u64)` or host-authorized `Unlimited` |
+| `debug?` | bool, default false; requests the mandatory-to-support detailed cost ledger |
 
 **Output:** the record key + a cost receipt.
 
-The engine additionally writes the record's `#key` cell — readable by `get`, unwritable from the data
-plane, and **charged as an ordinary cell write**, so a `create` of _k_ cells is priced as _k_ + 1.
+The engine additionally creates the record's `#key` and `#meta` cells and its binding in
+`#recordKeys`. A create of _k_ user cells therefore incurs _k_ + 3 cell-create charges,
+plus admission, record-base and applicable index charges. Receipt user-cell counts exclude
+these three system operations. `#key` is readable by `get`; neither `#key` nor `#meta` is
+writable through the data plane. The `#meta` encoding and read visibility remain to be
+specified alongside the schema.
+
+`create` with `cells: {}` creates an existing record with no user-defined cells. Its
+binding, `#key` and `#meta` are still created and charged; it performs no index joins.
 
 **Errors:** `AlreadyExists`, `KeyModeMismatch`, `Reserved`, `InvalidArgument`, `OutOfBudget`.
 
@@ -274,10 +292,13 @@ plane, and **charged as an ordinary cell write**, so a `create` of _k_ cells is 
 | `target`      | a branch handle (reads through the overlay) or a `CommitId` (historical, within retention) |
 | `key`         | record key to look up                                                                      |
 | `projection?` | cell names to return, either kind; absent = full record                                    |
-| `budget?`     | max cost for this call                                                                     |
+| `budget`     | `Limited(u64)` or host-authorized `Unlimited` |
 
 **Output:** the record, full or projected, each cell as `(name, kind, typeCode, value)` + a cost
 receipt.
+
+An existing record with zero user-defined cells is not `NotFound`: a full `get` succeeds
+and includes its readable system cells, including `#key`.
 
 A commit-targeted `get` resolves each requested cell independently, so a projection costs only the
 cells asked for, and **time travel is a flat surcharge per cell** — independent of how far back the
@@ -292,13 +313,21 @@ commit lies. → _design [§7](golem-db-design.md#resolving-a-value-as-of-a-comm
 | `branch`            | handle the write is applied to                                                                            |
 | `key`               | record key to mutate                                                                                      |
 | `expected_version?` | _provisional_ optimistic-concurrency guard; `Conflict` on mismatch                                        |
-| `cell_changes`      | map name → `set(kind, typeCode, value)` \| `remove`; absent names untouched; may not remove the last cell |
-| `budget?`           | max cost for this call                                                                                    |
+| `cell_changes`      | map name → `set(kind, typeCode, value)` \| `remove`; absent names untouched; may remove the last user cell |
+| `budget`            | `Limited(u64)` or host-authorized `Unlimited` |
+| `debug?`            | bool, default false; requests the mandatory-to-support detailed cost ledger |
 
 **Output:** a cost receipt.
 
 A `set` may change kind and/or type. **Changing an indexed value flips two terms**, not one — the
-record leaves its old term and joins the new one. Untouched cells contribute nothing.
+record leaves its old term and joins the new one. Untouched user cells contribute nothing.
+The call also pays admission, record-base and the system-cell work defined by the metering
+model. Assigning the current value is charged as an update and, for an indexed cell, as
+leave plus join, even if an implementation elides the writes.
+
+Removing the last user-defined cell leaves the record alive, with its binding and
+system cells intact. Its user-cell counts become zero. Only `delete` removes the record;
+an empty record can be populated again with `patch` without changing its identity.
 
 **Errors:** `NotFound`, `Reserved`, `InvalidArgument`, `Conflict`, `OutOfBudget`.
 
@@ -309,15 +338,18 @@ record leaves its old term and joins the new one. Untouched cells contribute not
 | `branch`            | handle the write is applied to             |
 | `key`               | record key to delete                       |
 | `expected_version?` | _provisional_ optimistic-concurrency guard |
-| `budget?`           | max cost for this call                     |
+| `budget`            | `Limited(u64)` or host-authorized `Unlimited` |
+| `debug?`            | bool, default false; requests the mandatory-to-support detailed cost ledger |
 
 **Output:** a cost receipt.
 
 The record leaves live state; earlier commits stay readable while retention holds. Re-creating the
 same key later is an ordinary `create`.
 
-> **Budget note.** A delete costs very nearly what its create cost, while its byte charge is exactly
-> zero. Sizing a budget from bytes alone under-provisions it by orders of magnitude.
+> **Budget note.** Deletion pays admission, record-base, cell-delete and index-leave costs,
+> including deletion of the binding, `#key` and `#meta`. Its storage-write byte charge is
+> zero; admission byte validation is separate. A maximum deletion cost is computable from
+> record shape and the current schedule, per [metering D5](golem-db-metering.md#d5-record-shape-and-deletion-bound).
 > → [Cost and Budget](#cost-and-budget)
 
 **Errors:** `NotFound`, `Reserved`, `Conflict`, `OutOfBudget`.
@@ -371,7 +403,7 @@ Queries run against **committed state only** — never against a branch.
 | `query`   | the query structure — below                                                                   |
 | `cursor?` | an opaque cursor from a previous page                                                         |
 | `debug?`  | bool, default false; adds the per-op-class cost ledger — results unchanged                    |
-| `budget?` | max cost for this call                                                                        |
+| `budget` | `Limited(u64)` or host-authorized `Unlimited` |
 
 ```
 query = {
@@ -480,7 +512,7 @@ Two normative rules for implementations that keep a warm sequence:
 | --------- | ------------------------------------------------------------ |
 | `at?`     | `CommitId`; absent = current head; must lie within retention |
 | `filter`  | ordered DNF, as in `query`                                   |
-| `budget?` | max cost for this call                                       |
+| `budget` | `Limited(u64)` or host-authorized `Unlimited` |
 
 **Output:** a `u64` count + a cost receipt.
 
@@ -489,7 +521,8 @@ Two normative rules for implementations that keep a warm sequence:
 ## Cost and Budget
 
 Cost is **consensus-visible**: it decides `OutOfBudget`, which decides whether a call returns results.
-→ _arch [§10](../golem-db-architecture.md#10-metering-and-cost)_
+The [metering specification](golem-db-metering.md) defines the cost model; this API describes
+its caller-visible contract. Read counting remains subject to that document's open findings.
 
 Guarantees a caller may rely on:
 
@@ -503,24 +536,46 @@ Guarantees a caller may rely on:
 ### The formula
 
 ```
-    cost  =  Σ  n_c × w_c     +     bytes_written × w_b
-             c ∈ op classes
+record op cost = admission cost + w_rec[op]
+               + sum(cell operation costs)
+               + sum(index operation costs)
 ```
 
-`n_c` are the counts the `debug` ledger reports; `w_c` and `w_b` are the weights of the active
-metering model ([Administration](#administration--the-metering-api)). Trie depth is folded into
-weights, never counted.
-
-→ _arch [§10](../golem-db-architecture.md#the-byte-term-pay-once-for-every-byte-made-live)_
+Admission counts request validation, not database reads. Cell and index costs include
+state reads, mutations, separate write-byte weights and modeled trie-path charges.
+The model derives cell/index trie depths from population counters at branch base;
+depth is an explicit multiplier, not solely folded into a weight. See
+[metering D2](golem-db-metering.md#d2-write-cost-model) and
+[D3](golem-db-metering.md#d3-write-metering-and-modeled-trie-depth) for the authoritative formulas.
 
 ### Budget
 
-- **`budget?`** — optional max-cost cap; absent = bounded only by server caps.
-- Exceeding it ⇒ **`OutOfBudget{spent}`** with **no partial results**. `spent` includes the mandatory
-  reads that established the price.
-- **`commit` is unmetered because it is pre-paid**, not because it is cheap.
+- **`budget`** is explicit: `Limited(u64)` or `Unlimited`. `Limited(u64::MAX)` is not an
+  unlimited sentinel. A host controls authorization for unlimited work; Arkiv uses limited
+  budgets for consensus execution and may allow unlimited planning for `eth_estimateGas`.
+- A write checks each planning charge before performing the work. If it cannot fit, return
+  **`OutOfBudget{spent, required: None}`** with no writes or partial results. `spent` includes
+  completed admission and state-read charges, never more than the limited budget.
+- If planning completes but the full cost exceeds the budget, return
+  **`OutOfBudget{spent, required: Some(total)}`**. An exact-budget total succeeds. Rejected
+  input still pays for validation performed; no write charge is collected for failed planning.
+- Arithmetic overflow returns `OutOfBudget` with `required: None`, even under `Unlimited`.
+- **Rollback and branch discard refund nothing**, including charges for purely in-memory
+  work. Operation charges cover undo; rollback carries no additional charge.
+- **`commit` carries no additional data-plane charge:** record-induced work is prepaid,
+  while root-history, committed allocator and other block/commit overhead are host-funded.
 - **Deletion is not pre-paid at creation.** A host whose entities are life-limited — where expiry, not
   a caller, triggers the delete — should pre-pay in its own pricing layer above these receipts.
+
+### Cost estimation
+
+The same read-only `plan_write(operation, branch_state, budget)` planner supports execution
+and estimation. Estimation returns the full planned cost without applying the mutations;
+it does not consume IDs or change counters. A host-authorized unlimited estimate still
+performs validation and checked arithmetic. The estimate is valid only for the inspected
+state and schedule. A multi-operation simulation must use a disposable branch if later
+operations need to observe earlier writes. Host resource controls are described in
+[metering D7](golem-db-metering.md#shared-planner-and-arkiv-usage-contexts).
 
 ---
 
@@ -573,12 +628,19 @@ Lifecycle rules — violations ⇒ `InvalidArgument`:
    `activation` > head, and parseable cells. **Completeness is checked at the activation commit**, not
    at install — which is what preserves the upgrade window between the two.
 2. **The active model takes immediate patches only.** `set_weight` on it takes effect at the next
-   commit; there is no scheduling for the current model. Future work is staged under the pending
-   version.
-3. **Priced at branch base, never re-priced.** An operation uses the model and weights live at its
-   branch's base commit; the receipt records it as `priced_at`. In-flight calls keep the schedule they
-   began under.
+  committed head, after the admin commit succeeds, never before persistence or mid-branch.
+  There is no scheduling for the current model. Future work is staged under the pending version.
+3. **Capture pricing once, never re-price in flight.** Branch calls use the schedule captured
+  at branch base. Calls without a branch capture current head's schedule at admission,
+  even when reading historical data. `priced_at` identifies the pricing commit, not the
+  data commit. Each query page captures pricing anew; pinning data does not pin prices.
 4. **At most one pending model** at a time.
+
+Golem DB keeps the active model and complete weights in memory, reconstructing them from
+committed head and metering records when unavailable. It publishes head and the matching
+pricing snapshot together at commit boundaries; uncommitted changes do not affect prices.
+Activation at commit 100 applies once head reaches 100, not to branch work based on 99
+that produces commit 100. See [metering D8](golem-db-metering.md#d8-cost-schedules).
 
 **Surface separation.** `open()` returns a **data handle** and an **admin handle**. Admin operations
 take no branch — each forms its own single-purpose commit — which makes commit homogeneity structural.
@@ -597,9 +659,13 @@ call the API.
 
 - **Return shape.** A metered result is a value plus a cost receipt. Errors still report cost spent.
 - **Cost receipt.** `{ cost, priced_at, ledger? }` — the cost charged; the commit whose model and
-  weights priced the call; and, under `debug`, the per-op-class counts. A receipt is a return value,
-  never state, and is never revoked by a later rollback.
-- **`budget?`** — see [Cost and Budget](#cost-and-budget).
+  weights priced the call; and, under `debug`, the per-op-class counts. For writes, the ledger
+  includes the cell/index operation and byte counts specified by
+  [metering D4](golem-db-metering.md#d4-storage-and-size-counting), excluding system cells
+  from user-cell totals. Every implementation must support these opt-in write details and
+  provide them when requested. A receipt is a return value, never state, and is never
+  revoked by rollback or branch discard.
+- **`budget`** — see [Cost and Budget](#cost-and-budget).
 - **`expected_version?`** — _provisional_; see [Records](#records).
 - **Determinism.** Every accept/reject verdict is a pure function of the operation and of state, and is
   decided at operation admission rather than deferred to commit.
@@ -619,14 +685,16 @@ call the API.
 | `InvalidQuery`    | a predicate the target type's index class does not support, or a cursor whose fingerprint mismatches |
 | `InvalidArgument` | malformed input: name grammar, cap, codec, or a metering lifecycle violation                         |
 | `LimitExceeded`   | DNF caps — group count, predicates per group, nesting                                                |
-| `OutOfBudget`     | cost exceeded `budget`; carries `spent`; no partial results                                          |
+| `OutOfBudget`     | the next charge or full planned cost cannot fit, or cost arithmetic overflows; carries `spent` and optional write `required`; no partial results |
 | `Pruned`          | an immutable-data ordinal existed but is beyond the retention window                                 |
 | `HandleInvalid`   | a consumed branch handle, or one whose origin is no longer the head                                  |
 | `Conflict`        | a commit guard failed, or an `expected_version` mismatch                                             |
 | `Internal`        | engine fault                                                                                         |
 
-`Reserved` is raised at admission, before any work, so the receipt reports zero cost. It is distinct
-from `InvalidArgument` so a host can tell malformed input from a reserved-structure violation.
+For writes, `Reserved` is raised during admission and reports the cost of validation
+already performed, including the check detecting the reserved target. It is distinct
+from `InvalidArgument` so a host can distinguish malformed input from a reserved-structure
+violation. If the budget cannot fund the check, `OutOfBudget` occurs first.
 
 ---
 

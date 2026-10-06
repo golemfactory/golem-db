@@ -114,3 +114,6 @@ pub(crate) const PATH_BITS: u8 = 48;
 pub(crate) const PATH_BYTE_OFFSET: usize = 8 - BITMAP_TRIE_PATH_BYTES;
 pub(crate) const MAX_PATH: u64 = (1 << PATH_BITS) - 1;
 pub(crate) const CHUNK_BITS: u8 = 16;
+
+#[cfg(test)]
+mod tests;

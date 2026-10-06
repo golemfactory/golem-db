@@ -6,7 +6,7 @@
 //!
 //! [`MemoryDatabase`] is the initial backend. The traits intentionally expose
 //! owned bytes and no backend-specific handles or threading requirements.
-//! The optional `mdbx` feature adds persistent `MdbxDatabase` using the same traits.
+//! The separate `golemdb-storage-mdbx` crate implements these traits for MDBX.
 //!
 //! ```
 //! use golemdb_storage::{Database, MemoryDatabase, ReadCursor, ReadTransaction,
@@ -31,18 +31,11 @@
 //! ```
 
 mod error;
-#[cfg(feature = "mdbx")]
-mod mdbx;
 mod memory;
 mod scan;
 mod table;
 
 pub use error::StorageError;
-#[cfg(feature = "mdbx")]
-pub use mdbx::{
-    MdbxCursor, MdbxDatabase, MdbxOptions, MdbxReadTransaction, MdbxTransaction,
-    MdbxWriteTransaction,
-};
 pub use memory::{MemoryCursor, MemoryDatabase, MemoryReadTransaction, MemoryWriteTransaction};
 pub use scan::{Scan, scan, scan_prefix};
 pub use table::Table;
@@ -122,3 +115,6 @@ pub trait WriteTransaction: ReadTransaction {
     {
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -19,13 +19,3 @@ roaring = "=0.11.5"
 
 [dev-dependencies]
 proptest.workspace = true
-criterion.workspace = true
-tempfile = "3"
-
-[features]
-default = []
-mdbx = ["golemdb-storage/mdbx"]
-
-[[bench]]
-name = "index"
-harness = false
