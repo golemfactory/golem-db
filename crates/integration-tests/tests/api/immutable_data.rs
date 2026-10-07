@@ -7,20 +7,20 @@ use std::{
 };
 
 use golemdb_api::*;
-use golemdb_storage::{Database, MemoryDatabase};
+use golemdb_storage::{MemoryStore, Store};
 
-struct Guarded<D> {
-    database: D,
+struct Guarded<S> {
+    database: S,
     forbid_io: Arc<AtomicBool>,
 }
 
-impl<D: Database> Database for Guarded<D> {
+impl<S: Store> Store for Guarded<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = D::Write<'a>
+        = S::Write<'a>
     where
         Self: 'a;
     fn max_key_size(&self) -> usize {
@@ -74,28 +74,28 @@ fn check(api: &dyn Api, branch: BranchId) {
         }
         for commit in [0, u64::MAX] {
             unsupported(
-                api.immutable_data_range_of(segment, commit),
+                api.immutable_data_range_of(segment, CommitId::new(commit)),
                 "immutable_data_range_of",
             );
             unsupported(
-                api.immutable_data_rows_of(segment, commit),
+                api.immutable_data_rows_of(segment, CommitId::new(commit)),
                 "immutable_data_rows_of",
             );
         }
     }
 }
 
-fn contract(database: impl Database + Send + Sync + 'static, hash_function: HashAlgorithm) {
+fn contract(database: impl Store + Send + Sync + 'static, hash_function: HashAlgorithm) {
     let forbid_io = Arc::new(AtomicBool::new(false));
-    let config = OpenConfig::new(GenesisConfig {
+    let config = OpenConfig::new(Genesis::new(
         hash_function,
-        cell_limits: CellLimits {
+        CellLimits {
             max_cell_name_len: 32,
             max_str_len: 64,
             max_bytes_len: 128,
         },
-    });
-    let db = GolemDb::from_backend(
+    ));
+    let db = Database::from_store(
         Guarded {
             database,
             forbid_io: forbid_io.clone(),
@@ -107,14 +107,13 @@ fn contract(database: impl Database + Send + Sync + 'static, hash_function: Hash
     let branch = db.begin().unwrap();
     db.create(
         branch,
-        key,
-        RecordInput::new()
+        RecordOp::create(key)
             .field("price", CellValue::from_i32(50))
             .unwrap(),
     )
     .unwrap();
     let record = db
-        .get(ReadTarget::Branch(branch), key, Projection::All)
+        .get(ReadTarget::Branch(branch), RecordOp::get(key))
         .unwrap();
     let info = db.branch_info(branch).unwrap();
     let sealed_branch = db.begin().unwrap();
@@ -123,20 +122,27 @@ fn contract(database: impl Database + Send + Sync + 'static, hash_function: Hash
     let api: Arc<dyn Api + Send + Sync> = Arc::new(db.clone());
 
     forbid_io.store(true, Ordering::SeqCst);
-    for id in [branch, sealed_branch, u64::MAX] {
+    for id in [
+        branch,
+        sealed_branch,
+        golemdb_branch::BranchId::new(u64::MAX),
+    ] {
         check(api.as_ref(), id);
     }
     forbid_io.store(false, Ordering::SeqCst);
-    assert_eq!(db.head().unwrap(), 0);
+    assert_eq!(db.head().unwrap(), golemdb_branch::CommitId::new(0));
     assert_eq!(db.branch_info(branch).unwrap(), info);
     assert_eq!(db.branch_info(sealed_branch).unwrap(), sealed_info);
     assert_eq!(db.seal(sealed_branch).unwrap(), seal);
     assert_eq!(
-        db.get(ReadTarget::Branch(branch), key, Projection::All)
+        db.get(ReadTarget::Branch(branch), RecordOp::get(key))
             .unwrap(),
         record
     );
-    assert_eq!(db.commit(sealed_branch).unwrap(), 1);
+    assert_eq!(
+        db.commit(sealed_branch).unwrap(),
+        golemdb_branch::CommitId::new(1)
+    );
 
     // Unsupported calls must not validate/invalidate stale handles either.
     forbid_io.store(true, Ordering::SeqCst);
@@ -144,13 +150,13 @@ fn contract(database: impl Database + Send + Sync + 'static, hash_function: Hash
     check(api.as_ref(), sealed_branch);
     forbid_io.store(false, Ordering::SeqCst);
     assert!(matches!(db.commit(branch), Err(ApiError::Conflict)));
-    assert_eq!(db.head().unwrap(), 1);
+    assert_eq!(db.head().unwrap(), golemdb_branch::CommitId::new(1));
 }
 
 #[test]
 fn memory_stubs_return_explicit_errors_without_io_or_state_changes() {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
-        contract(MemoryDatabase::new(), hash);
+        contract(MemoryStore::new(), hash);
     }
 }
 
@@ -159,7 +165,7 @@ fn mdbx_stubs_return_explicit_errors_without_io_or_state_changes() {
     for hash in [HashAlgorithm::Keccak256, HashAlgorithm::Blake3] {
         let directory = tempfile::tempdir().unwrap();
         contract(
-            golemdb_storage_mdbx::MdbxDatabase::open(directory.path()).unwrap(),
+            golemdb_storage_mdbx::MdbxStore::open(directory.path()).unwrap(),
             hash,
         );
     }

@@ -1,5 +1,8 @@
 //! Record CRUD over guarded branch cell views.
 //!
+//! Records may have zero user cells; their `#key` and binding preserve identity
+//! until explicit deletion.
+//!
 //! Caller-assigned keys only. Each mutation is one atomic branch operation,
 //! including allocator and binding changes. Checkpoints, rollback and commit
 //! remain on the shared [`Branches`](golemdb_branch::Branches) manager supplied to [`Records::new`].
@@ -27,10 +30,10 @@
 //! use golemdb_cells::{CellNameRef, CellType, CellValueRef};
 //! use golemdb_merkle::HashProvider;
 //! use golemdb_record::{ReadTarget, RecordKey, Records};
-//! use golemdb_storage::Database;
+//! use golemdb_storage::Store;
 //!
-//! // The connection layer has already initialized the database and parameters.
-//! fn example<D: Database, H: HashProvider>(branches: Branches<D, H>)
+//! // The connection layer has already initialized the store and parameters.
+//! fn example<S: Store, H: HashProvider>(branches: Branches<S, H>)
 //!     -> Result<(), Box<dyn std::error::Error>>
 //! {
 //!     let records = Records::new(branches.clone());

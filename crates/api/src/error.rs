@@ -11,6 +11,8 @@ use crate::CommitId;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiError {
+    #[error("store capacity exhausted")]
+    StoreFull,
     #[error("operation {operation} is not implemented")]
     NotImplemented { operation: &'static str },
     #[error("record not found")]
@@ -35,7 +37,7 @@ pub enum ApiError {
     NoFrameToRollback,
     #[error("commit {requested} unavailable: only current head {head} is supported")]
     CommitUnavailable { requested: CommitId, head: CommitId },
-    #[error("internal database error: {source}")]
+    #[error("internal database error")]
     Internal {
         #[source]
         source: Box<dyn Error + Send + Sync>,
@@ -51,14 +53,17 @@ impl ApiError {
     }
 
     pub fn internal(source: impl Error + Send + Sync + 'static) -> Self {
+        if store_full(&source) {
+            return Self::StoreFull;
+        }
         Self::Internal {
             source: Box::new(source),
         }
     }
 
-    fn invalid_input(source: impl Error + Send + Sync + 'static) -> Self {
+    fn invalid_input(message: &str, source: impl Error + Send + Sync + 'static) -> Self {
         Self::InvalidArgument {
-            message: source.to_string(),
+            message: message.into(),
             source: Some(Box::new(source)),
         }
     }
@@ -66,13 +71,13 @@ impl ApiError {
 
 impl From<CellNameError> for ApiError {
     fn from(error: CellNameError) -> Self {
-        Self::invalid_input(error)
+        Self::invalid_input("invalid cell name", error)
     }
 }
 
 impl From<CellValueParseError> for ApiError {
     fn from(error: CellValueParseError) -> Self {
-        Self::invalid_input(error)
+        Self::invalid_input("invalid cell value", error)
     }
 }
 
@@ -82,10 +87,7 @@ impl From<RecordError> for ApiError {
             RecordError::NotFound => Self::NotFound,
             RecordError::AlreadyExists => Self::AlreadyExists,
             RecordError::Reserved => Self::Reserved,
-            RecordError::InvalidArgument(ref message) => Self::InvalidArgument {
-                message: message.clone(),
-                source: Some(Box::new(error)),
-            },
+            RecordError::InvalidArgument(message) => Self::invalid_argument(message),
             RecordError::CommitUnavailable { requested, head } => {
                 Self::CommitUnavailable { requested, head }
             }
@@ -108,3 +110,51 @@ impl From<BranchError> for ApiError {
 }
 
 pub type Result<T> = std::result::Result<T, ApiError>;
+
+// Transparent internal errors delegate source() to their wrapped error, which
+// can hide a source-less StorageError::Full. Follow those wrappers explicitly.
+fn store_full(error: &(dyn Error + 'static)) -> bool {
+    use golemdb_cells::CellError;
+    use golemdb_index::IndexError;
+    use golemdb_merkle::MerkleError;
+    use golemdb_storage::StorageError;
+    if matches!(
+        error.downcast_ref::<StorageError>(),
+        Some(StorageError::Full)
+    ) {
+        return true;
+    }
+    let wrapped: Option<&(dyn Error + 'static)> =
+        if let Some(error) = error.downcast_ref::<RecordError>() {
+            match error {
+                RecordError::Storage(e) => Some(e),
+                RecordError::Cells(e) => Some(e),
+                RecordError::Branch(e) => Some(e),
+                _ => None,
+            }
+        } else if let Some(error) = error.downcast_ref::<BranchError>() {
+            match error {
+                BranchError::Storage(e) => Some(e),
+                BranchError::Cells(e) => Some(e),
+                BranchError::Index(e) => Some(e),
+                _ => None,
+            }
+        } else if let Some(error) = error.downcast_ref::<CellError>() {
+            match error {
+                CellError::Storage(e) => Some(e),
+                CellError::Merkle(e) => Some(e),
+                _ => None,
+            }
+        } else if let Some(error) = error.downcast_ref::<IndexError>() {
+            match error {
+                IndexError::Storage(e) => Some(e),
+                IndexError::Merkle(e) => Some(e),
+                _ => None,
+            }
+        } else if let Some(MerkleError::Storage(error)) = error.downcast_ref::<MerkleError>() {
+            Some(error)
+        } else {
+            error.source()
+        };
+    wrapped.is_some_and(store_full)
+}

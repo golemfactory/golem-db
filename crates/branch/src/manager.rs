@@ -8,7 +8,7 @@ use std::{
 };
 
 use golemdb_merkle::HashProvider;
-use golemdb_storage::{Database, ReadTransaction};
+use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
     BranchError, BranchId, BranchInfo, CellRead, CellWrite, CommitId, OperationError, Result,
@@ -50,17 +50,17 @@ impl BranchState {
 
 type Entry = Arc<Mutex<Option<BranchState>>>;
 
-struct Inner<DB, H> {
+struct Inner<S, H> {
     hasher: H,
-    database: DB,
+    store: S,
     branches: Mutex<BTreeMap<BranchId, Entry>>,
 }
 
 /// Head-only branch lifecycle, metadata, and guarded access to cell working state.
 ///
-/// Clones share the registry and database. Each branch has its own lock, held
+/// Clones share the registry and store. Each branch has its own lock, held
 /// for an entire operation; independent branches can execute concurrently when
-/// the database supports sharing between threads. No storage snapshot is kept
+/// the store supports sharing between threads. No storage snapshot is kept
 /// between calls. Every call on a branch ID checks the head in a fresh snapshot
 /// acquired *after* locking the branch, then uses that snapshot for cell reads.
 /// An in-flight operation may finish over its snapshot if head moves meanwhile;
@@ -72,7 +72,7 @@ struct Inner<DB, H> {
 /// can return owned results, but cannot retain views or borrowed scans.
 ///
 /// This increment does not initialize genesis, validate format/hash settings,
-/// authenticate entire tries, maintain history, or rewind the database. The supplied hash
+/// authenticate entire tries, maintain history, or rewind the store. The supplied hash
 /// provider must match the deployment and is shared by all branch seals. External writers
 /// must publish cells and a strictly increasing head atomically; changing cells
 /// under an unchanged head or rewinding it violates this manager's contract.
@@ -93,11 +93,11 @@ struct Inner<DB, H> {
 /// This is not a general guarantee for backend panics: storage snapshot creation
 /// and head validation happen before the callback's panic guard, so a panic there
 /// can poison the branch lock. See [`commit`](Self::commit) for publication limits.
-pub struct Branches<DB, H> {
-    inner: Arc<Inner<DB, H>>,
+pub struct Branches<S, H> {
+    inner: Arc<Inner<S, H>>,
 }
 
-impl<DB, H> Clone for Branches<DB, H> {
+impl<S, H> Clone for Branches<S, H> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -105,17 +105,17 @@ impl<DB, H> Clone for Branches<DB, H> {
     }
 }
 
-impl<DB: Database, H: HashProvider> Branches<DB, H> {
+impl<S: Store, H: HashProvider> Branches<S, H> {
     /// Open a manager over an initialized head. Performs no writes and fails
     /// if the head is missing, malformed, or unreadable.
-    pub fn new(database: DB, hasher: H) -> Result<Self> {
+    pub fn new(store: S, hasher: H) -> Result<Self> {
         {
-            let tx = database.begin_read()?;
+            let tx = store.begin_read()?;
             read_head(&tx)?;
         }
         Ok(Self {
             inner: Arc::new(Inner {
-                database,
+                store,
                 hasher,
                 branches: Mutex::new(BTreeMap::new()),
             }),
@@ -123,14 +123,14 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     }
 
     pub fn head(&self) -> Result<CommitId> {
-        read_head(&self.inner.database.begin_read()?)
+        read_head(&self.inner.store.begin_read()?)
     }
 
-    /// The database shared by this manager. Committed readers can open a
+    /// The store shared by this manager. Committed readers can open a
     /// snapshot directly; no branch registration or overlay is needed.
     /// Direct writers must obey the publication contract documented on Branches.
-    pub fn database(&self) -> &DB {
-        &self.inner.database
+    pub fn store(&self) -> &S {
+        &self.inner.store
     }
 
     /// Open a new independent overlay and its first frame over the current head.
@@ -162,6 +162,8 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
 
     /// Read cells from one validated branch snapshot. Callback errors are kept
     /// separate from errors admitting the operation (such as a stale ID).
+    /// Sealed branches remain readable. The `#roots` cell added by sealing is
+    /// part of publication and becomes visible only after commit.
     ///
     /// # Panics
     ///
@@ -171,10 +173,9 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     pub fn read<T, E>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&CellRead<'_, DB::Read<'_>>) -> std::result::Result<T, E>,
+        operation: impl FnOnce(&CellRead<'_, S::Read<'_>>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, OperationError<E>> {
         self.with_branch(branch_id, |state, origin| {
-            state.require_open().map_err(OperationError::Branch)?;
             operation(&CellRead::new(&state.overlay, origin)).map_err(OperationError::Operation)
         })
         .map_err(OperationError::Branch)?
@@ -195,7 +196,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     pub fn write<T, E>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&mut CellWrite<'_, DB::Read<'_>>) -> std::result::Result<T, E>,
+        operation: impl FnOnce(&mut CellWrite<'_, S::Read<'_>>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, OperationError<E>> {
         self.with_branch(branch_id, |state, origin| {
             state.require_open().map_err(OperationError::Branch)?;
@@ -225,7 +226,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     }
 
     /// Compute cell/index updates and stage physical rows without opening a
-    /// database writer. Failure leaves the overlay and checkpoints untouched.
+    /// store writer. Failure leaves the overlay and checkpoints untouched.
     /// Success freezes cell access. Repeated sealing returns the cached result,
     /// after validating head again; it does not reserve a commit number.
     ///
@@ -261,7 +262,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
         self.with_slot(branch_id, BranchError::Conflict, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
             let sealed = state.seal(origin, &self.inner.hasher)?;
-            let tx = self.inner.database.begin_write()?;
+            let tx = self.inner.store.begin_write()?;
             match crate::commit::persist(tx, state.commit_id, &sealed) {
                 Ok(commit_id) => {
                     *slot = None;
@@ -303,7 +304,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     fn with_branch<T>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&mut BranchState, &DB::Read<'_>) -> T,
+        operation: impl FnOnce(&mut BranchState, &S::Read<'_>) -> T,
     ) -> Result<T> {
         self.with_slot(branch_id, BranchError::HandleInvalid, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
@@ -318,7 +319,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
         &self,
         branch_id: BranchId,
         stale_error: BranchError,
-        operation: impl FnOnce(&mut Option<BranchState>, &DB::Read<'_>) -> T,
+        operation: impl FnOnce(&mut Option<BranchState>, &S::Read<'_>) -> T,
     ) -> Result<T> {
         let entry = self
             .inner
@@ -335,7 +336,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
         let mut slot =
             crate::test_sync::lock(&entry).map_err(|_| BranchError::Poisoned("branch"))?;
         let commit_id = slot.as_ref().ok_or(BranchError::HandleInvalid)?.commit_id;
-        let origin = self.inner.database.begin_read()?;
+        let origin = self.inner.store.begin_read()?;
         if read_head(&origin)? != commit_id {
             *slot = None;
             self.remove(branch_id)?;
@@ -352,11 +353,12 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     }
 }
 
-fn allocate_branch_id(counter: &AtomicU64) -> Result<u64> {
+fn allocate_branch_id(counter: &AtomicU64) -> Result<BranchId> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
             next.checked_add(1)
         })
+        .map(BranchId::new)
         .map_err(|_| BranchError::BranchNumberExhausted)
 }
 
@@ -367,7 +369,10 @@ mod tests {
     #[test]
     fn exhausted_counter_never_wraps_or_reuses_numbers() {
         let counter = AtomicU64::new(u64::MAX - 1);
-        assert_eq!(allocate_branch_id(&counter).unwrap(), u64::MAX - 1);
+        assert_eq!(
+            allocate_branch_id(&counter).unwrap(),
+            crate::BranchId::new(u64::MAX - 1)
+        );
         for _ in 0..2 {
             assert!(matches!(
                 allocate_branch_id(&counter),

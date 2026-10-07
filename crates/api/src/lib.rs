@@ -4,34 +4,31 @@
 //! Consumers can use `Arc<dyn Api + Send + Sync>`; builders accept explicit cell values.
 //! All results own their data and expose no storage transaction or cell writer.
 //!
-//! [`GolemDb`] implements Api on a cloneable handle with a shared branch registry.
+//! [`Database`] implements Api on a cloneable handle with a shared branch registry.
 //! Its constructors initialize or validate genesis and select the configured hash.
 //! These contracts are unmetered: no budget, receipt, debug flag, or record version.
 //! Current record storage supports branch reads and committed-head reads only.
-//! Immutable-data types and methods are exposed, but every such GolemDb call
+//! Immutable-data types and methods are exposed, but every such Database call
 //! returns [`ApiError::NotImplemented`] immediately without I/O or state changes.
 //!
 //! ```
-//! use golemdb_api::{Api, CellLimits, CellValue, GenesisConfig, GolemDb,
-//!     HashAlgorithm, OpenConfig, ReadTarget, RecordInput, RecordKey, Projection};
+//! use golemdb_api::{Api, CellLimits, CellValue, Genesis, Database,
+//!     HashAlgorithm, OpenConfig, ReadTarget, RecordOp, RecordKey};
 //!
-//! let config = OpenConfig::new(GenesisConfig {
-//!     hash_function: HashAlgorithm::Keccak256,
-//!     cell_limits: CellLimits {
+//! let config = OpenConfig::new(Genesis::new(HashAlgorithm::Keccak256, CellLimits {
 //!         max_cell_name_len: 32, max_str_len: 64, max_bytes_len: 128,
-//!     },
-//! });
-//! let db = GolemDb::open_memory(&config)?;
+//! }));
+//! let db = Database::open_memory(&config.genesis)?;
 //! let branch = db.begin()?;
 //! let key = RecordKey([0x42; 32]);
-//! db.create(branch, key, RecordInput::new()
+//! db.create(branch, RecordOp::create(key)
 //!     .attribute("price", CellValue::from_i32(50))?
 //!     .field("description", CellValue::from_str("A product"))?)?;
-//! let pending = db.clone().get(ReadTarget::Branch(branch), key, Projection::All)?;
+//! let pending = db.clone().get(ReadTarget::Branch(branch), RecordOp::get(key))?;
 //! assert_eq!(pending.cells[b"price".as_slice()].as_i32(), Some(50));
 //! let commit = db.commit(branch)?;
-//! assert_eq!(commit, 1);
-//! assert_eq!(db.get(ReadTarget::Head, key, Projection::All)?, pending);
+//! assert_eq!(commit.get(), 1);
+//! assert_eq!(db.get(ReadTarget::Head, RecordOp::get(key))?, pending);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -40,50 +37,47 @@ mod database;
 mod error;
 mod genesis;
 mod immutable_data;
-mod input;
 mod open;
 mod open_error;
+mod record_op;
 mod types;
 
-pub use config::{GenesisConfig, OpenConfig, OpenMode};
-pub use database::GolemDb;
+pub use config::{Genesis, OpenConfig, OpenMode};
+pub use database::Database;
 pub use error::{ApiError, Result};
 pub use golemdb_cells::CellLimits;
 pub use golemdb_merkle::HashAlgorithm;
-#[cfg(feature = "mdbx")]
 pub use golemdb_storage_mdbx::MdbxOptions;
 pub use immutable_data::{
     ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow,
 };
-pub use input::{PatchInput, RecordInput};
-pub use open::{OpenInfo, OpenedDatabase, open_backend, open_memory};
-#[cfg(feature = "mdbx")]
-pub use open::{open, open_database, open_with_options};
+pub use open::OpenInfo;
 pub use open_error::{OpenError, OpenResult};
-pub use types::{Projection, SealInfo};
+pub use record_op::{RecordOp, op};
+pub use types::SealInfo;
 
 pub use golemdb_branch::{BranchId, BranchInfo, CommitId};
 pub use golemdb_cells::{CellKind, CellName, CellNameRef, CellType, CellValue, FloatWidth, Width};
-pub use golemdb_record::{CellPatch, ReadTarget, Record, RecordCells, RecordKey, RecordPatch};
+pub use golemdb_record::{ReadTarget, Record, RecordKey};
 
 /// Synchronous record and branch facade. Builders assist callers; implementations
 /// enforce deployment limits, reserved-record rules, identity, and atomic mutations.
 /// Adding a required method requires updating concrete implementations and mocks.
 pub trait Api {
-    /// Stage a caller-keyed record with at least one user cell and return its key.
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey>;
+    /// Stage a caller-keyed record with zero or more user cells and return its key.
+    fn create(&self, branch: BranchId, operation: RecordOp<op::Create>) -> Result<RecordKey>;
 
     /// Read pending or committed state. Head selection and materialization share
     /// one snapshot. Missing projected cells are omitted; an empty projection
     /// still verifies existence. Explicit non-head commits are not yet supported.
-    fn get(&self, target: ReadTarget, key: RecordKey, projection: Projection) -> Result<Record>;
+    fn get(&self, target: ReadTarget, operation: RecordOp<op::Get>) -> Result<Record>;
 
-    /// Atomically edit one record, preserving at least one user cell. Empty
-    /// patches and removals of missing cells are valid on an existing record.
-    fn patch(&self, branch: BranchId, key: RecordKey, patch: PatchInput) -> Result<()>;
+    /// Atomically edit one record. Removing every user cell preserves its identity.
+    /// Empty patches and removals of missing cells are valid on an existing record.
+    fn patch(&self, branch: BranchId, operation: RecordOp<op::Patch>) -> Result<()>;
 
     /// Delete the record and its binding without reclaiming the internal ID.
-    fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()>;
+    fn delete(&self, branch: BranchId, operation: RecordOp<op::Delete>) -> Result<()>;
 
     // Branch lifecycle. IDs are valid only for their issuing engine.
     fn head(&self) -> Result<CommitId>;
@@ -94,8 +88,8 @@ pub trait Api {
     /// Undo one frame. Repeated rollback moves to preceding frames.
     fn rollback(&self, branch: BranchId) -> Result<()>;
 
-    /// Freeze without publishing. Sealed branches reject record access,
-    /// checkpoints, and rollback; metadata, commit, and discard remain legal.
+    /// Freeze without publishing. Sealed branches allow reads but reject writes, checkpoints, and rollback.
+    /// The `#roots` cell added by sealing is visible only after commit.
     fn seal(&self, branch: BranchId) -> Result<SealInfo>;
 
     /// Publish and consume the branch. A live losing branch returns Conflict;

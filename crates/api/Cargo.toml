@@ -5,16 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[features]
-default = []
-mdbx = ["dep:golemdb-storage-mdbx"]
-
 [dependencies]
 golemdb-cells.workspace = true
 golemdb-branch.workspace = true
 golemdb-record.workspace = true
 golemdb-storage.workspace = true
-golemdb-storage-mdbx = { workspace = true, optional = true }
+golemdb-storage-mdbx.workspace = true
 golemdb-merkle.workspace = true
 golemdb-index.workspace = true
 serde.workspace = true

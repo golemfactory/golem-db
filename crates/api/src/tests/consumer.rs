@@ -4,29 +4,30 @@ use std::sync::{Arc, Mutex};
 use crate::*;
 
 struct MockApi {
-    created: Mutex<Vec<(BranchId, RecordKey, RecordInput)>>,
+    created: Mutex<Vec<(BranchId, RecordOp<op::Create>)>>,
     commit_result: Mutex<Option<Result<CommitId>>>,
 }
 
 impl Api for MockApi {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
-        self.created.lock().unwrap().push((branch, key, cells));
+    fn create(&self, branch: BranchId, operation: RecordOp<op::Create>) -> Result<RecordKey> {
+        let key = operation.record_key();
+        self.created.lock().unwrap().push((branch, operation));
         Ok(key)
     }
-    fn get(&self, _: ReadTarget, _: RecordKey, _: Projection) -> Result<Record> {
+    fn get(&self, _: ReadTarget, _: RecordOp<op::Get>) -> Result<Record> {
         panic!("get was not expected by this script")
     }
-    fn patch(&self, _: BranchId, _: RecordKey, _: PatchInput) -> Result<()> {
+    fn patch(&self, _: BranchId, _: RecordOp<op::Patch>) -> Result<()> {
         panic!("patch was not expected by this script")
     }
-    fn delete(&self, _: BranchId, _: RecordKey) -> Result<()> {
+    fn delete(&self, _: BranchId, _: RecordOp<op::Delete>) -> Result<()> {
         panic!("delete was not expected by this script")
     }
     fn begin(&self) -> Result<BranchId> {
-        Ok(7)
+        Ok(golemdb_branch::BranchId::new(7))
     }
     fn commit(&self, branch: BranchId) -> Result<CommitId> {
-        assert_eq!(branch, 7);
+        assert_eq!(branch, golemdb_branch::BranchId::new(7));
         self.commit_result
             .lock()
             .unwrap()
@@ -87,8 +88,7 @@ impl Api for MockApi {
 fn stage_price(api: &dyn Api, branch: BranchId, key: RecordKey) -> Result<RecordKey> {
     api.create(
         branch,
-        key,
-        RecordInput::new().attribute("price", CellValue::from_i32(50))?,
+        RecordOp::create(key).attribute("price", CellValue::from_i32(50))?,
     )
 }
 
@@ -104,7 +104,7 @@ fn create_price(api: Arc<dyn Api + Send + Sync>, key: RecordKey) -> Result<Commi
 #[test]
 fn facade_trait_accepts_thread_safe_mocks_and_injected_failures() {
     let key = RecordKey([1; 32]);
-    for commit_result in [Ok(1), Err(ApiError::Conflict)] {
+    for commit_result in [Ok(CommitId::new(1)), Err(ApiError::Conflict)] {
         let fails = commit_result.is_err();
         let mock = Arc::new(MockApi {
             created: Mutex::new(Vec::new()),
@@ -115,15 +115,15 @@ fn facade_trait_accepts_thread_safe_mocks_and_injected_failures() {
         if fails {
             assert!(matches!(result, Err(ApiError::Conflict)));
         } else {
-            assert_eq!(result.unwrap(), 1);
+            assert_eq!(result.unwrap(), golemdb_branch::CommitId::new(1));
         }
         assert_eq!(mock.created.lock().unwrap().len(), 1);
         assert!(mock.commit_result.lock().unwrap().is_none());
         let calls = mock.created.lock().unwrap();
-        assert_eq!((calls[0].0, calls[0].1), (7, key));
         assert_eq!(
-            calls[0].2.as_cells()[b"price".as_slice()].as_i32(),
-            Some(50)
+            (calls[0].0, calls[0].1.record_key()),
+            (BranchId::new(7), key)
         );
+        assert_eq!(calls[0].1.value("price").unwrap().as_i32(), Some(50));
     }
 }

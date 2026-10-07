@@ -6,7 +6,7 @@ use golemdb_index::Index;
 use golemdb_merkle::{Hash, HashAlgorithm, HashProvider, RootRef};
 use golemdb_storage::{ReadCursor, ReadTransaction, Table, WriteTransaction};
 
-use crate::{GenesisConfig, OpenConfig, OpenError, OpenInfo, OpenMode, OpenResult};
+use crate::{Genesis, OpenConfig, OpenError, OpenInfo, OpenMode, OpenResult};
 
 const SUPERBLOCK: Table = Table("Superblock");
 const FORMAT: u32 = 1;
@@ -19,7 +19,7 @@ fn hash_id(algorithm: HashAlgorithm) -> u16 {
     }
 }
 
-fn initial_cells(config: &GenesisConfig) -> BTreeMap<CellKey, CellValue> {
+fn initial_cells(config: &Genesis) -> BTreeMap<CellKey, CellValue> {
     let mut cells = BTreeMap::new();
     for record in system::ALL {
         cells.insert(
@@ -56,7 +56,7 @@ fn allocator_key() -> CellKey {
 /// Identity is independent of YAML formatting, field order, paths, and backend
 /// options. It commits to format IDs and all sorted, length-framed genesis cells.
 fn identity(
-    config: &GenesisConfig,
+    config: &Genesis,
     cells: &BTreeMap<CellKey, CellValue>,
     hasher: &impl HashProvider,
 ) -> Hash {
@@ -110,7 +110,7 @@ pub(crate) fn prepare(
         // Every genesis cell is a field, so IndexRoot is the canonical empty root.
         // #roots cannot contain its own roots and has no history entries at commit 0.
         let head = Head {
-            commit_id: 0,
+            commit_id: crate::CommitId::GENESIS,
             state_root: update.root.hash(hasher),
             index_root: hasher.hash(&[]),
         };
@@ -168,7 +168,7 @@ fn validate_state(
         .filter(|_| !allocator.is_indexable())
         .filter(|id| *id >= system::FIRST_USER_RECORD_ID)
         .ok_or(OpenError::CorruptState("invalid allocator"))?;
-    if head.commit_id == 0 && next_id != system::FIRST_USER_RECORD_ID {
+    if head.commit_id == crate::CommitId::GENESIS && next_id != system::FIRST_USER_RECORD_ID {
         return Err(OpenError::CorruptState("genesis allocator has advanced"));
     }
     if cells
@@ -189,7 +189,7 @@ fn validate_state(
             ));
         }
     }
-    if head.commit_id == 0 {
+    if head.commit_id == crate::CommitId::GENESIS {
         let mut cursor = tx.cursor(tables::CELL, b"")?;
         for _ in 0..expected.len() {
             cursor
@@ -202,7 +202,7 @@ fn validate_state(
     } else {
         let key = CellKey::new(
             system::ROOTS.id,
-            CellNameRef::raw(&(head.commit_id - 1).to_be_bytes()),
+            CellNameRef::raw(&(head.commit_id.get() - 1).to_be_bytes()),
         );
         let value = cells
             .get(tx, &key)?

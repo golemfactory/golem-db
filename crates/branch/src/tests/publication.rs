@@ -4,7 +4,7 @@ use golemdb_cells::{
 };
 use golemdb_index::{Index, IndexTerm, PostingChange};
 use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher, RootRef};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan_prefix};
+use golemdb_storage::{MemoryStore, Store, Table, WriteTransaction, scan_prefix};
 use std::{
     panic::AssertUnwindSafe,
     sync::{
@@ -39,7 +39,7 @@ fn head(tx: &mut impl WriteTransaction, id: u64, state: Hash, index: Hash) {
     )
     .unwrap();
 }
-fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
+fn seed(db: &impl Store, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
     let mut tx = db.begin_write().unwrap();
     let cells = Cells::new(hash)
         .apply(
@@ -69,7 +69,7 @@ fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey,
     head(&mut tx, id, cells.root.hash(hash), index.root.hash(hash));
     tx.commit().unwrap();
 }
-fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
+fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
         .iter()
@@ -82,19 +82,19 @@ fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
         .collect()
 }
 // A guard fixture: these operations must not even try to open a writer.
-struct ReadOnly<D>(D);
-impl<D> ReadOnly<D> {
-    fn new(inner: D) -> Self {
+struct ReadOnly<S>(S);
+impl<S> ReadOnly<S> {
+    fn new(inner: S) -> Self {
         Self(inner)
     }
 }
-impl<D: Database> Database for ReadOnly<D> {
+impl<S: Store> Store for ReadOnly<S> {
     type Read<'a>
-        = D::Read<'a>
+        = S::Read<'a>
     where
         Self: 'a;
     type Write<'a>
-        = D::Write<'a>
+        = S::Write<'a>
     where
         Self: 'a;
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
@@ -115,7 +115,7 @@ impl HashProvider for PanicHasher {
 
 #[test]
 fn invalid_attribute_failure_keeps_overlay_and_frames_retryable() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let before = snapshot(&db);
     let branches = Branches::new(ReadOnly::new(db.clone()), Keccak256Hasher).unwrap();
@@ -149,7 +149,7 @@ fn invalid_attribute_failure_keeps_overlay_and_frames_retryable() {
 
 #[test]
 fn panicking_seal_does_not_freeze_or_poison_the_branch() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let fail = Arc::new(AtomicBool::new(true));
     let branches = Branches::new(ReadOnly::new(db), PanicHasher(fail.clone())).unwrap();
@@ -162,7 +162,7 @@ fn panicking_seal_does_not_freeze_or_poison_the_branch() {
 
 #[test]
 fn stale_sealed_branches_and_commit_number_overflow_are_rejected() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let branches = Branches::new(ReadOnly::new(db.clone()), Keccak256Hasher).unwrap();
     let branch = branches.begin().unwrap();
@@ -193,14 +193,14 @@ fn stale_sealed_branches_and_commit_number_overflow_are_rejected() {
 
 #[test]
 fn wrong_roots_and_duplicate_lag_one_cell_fail_without_freezing() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Blake3Hasher, 0, &[]);
     let branches = Branches::new(ReadOnly::new(db), Keccak256Hasher).unwrap();
     let branch = branches.begin().unwrap();
     assert!(matches!(branches.seal(branch), Err(BranchError::Cells(_))));
     assert!(!branches.branch_info(branch).unwrap().sealed);
 
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(
         &db,
         &Keccak256Hasher,
@@ -216,7 +216,7 @@ fn wrong_roots_and_duplicate_lag_one_cell_fail_without_freezing() {
     assert!(!branches.branch_info(branch).unwrap().sealed);
 }
 
-fn stage<D: Database, H: HashProvider>(branches: &Branches<D, H>, text: &str) -> u64 {
+fn stage<S: Store, H: HashProvider>(branches: &Branches<S, H>, text: &str) -> crate::BranchId {
     let branch = branches.begin().unwrap();
     branches
         .write(branch, |cells| {
@@ -240,19 +240,19 @@ impl HashProvider for SwitchHash {
 
 #[test]
 fn explicit_seal_is_not_recomputed_by_commit() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let fail = Arc::new(AtomicBool::new(false));
     let branches = Branches::new(db, SwitchHash(fail.clone())).unwrap();
     let branch = stage(&branches, "Alice");
     branches.seal(branch).unwrap();
     fail.store(true, Ordering::Relaxed);
-    assert_eq!(branches.commit(branch).unwrap(), 1);
+    assert_eq!(branches.commit(branch).unwrap(), crate::CommitId::new(1));
 }
 
 #[test]
 fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let controlled = ReadOnly::new(db);
     let branches = Branches::new(controlled, Keccak256Hasher).unwrap();
@@ -297,7 +297,7 @@ fn reachable_rows<const N: usize>(
 }
 
 /// The bitmap root of every term in the committed index.
-fn bitmap_roots(db: &impl Database) -> Vec<Hash> {
+fn bitmap_roots(db: &impl Store) -> Vec<Hash> {
     let tx = db.begin_read().unwrap();
     scan_prefix(&tx, golemdb_index::tables::INDEX, vec![])
         .unwrap()
@@ -307,12 +307,12 @@ fn bitmap_roots(db: &impl Database) -> Vec<Hash> {
 
 #[test]
 fn commits_store_only_trie_rows_reachable_from_committed_roots() {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
-    let genesis = crate::head::read_head_state(&branches.database().begin_read().unwrap()).unwrap();
+    let genesis = crate::head::read_head_state(&branches.store().begin_read().unwrap()).unwrap();
     let (mut states, mut indexes) = (vec![genesis.state_root], vec![genesis.index_root]);
-    let mut bitmaps = bitmap_roots(branches.database());
+    let mut bitmaps = bitmap_roots(branches.store());
     // Commit 1 creates 40 records; commit 2 rewrites most of them and removes some cells.
     for round in 0..2u64 {
         let branch = branches.begin().unwrap();
@@ -340,9 +340,9 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
         states.push(sealed.state_root);
         indexes.push(sealed.index_root);
         branches.commit(branch).unwrap();
-        bitmaps.extend(bitmap_roots(branches.database()));
+        bitmaps.extend(bitmap_roots(branches.store()));
     }
-    let tx = branches.database().begin_read().unwrap();
+    let tx = branches.store().begin_read().unwrap();
     let rows = |table| {
         scan_prefix(&tx, table, vec![])
             .unwrap()

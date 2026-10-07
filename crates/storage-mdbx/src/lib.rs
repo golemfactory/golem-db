@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use libmdbx::{NoWriteMap, RO, RW, TableFlags, TransactionKind, WriteFlags};
 
 use golemdb_storage::{
-    Database, Entry, ReadCursor, ReadTransaction, Result, StorageError, Table, WriteTransaction,
+    Entry, ReadCursor, ReadTransaction, Result, StorageError, Store, Table, WriteTransaction,
 };
 
 /// Backend capacity settings, not table declarations or logical storage quotas.
@@ -31,18 +31,18 @@ impl Default for MdbxOptions {
 /// byte ordering and unique keys (no external integer/reverse/DUPSORT tables).
 ///
 /// ```
-/// use golemdb_storage::{Database, ReadTransaction, Table, WriteTransaction};
-/// use golemdb_storage_mdbx::MdbxDatabase;
+/// use golemdb_storage::{Store, ReadTransaction, Table, WriteTransaction};
+/// use golemdb_storage_mdbx::MdbxStore;
 /// let dir = tempfile::tempdir()?;
-/// let db = MdbxDatabase::open(dir.path())?;
-/// let mut tx = db.begin_write()?;
+/// let store = MdbxStore::open(dir.path())?;
+/// let mut tx = store.begin_write()?;
 /// tx.put(Table("Example"), b"key", b"value")?;
 /// tx.commit()?;
-/// assert_eq!(db.begin_read()?.get(Table("Example"), b"key")?, Some(b"value".to_vec()));
+/// assert_eq!(store.begin_read()?.get(Table("Example"), b"key")?, Some(b"value".to_vec()));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone)]
-pub struct MdbxDatabase {
+pub struct MdbxStore {
     inner: Arc<libmdbx::Database<NoWriteMap>>,
     limits: Limits,
 }
@@ -65,7 +65,7 @@ impl Limits {
     }
 }
 
-impl MdbxDatabase {
+impl MdbxStore {
     /// Create the directory if needed and open a durable read/write environment.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, MdbxOptions::default())
@@ -133,6 +133,7 @@ impl MdbxDatabase {
 
 fn backend(error: libmdbx::Error) -> StorageError {
     match error {
+        libmdbx::Error::MapFull => StorageError::Full,
         libmdbx::Error::KeyExist => StorageError::AlreadyExists,
         error => StorageError::Backend(Box::new(error)),
     }
@@ -145,7 +146,7 @@ pub struct MdbxTransaction<'db, K: TransactionKind> {
 pub type MdbxReadTransaction<'db> = MdbxTransaction<'db, RO>;
 pub type MdbxWriteTransaction<'db> = MdbxTransaction<'db, RW>;
 
-impl Database for MdbxDatabase {
+impl Store for MdbxStore {
     fn max_key_size(&self) -> usize {
         self.limits.key
     }

@@ -6,7 +6,7 @@ use golemdb_cells::{
 use golemdb_index::{Index, IndexTerm};
 use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
 use golemdb_record::{CellPatch, ReadTarget, RecordCells, RecordError, RecordKey, Records};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+use golemdb_storage::{MemoryStore, Store, Table, WriteTransaction};
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const OTHER: RecordKey = RecordKey([0x43; 32]);
@@ -34,7 +34,7 @@ fn binding(key: RecordKey) -> CellKey {
 
 // Explicit initialized state, as supplied by the future connection/genesis layer.
 // Build the real cell trie so seal/commit exercise production root updates.
-fn initialize(db: &impl Database) {
+fn initialize(db: &impl Store) {
     let mut changes = Vec::new();
     let mut put = |id, name: CellNameRef<'_>, value| {
         changes.push(CellChange::Put {
@@ -85,7 +85,10 @@ fn initialize(db: &impl Database) {
     tx.commit().unwrap();
 }
 
-fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u64 {
+fn allocated<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
+    b: golemdb_branch::BranchId,
+) -> u64 {
     branches
         .read(b, |cell_reader| {
             cell_reader.get(&CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID))
@@ -95,7 +98,11 @@ fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u6
         .as_u64()
         .unwrap()
 }
-fn id<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64, key: RecordKey) -> u64 {
+fn id<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
+    b: golemdb_branch::BranchId,
+    key: RecordKey,
+) -> u64 {
     branches
         .read(b, |cell_reader| cell_reader.get(&binding(key)))
         .unwrap()
@@ -104,7 +111,7 @@ fn id<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64, key: RecordK
         .unwrap()
 }
 
-fn lifecycle(db: impl Database + Clone) {
+fn lifecycle(db: impl Store + Clone) {
     initialize(&db);
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
@@ -114,15 +121,18 @@ fn lifecycle(db: impl Database + Clone) {
     records.create(competitor, OTHER, values("loser")).unwrap();
     assert_eq!(id(&branches, competitor, OTHER), 64);
     branches.seal(b).unwrap();
-    assert!(matches!(
-        records.get(ReadTarget::Branch(b), KEY, None),
-        Err(RecordError::Branch(BranchError::Sealed))
-    ));
+    assert_eq!(
+        records.get(ReadTarget::Branch(b), KEY, None).unwrap().cells[b"name".as_slice()].as_str(),
+        Some("Alice")
+    );
     assert!(matches!(
         records.delete(b, KEY),
         Err(RecordError::Branch(BranchError::Sealed))
     ));
-    assert_eq!(branches.commit(b).unwrap(), 1);
+    assert_eq!(
+        branches.commit(b).unwrap(),
+        golemdb_branch::CommitId::new(1)
+    );
     assert!(matches!(
         records.get(ReadTarget::Branch(competitor), OTHER, None),
         Err(RecordError::Branch(BranchError::HandleInvalid))
@@ -132,21 +142,24 @@ fn lifecycle(db: impl Database + Clone) {
         Err(RecordError::Branch(BranchError::HandleInvalid))
     ));
     assert!(matches!(
-        records.get(ReadTarget::Commit(0), KEY, None),
+        records.get(ReadTarget::Commit(golemdb_branch::CommitId::new(0)), KEY, None),
         Err(RecordError::CommitUnavailable {
-            requested: 0,
-            head: 1
-        })
+            requested, head }) if requested.get() == 0 && head.get() == 1
     ));
     assert!(matches!(
-        records.get(ReadTarget::Commit(2), KEY, None),
+        records.get(ReadTarget::Commit(golemdb_branch::CommitId::new(2)), KEY, None),
         Err(RecordError::CommitUnavailable {
-            requested: 2,
-            head: 1
-        })
+            requested, head }) if requested.get() == 2 && head.get() == 1
     ));
     assert_eq!(
-        records.get(ReadTarget::Commit(1), KEY, None).unwrap().cells[b"name".as_slice()],
+        records
+            .get(
+                ReadTarget::Commit(golemdb_branch::CommitId::new(1)),
+                KEY,
+                None
+            )
+            .unwrap()
+            .cells[b"name".as_slice()],
         text("Alice", true)
     );
     let term = IndexTerm::new("name", CellType::Str, b"Alice").unwrap();
@@ -214,7 +227,11 @@ fn lifecycle(db: impl Database + Clone) {
     assert_eq!(id(&reopened, b, KEY), 65);
     assert_eq!(
         records
-            .get(ReadTarget::Commit(3), KEY, None)
+            .get(
+                ReadTarget::Commit(golemdb_branch::CommitId::new(3)),
+                KEY,
+                None
+            )
             .unwrap()
             .cells
             .len(),
@@ -231,27 +248,35 @@ fn lifecycle(db: impl Database + Clone) {
     records.delete(b, KEY).unwrap();
     reopened.commit(b).unwrap();
     assert!(matches!(
-        records.get(ReadTarget::Commit(4), KEY, None),
+        records.get(
+            ReadTarget::Commit(golemdb_branch::CommitId::new(4)),
+            KEY,
+            None
+        ),
         Err(RecordError::NotFound)
     ));
 }
 
 #[test]
 fn memory_commit_reopen_and_index_lifecycle() {
-    lifecycle(MemoryDatabase::new());
+    lifecycle(MemoryStore::new());
 }
 
 #[test]
 fn mdbx_commit_and_database_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    lifecycle(golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap());
-    let db = golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap();
+    lifecycle(golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap());
+    let db = golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap();
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     let b = branches.begin().unwrap();
     assert_eq!(allocated(&branches, b), 66);
     assert!(matches!(
-        records.get(ReadTarget::Commit(4), KEY, None),
+        records.get(
+            ReadTarget::Commit(golemdb_branch::CommitId::new(4)),
+            KEY,
+            None
+        ),
         Err(RecordError::NotFound)
     ));
     records.create(b, KEY, values("after restart")).unwrap();

@@ -1,7 +1,7 @@
 use golemdb_branch::{BranchId, Branches, CellRead, read_head};
 use golemdb_cells::{CellKey, CellLimits, CellName, CellReader, CellValue, reserved, system};
 use golemdb_merkle::HashProvider;
-use golemdb_storage::{Database, ReadTransaction};
+use golemdb_storage::{ReadTransaction, Store};
 
 use crate::{
     CellPatch, ReadTarget, Record, RecordCells, RecordError, RecordKey, RecordPatch, Result, state,
@@ -10,11 +10,11 @@ use crate::{
 /// Cloneable record facade; clones share the supplied branch manager.
 /// Failed mutations restore both the working cells and branch version. Successful
 /// mutations remain uncommitted until the branch manager commits them.
-pub struct Records<D, H> {
-    branches: Branches<D, H>,
+pub struct Records<S, H> {
+    branches: Branches<S, H>,
 }
 
-impl<D, H> Clone for Records<D, H> {
+impl<S, H> Clone for Records<S, H> {
     fn clone(&self) -> Self {
         Self {
             branches: self.branches.clone(),
@@ -22,8 +22,8 @@ impl<D, H> Clone for Records<D, H> {
     }
 }
 
-impl<D: Database, H: HashProvider> Records<D, H> {
-    pub fn new(branches: Branches<D, H>) -> Self {
+impl<S: Store, H: HashProvider> Records<S, H> {
+    pub fn new(branches: Branches<S, H>) -> Self {
         Self { branches }
     }
 
@@ -48,7 +48,7 @@ impl<D: Database, H: HashProvider> Records<D, H> {
                 })
                 .map_err(Into::into),
             ReadTarget::Head | ReadTarget::Commit(_) => {
-                let tx = self.branches.database().begin_read()?;
+                let tx = self.branches.store().begin_read()?;
                 let head = read_head(&tx)?;
                 if let ReadTarget::Commit(requested) = target
                     && requested != head
@@ -60,7 +60,7 @@ impl<D: Database, H: HashProvider> Records<D, H> {
         }
     }
 
-    /// Create a record with at least one user cell. Exact reserved keys are
+    /// Create a record with zero or more user cells. Exact reserved keys are
     /// rejected before branch access; all other validation follows handle checks.
     /// Names and values are checked in byte order before identity/allocation reads.
     pub fn create(
@@ -73,11 +73,6 @@ impl<D: Database, H: HashProvider> Records<D, H> {
         self.branches
             .write(branch, |cell_writer| {
                 let cell_reader = cell_writer.as_read();
-                if values.is_empty() {
-                    return Err(RecordError::InvalidArgument(
-                        "a record needs at least one user cell".into(),
-                    ));
-                }
                 let limits = state::limits(&cell_reader)?;
                 for (name, value) in &values {
                     validate(&limits, name, Some(value))?;
@@ -111,8 +106,8 @@ impl<D: Database, H: HashProvider> Records<D, H> {
     }
 
     /// Apply a partial mutation. Empty patches and removing absent cells are
-    /// no-ops on an existing record. At least one user cell must remain, excluding
-    /// #key. A removal-only patch scans the record to check its final shape.
+    /// no-ops on an existing record. Removing the last user cell preserves the
+    /// record's #key and binding; only delete removes the record.
     /// A set may change both type and indexed status. Identical sets and other
     /// no-ops add no journal entries and leave the branch version unchanged.
     pub fn patch(&self, branch: BranchId, key: RecordKey, changes: RecordPatch) -> Result<()> {
@@ -131,33 +126,6 @@ impl<D: Database, H: HashProvider> Records<D, H> {
                             CellPatch::Remove => None,
                         },
                     )?;
-                }
-                if changes
-                    .values()
-                    .any(|change| matches!(change, CellPatch::Remove))
-                {
-                    let has_set = changes
-                        .values()
-                        .any(|change| matches!(change, CellPatch::Set(_)));
-                    if !has_set {
-                        let survives = cell_reader
-                            .scan_prefix(&id.to_be_bytes())?
-                            .collect::<golemdb_branch::Result<Vec<_>>>()?
-                            .iter()
-                            .any(|(address, _)| {
-                                // Only valid user names count, not structural cells.
-                                limits.parse_user_name(address.name().as_bytes()).is_ok()
-                                    && !matches!(
-                                        changes.get(address.name().as_bytes()),
-                                        Some(CellPatch::Remove)
-                                    )
-                            });
-                        if !survives {
-                            return Err(RecordError::InvalidArgument(
-                                "cannot remove the last user cell".into(),
-                            ));
-                        }
-                    }
                 }
                 for (name, change) in changes {
                     let address = CellKey::new(id, name);

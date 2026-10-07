@@ -5,19 +5,17 @@ use golemdb_branch::Branches;
 use golemdb_cells::{CellKey, CellReader, reserved, system, tables};
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
 use golemdb_record::Records;
-use golemdb_storage::{
-    Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
-};
+use golemdb_storage::{MemoryStore, ReadTransaction, Store, Table, WriteTransaction, scan_prefix};
 
 const SUPERBLOCK: Table = Table("Superblock");
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const YAML: &str = "hash_function: keccak-256\ncell_limits:\n  max_cell_name_len: 32\n  max_str_len: 64\n  max_bytes_len: 128\n";
 
 fn config() -> OpenConfig {
-    OpenConfig::new(GenesisConfig::from_yaml(YAML).unwrap())
+    OpenConfig::new(Genesis::from_yaml(YAML).unwrap())
 }
 
-fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
+pub(super) fn snapshot(db: &impl Store) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     [
         SUPERBLOCK,
@@ -40,12 +38,12 @@ fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
 
 #[test]
 fn yaml_is_explicit_strict_and_has_canonical_identity() {
-    let first = GenesisConfig::from_yaml(YAML).unwrap();
-    let reordered = GenesisConfig::from_yaml("# same deployment\ncell_limits: {max_bytes_len: 128, max_str_len: 64, max_cell_name_len: 32}\nhash_function: keccak-256\n").unwrap();
+    let first = Genesis::from_yaml(YAML).unwrap();
+    let reordered = Genesis::from_yaml("# same deployment\ncell_limits: {max_bytes_len: 128, max_str_len: 64, max_cell_name_len: 32}\nhash_function: keccak-256\n").unwrap();
     assert_eq!(first, reordered);
     assert_eq!(
-        open_memory(&OpenConfig::new(first)).unwrap().info(),
-        open_memory(&OpenConfig::new(reordered)).unwrap().info()
+        Database::open_memory(&first).unwrap().info(),
+        Database::open_memory(&reordered).unwrap().info()
     );
     for bad in [
         "",
@@ -54,10 +52,7 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
         "hash_function: sha256\ncell_limits: {}",
         "hash_function: blake3\nhash_function: keccak-256\ncell_limits: {}",
     ] {
-        assert!(matches!(
-            GenesisConfig::from_yaml(bad),
-            Err(OpenError::Yaml(_))
-        ));
+        assert!(matches!(Genesis::from_yaml(bad), Err(OpenError::Yaml(_))));
     }
     for bad in [
         YAML.replace("max_str_len: 64", "max_str_len: 64\n  unexpected: 1"),
@@ -65,27 +60,27 @@ fn yaml_is_explicit_strict_and_has_canonical_identity() {
         YAML.replace("max_str_len: 64", "max_str_len: 64\n  max_str_len: 65"),
         YAML.replace("max_str_len: 64", "max_str_len: -1"),
     ] {
-        assert!(GenesisConfig::from_yaml(&bad).is_err());
+        assert!(Genesis::from_yaml(&bad).is_err());
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("genesis.yaml");
     std::fs::write(&path, YAML).unwrap();
-    assert_eq!(GenesisConfig::load(&path).unwrap(), first);
+    assert_eq!(Genesis::load(&path).unwrap(), first);
     assert!(matches!(
-        GenesisConfig::load(dir.path().join("missing")),
+        Genesis::load(dir.path().join("missing")),
         Err(OpenError::Io(_))
     ));
 }
 
-fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
-    db: D,
+fn lifecycle<S: Store + Clone + Send + Sync + 'static, H: HashProvider + Copy>(
+    db: S,
     config: OpenConfig,
     hasher: H,
 ) -> OpenInfo {
-    let opened = open_backend(db.clone(), &config).unwrap();
+    let opened = Database::from_store(db.clone(), &config).unwrap();
     let genesis = *opened.info();
     assert!(genesis.created);
-    assert_eq!(genesis.commit_id, 0);
+    assert_eq!(genesis.commit_id, golemdb_branch::CommitId::new(0));
     assert_ne!(genesis.state_root, hasher.hash(&[]));
     assert_eq!(genesis.index_root, hasher.hash(&[]));
     assert_eq!(opened.genesis(), &config.genesis);
@@ -115,7 +110,7 @@ fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
         assert_eq!(reader.scan_record(id).unwrap().count(), 1);
     }
     let before = snapshot(&db);
-    let reopened = open_backend(db.clone(), &config).unwrap();
+    let reopened = Database::from_store(db.clone(), &config).unwrap();
     assert_eq!(
         *reopened.info(),
         OpenInfo {
@@ -125,28 +120,28 @@ fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
     );
     assert_eq!(snapshot(&db), before);
 
-    let branches = Branches::new(opened.into_database(), hasher).unwrap();
+    let branches = Branches::new(db.clone(), hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
-    let input = RecordInput::new()
-        .attribute("price", CellValue::from_i32(50))
-        .unwrap();
-    records.create(branch, KEY, input.into_cells()).unwrap();
-    assert_eq!(branches.commit(branch).unwrap(), 1);
+    let cells = golemdb_record::RecordCells::from([(
+        CellNameRef::raw(b"price").into(),
+        CellValue::from_i32(50)
+            .with_kind(CellKind::Attribute)
+            .unwrap(),
+    )]);
+    records.create(branch, KEY, cells).unwrap();
+    assert_eq!(
+        branches.commit(branch).unwrap(),
+        golemdb_branch::CommitId::new(1)
+    );
     let before = snapshot(&db);
-    let reopened = open_backend(
-        db.clone(),
-        &OpenConfig {
-            mode: OpenMode::ExistingOnly,
-            ..config
-        },
-    )
-    .unwrap();
+    let reopened =
+        Database::from_store(db.clone(), &config.with_mode(OpenMode::ExistingOnly)).unwrap();
     assert!(!reopened.info().created);
-    assert_eq!(reopened.info().commit_id, 1);
+    assert_eq!(reopened.info().commit_id, golemdb_branch::CommitId::new(1));
     assert_eq!(reopened.info().genesis_id, genesis.genesis_id);
     assert_eq!(snapshot(&db), before);
-    let fresh = Records::new(Branches::new(reopened.into_database(), hasher).unwrap());
+    let fresh = Records::new(Branches::new(db.clone(), hasher).unwrap());
     assert_eq!(
         fresh.get(ReadTarget::Head, KEY, None).unwrap().cells[b"price".as_slice()].as_i32(),
         Some(50)
@@ -175,45 +170,26 @@ fn lifecycle<D: Database + Clone, H: HashProvider + Copy>(
 
 #[test]
 fn memory_genesis_and_committed_reopen_support_both_hash_algorithms() {
-    let keccak = lifecycle(MemoryDatabase::new(), config(), Keccak256Hasher);
+    let keccak = lifecycle(MemoryStore::new(), config(), Keccak256Hasher);
     let mut blake = config();
     blake.genesis.hash_function = HashAlgorithm::Blake3;
-    let blake = lifecycle(MemoryDatabase::new(), blake, Blake3Hasher);
+    let blake = lifecycle(MemoryStore::new(), blake, Blake3Hasher);
     assert_ne!(keccak.genesis_id, blake.genesis_id);
     assert_ne!(keccak.state_root, blake.state_root);
 }
 
-fn modes(db: impl Database + Clone) {
+fn modes(db: impl Store + Clone + Send + Sync + 'static) {
     let config = config();
     assert!(matches!(
-        open_backend(
-            db.clone(),
-            &OpenConfig {
-                mode: OpenMode::ExistingOnly,
-                ..config
-            }
-        ),
+        Database::from_store(db.clone(), &config.with_mode(OpenMode::ExistingOnly)),
         Err(OpenError::NotInitialized)
     ));
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
-    let opened = open_backend(
-        db.clone(),
-        &OpenConfig {
-            mode: OpenMode::CreateNew,
-            ..config
-        },
-    )
-    .unwrap();
+    let opened = Database::from_store(db.clone(), &config.with_mode(OpenMode::CreateNew)).unwrap();
     assert!(opened.info().created);
     let before = snapshot(&db);
     assert!(matches!(
-        open_backend(
-            db.clone(),
-            &OpenConfig {
-                mode: OpenMode::CreateNew,
-                ..config
-            }
-        ),
+        Database::from_store(db.clone(), &config.with_mode(OpenMode::CreateNew)),
         Err(OpenError::AlreadyInitialized)
     ));
     for change in 0..4 {
@@ -225,7 +201,7 @@ fn modes(db: impl Database + Clone) {
             _ => different.genesis.cell_limits.max_bytes_len += 1,
         }
         assert!(matches!(
-            open_backend(db.clone(), &different),
+            Database::from_store(db.clone(), &different),
             Err(OpenError::GenesisMismatch)
         ));
         assert_eq!(snapshot(&db), before);
@@ -234,7 +210,7 @@ fn modes(db: impl Database + Clone) {
 
 #[test]
 fn opening_modes_and_genesis_mismatch_do_not_change_memory_state() {
-    modes(MemoryDatabase::new());
+    modes(MemoryStore::new());
 }
 
 #[test]
@@ -246,7 +222,7 @@ fn partial_or_foreign_state_is_never_initialized() {
         Table("Foreign"),
     ] {
         for delete in [false, true] {
-            let db = MemoryDatabase::new();
+            let db = MemoryStore::new();
             let mut tx = db.begin_write().unwrap();
             tx.put(table, b"key", b"partial").unwrap();
             if delete {
@@ -260,7 +236,7 @@ fn partial_or_foreign_state_is_never_initialized() {
                 OpenMode::CreateNew,
             ] {
                 assert!(matches!(
-                    open_backend(db.clone(), &OpenConfig { mode, ..config() }),
+                    Database::from_store(db.clone(), &config().with_mode(mode)),
                     Err(OpenError::CorruptState(_))
                 ));
             }
@@ -283,7 +259,8 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         b"head",
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_database();
+            let db = MemoryStore::new();
+            Database::from_store(db.clone(), &config()).unwrap();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(SUPERBLOCK, key, b"x").unwrap();
@@ -292,7 +269,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
             }
             tx.commit().unwrap();
             let before = snapshot(&db);
-            assert!(open_backend(db.clone(), &config()).is_err());
+            assert!(Database::from_store(db.clone(), &config()).is_err());
             assert_eq!(snapshot(&db), before);
         }
     }
@@ -306,7 +283,8 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
         ),
     ] {
         for malformed in [false, true] {
-            let db = open_memory(&config()).unwrap().into_database();
+            let db = MemoryStore::new();
+            Database::from_store(db.clone(), &config()).unwrap();
             let mut tx = db.begin_write().unwrap();
             if malformed {
                 tx.put(
@@ -320,7 +298,7 @@ fn missing_or_malformed_metadata_and_reserved_cells_fail_without_repair() {
             }
             tx.commit().unwrap();
             let before = snapshot(&db);
-            assert!(open_backend(db.clone(), &config()).is_err());
+            assert!(Database::from_store(db.clone(), &config()).is_err());
             assert_eq!(snapshot(&db), before);
         }
     }
@@ -333,11 +311,12 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
         (b"hash_fn", 99u16.to_be_bytes().to_vec()),
         (b"roaring", 99u16.to_be_bytes().to_vec()),
     ] {
-        let db = open_memory(&config()).unwrap().into_database();
+        let db = MemoryStore::new();
+        Database::from_store(db.clone(), &config()).unwrap();
         let mut tx = db.begin_write().unwrap();
         tx.put(SUPERBLOCK, key, &bytes).unwrap();
         tx.commit().unwrap();
-        let result = open_backend(db, &config());
+        let result = Database::from_store(db, &config());
         assert!(matches!(
             result,
             Err(OpenError::UnsupportedFormat(99)
@@ -345,16 +324,16 @@ fn unsupported_format_ids_and_missing_trie_roots_are_rejected() {
                 | OpenError::UnsupportedRoaring(99))
         ));
     }
-    let opened = open_memory(&config()).unwrap();
+    let db = MemoryStore::new();
+    let opened = Database::from_store(db.clone(), &config()).unwrap();
     let root = opened.info().state_root;
-    let db = opened.into_database();
     let mut tx = db.begin_write().unwrap();
     assert!(tx.delete(tables::CELL_TRIE, &root).unwrap());
     tx.commit().unwrap();
-    assert!(open_backend(db, &config()).is_err());
+    assert!(Database::from_store(db, &config()).is_err());
 }
 
-fn concurrent(db: impl Database + Clone + Send + Sync, mode: OpenMode, different: bool) {
+fn concurrent(db: impl Store + Clone + Send + Sync + 'static, mode: OpenMode, different: bool) {
     let mut a = config();
     a.mode = mode;
     let mut b = a;
@@ -365,7 +344,7 @@ fn concurrent(db: impl Database + Clone + Send + Sync, mode: OpenMode, different
     let (first, second) = std::thread::scope(|scope| {
         let call = |cfg, barrier: Arc<Barrier>| {
             barrier.wait();
-            open_backend(db.clone(), &cfg).map(|opened| *opened.info())
+            Database::from_store(db.clone(), &cfg).map(|opened| *opened.info())
         };
         let first_barrier = barrier.clone();
         let one = scope.spawn(move || call(a, first_barrier));
@@ -410,7 +389,7 @@ fn memory_initializers_serialize_and_compare_genesis() {
         (OpenMode::CreateNew, false),
         (OpenMode::CreateIfMissing, true),
     ] {
-        concurrent(MemoryDatabase::new(), mode, different);
+        concurrent(MemoryStore::new(), mode, different);
     }
 }
 
@@ -420,12 +399,12 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = config();
         cfg.genesis.hash_function = hash;
-        let memory = *open_memory(&cfg).unwrap().info();
+        let memory = *Database::open_memory(&cfg.genesis).unwrap().info();
         {
-            let db = open(dir.path(), &cfg).unwrap();
+            let db = Database::open(dir.path(), &cfg).unwrap();
             assert_eq!(db.info(), &memory);
         }
-        let db = golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap();
+        let db = golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap();
         let branches = match hash {
             HashAlgorithm::Keccak256 => {
                 let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
@@ -435,10 +414,10 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
                     .create(
                         branch,
                         KEY,
-                        RecordInput::new()
-                            .field("price", CellValue::from_i32(50))
-                            .unwrap()
-                            .into_cells(),
+                        golemdb_record::RecordCells::from([(
+                            CellNameRef::raw(b"price").into(),
+                            CellValue::from_i32(50),
+                        )]),
                     )
                     .unwrap();
                 branches.commit(branch).unwrap()
@@ -451,28 +430,22 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
                     .create(
                         branch,
                         KEY,
-                        RecordInput::new()
-                            .field("price", CellValue::from_i32(50))
-                            .unwrap()
-                            .into_cells(),
+                        golemdb_record::RecordCells::from([(
+                            CellNameRef::raw(b"price").into(),
+                            CellValue::from_i32(50),
+                        )]),
                     )
                     .unwrap();
                 branches.commit(branch).unwrap()
             }
         };
-        assert_eq!(branches, 1);
+        assert_eq!(branches, golemdb_branch::CommitId::new(1));
         drop(db);
-        let opened = open(
-            dir.path(),
-            &OpenConfig {
-                mode: OpenMode::ExistingOnly,
-                ..cfg
-            },
-        )
-        .unwrap();
-        assert_eq!(opened.info().commit_id, 1);
+        let opened = Database::open(dir.path(), &cfg.with_mode(OpenMode::ExistingOnly)).unwrap();
+        assert_eq!(opened.info().commit_id, golemdb_branch::CommitId::new(1));
         assert_eq!(opened.info().genesis_id, memory.genesis_id);
-        let db = opened.into_database();
+        drop(opened);
+        let db = golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap();
         let tx = db.begin_read().unwrap();
         assert_eq!(
             CellReader::new(&tx)
@@ -486,7 +459,7 @@ fn mdbx_genesis_matches_memory_and_reopens_from_disk_after_commit() {
 #[test]
 fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let dir = tempfile::tempdir().unwrap();
-    modes(golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap());
+    modes(golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap());
     for (mode, different) in [
         (OpenMode::CreateIfMissing, false),
         (OpenMode::CreateNew, false),
@@ -494,7 +467,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         concurrent(
-            golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap(),
+            golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap(),
             mode,
             different,
         );
@@ -502,38 +475,32 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("absent");
     assert!(matches!(
-        open(
-            &missing,
-            &OpenConfig {
-                mode: OpenMode::ExistingOnly,
-                ..config()
-            }
-        ),
+        Database::open(&missing, &config().with_mode(OpenMode::ExistingOnly)),
         Err(OpenError::NotInitialized)
     ));
     assert!(!missing.exists());
-    let db = golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap();
+    let db = golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap();
     let mut cfg = config();
     // Name + separator + tag + value must fit, not just the string by itself.
     cfg.genesis.cell_limits.max_str_len = db.max_key_size() as u32;
     assert!(matches!(
-        open_backend(db.clone(), &cfg),
+        Database::from_store(db.clone(), &cfg),
         Err(OpenError::InvalidConfig(_))
     ));
     assert!(db.begin_write().unwrap().is_pristine().unwrap());
     cfg.genesis.cell_limits.max_str_len =
         db.max_key_size() as u32 - cfg.genesis.cell_limits.max_cell_name_len - 2;
-    let opened = open_backend(db, &cfg).unwrap();
-    let branches = Branches::new(opened.into_database(), Keccak256Hasher).unwrap();
+    Database::from_store(db.clone(), &cfg).unwrap();
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     let branch = branches.begin().unwrap();
-    let input = RecordInput::new()
-        .attribute(
-            &"a".repeat(cfg.genesis.cell_limits.max_cell_name_len as usize),
-            CellValue::from_str(&"v".repeat(cfg.genesis.cell_limits.max_str_len as usize)),
-        )
+    let name = "a".repeat(cfg.genesis.cell_limits.max_cell_name_len as usize);
+    let value = CellValue::from_str(&"v".repeat(cfg.genesis.cell_limits.max_str_len as usize))
+        .with_kind(CellKind::Attribute)
         .unwrap();
-    records.create(branch, KEY, input.into_cells()).unwrap();
+    let cells =
+        golemdb_record::RecordCells::from([(CellNameRef::raw(name.as_bytes()).into(), value)]);
+    records.create(branch, KEY, cells).unwrap();
     branches.commit(branch).unwrap();
 }
 
@@ -541,7 +508,7 @@ fn mdbx_modes_limits_and_shared_environment_concurrent_opening() {
 fn mdbx_foreign_tables_even_when_empty_are_not_pristine_storage() {
     for delete in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let db = golemdb_storage_mdbx::MdbxDatabase::open(dir.path()).unwrap();
+        let db = golemdb_storage_mdbx::MdbxStore::open(dir.path()).unwrap();
         let mut tx = db.begin_write().unwrap();
         tx.put(Table("Foreign"), b"key", b"value").unwrap();
         if delete {
@@ -550,7 +517,7 @@ fn mdbx_foreign_tables_even_when_empty_are_not_pristine_storage() {
         assert!(!tx.is_pristine().unwrap());
         tx.commit().unwrap();
         assert!(matches!(
-            open_backend(db.clone(), &config()),
+            Database::from_store(db.clone(), &config()),
             Err(OpenError::CorruptState(_))
         ));
         assert_eq!(

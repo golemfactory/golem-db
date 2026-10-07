@@ -5,7 +5,7 @@ use golemdb_cells::{
     reserved, system,
 };
 use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+use golemdb_storage::{MemoryStore, Store, Table, WriteTransaction};
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const OTHER: RecordKey = RecordKey([0x43; 32]);
@@ -13,14 +13,14 @@ const OTHER: RecordKey = RecordKey([0x43; 32]);
 // Publish after acquiring a snapshot to deterministically exercise a concurrent
 // head change during get, without timing-dependent thread scheduling.
 struct AdvancingReadDb {
-    db: MemoryDatabase,
+    db: MemoryStore,
     after_snapshot: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     reads: std::sync::atomic::AtomicUsize,
 }
 
-impl Database for AdvancingReadDb {
-    type Read<'db> = <MemoryDatabase as Database>::Read<'db>;
-    type Write<'db> = <MemoryDatabase as Database>::Write<'db>;
+impl Store for AdvancingReadDb {
+    type Read<'db> = <MemoryStore as Store>::Read<'db>;
+    type Write<'db> = <MemoryStore as Store>::Write<'db>;
 
     fn begin_read(&self) -> golemdb_storage::Result<Self::Read<'_>> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -64,25 +64,30 @@ fn head_selection_and_record_read_share_one_snapshot() {
     .unwrap();
     let reader = Records::new(reader_branches.clone());
     let writer = branches.clone();
-    *reader_branches.database().after_snapshot.lock().unwrap() = Some(Box::new(move || {
+    *reader_branches.store().after_snapshot.lock().unwrap() = Some(Box::new(move || {
         writer.commit(next).unwrap();
     }));
-    reader_branches.database().reads.store(0, Ordering::SeqCst);
+    reader_branches.store().reads.store(0, Ordering::SeqCst);
     let snapshot = reader.get(ReadTarget::Head, KEY, None).unwrap();
     assert_eq!(snapshot.cells[b"name".as_slice()].as_str(), Some("before"));
-    assert_eq!(reader_branches.database().reads.load(Ordering::SeqCst), 1);
-    assert_eq!(branches.head().unwrap(), 2);
+    assert_eq!(reader_branches.store().reads.load(Ordering::SeqCst), 1);
+    assert_eq!(branches.head().unwrap(), golemdb_branch::CommitId::new(2));
     let latest = reader.get(ReadTarget::Head, KEY, None).unwrap();
     assert_eq!(latest.cells[b"name".as_slice()].as_str(), Some("after"));
     assert!(matches!(
-        reader.get(ReadTarget::Commit(1), KEY, None),
+        reader.get(ReadTarget::Commit(golemdb_branch::CommitId::new(1)), KEY, None),
         Err(RecordError::CommitUnavailable {
-            requested: 1,
-            head: 2
-        })
+            requested, head
+        }) if requested.get() == 1 && head.get() == 2
     ));
     assert_eq!(
-        reader.get(ReadTarget::Commit(2), KEY, None).unwrap(),
+        reader
+            .get(
+                ReadTarget::Commit(golemdb_branch::CommitId::new(2)),
+                KEY,
+                None
+            )
+            .unwrap(),
         latest
     );
 }
@@ -110,7 +115,7 @@ fn binding(key: RecordKey) -> CellKey {
 
 // Explicit initialized state, as supplied by the future connection/genesis layer.
 // Build the real cell trie so seal/commit exercise production root updates.
-fn initialize(db: &impl Database) {
+fn initialize(db: &impl Store) {
     let mut changes = Vec::new();
     let mut put = |id, name: CellNameRef<'_>, value| {
         changes.push(CellChange::Put {
@@ -162,19 +167,19 @@ fn initialize(db: &impl Database) {
 }
 
 fn setup() -> (
-    MemoryDatabase,
-    Branches<MemoryDatabase, Keccak256Hasher>,
-    Records<MemoryDatabase, Keccak256Hasher>,
+    MemoryStore,
+    Branches<MemoryStore, Keccak256Hasher>,
+    Records<MemoryStore, Keccak256Hasher>,
 ) {
-    let db = MemoryDatabase::new();
+    let db = MemoryStore::new();
     initialize(&db);
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     let records = Records::new(branches.clone());
     (db, branches, records)
 }
-fn snapshot<D: Database>(
-    branches: &Branches<D, Keccak256Hasher>,
-    b: u64,
+fn snapshot<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
+    b: golemdb_branch::BranchId,
 ) -> Vec<(CellKey, CellValue)> {
     branches
         .read(b, |cell_reader| {
@@ -184,7 +189,10 @@ fn snapshot<D: Database>(
         })
         .unwrap()
 }
-fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u64 {
+fn allocated<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
+    b: golemdb_branch::BranchId,
+) -> u64 {
     branches
         .read(b, |cell_reader| {
             cell_reader.get(&CellKey::new(system::ALLOC.id, reserved::NEXT_RECORD_ID))
@@ -194,7 +202,11 @@ fn allocated<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64) -> u6
         .as_u64()
         .unwrap()
 }
-fn id<D: Database>(branches: &Branches<D, Keccak256Hasher>, b: u64, key: RecordKey) -> u64 {
+fn id<S: Store>(
+    branches: &Branches<S, Keccak256Hasher>,
+    b: golemdb_branch::BranchId,
+    key: RecordKey,
+) -> u64 {
     branches
         .read(b, |cell_reader| cell_reader.get(&binding(key)))
         .unwrap()
@@ -214,7 +226,10 @@ fn work_in_progress_is_isolated_and_projection_preserves_identity() {
     assert_eq!(full.cells.len(), 2);
     assert_eq!(full.cells[b"#key".as_slice()].as_bytes32(), Some(KEY.0));
     assert!(!full.cells[b"#key".as_slice()].is_indexable());
-    for target in [ReadTarget::Branch(b), ReadTarget::Commit(0)] {
+    for target in [
+        ReadTarget::Branch(b),
+        ReadTarget::Commit(golemdb_branch::CommitId::new(0)),
+    ] {
         assert!(matches!(
             records.get(target, KEY, None),
             Err(RecordError::NotFound)
@@ -279,7 +294,7 @@ fn reserved_records_are_readable_but_only_exact_keys_are_protected() {
     let projection = [name(&system::ALLOC.key)];
     let bindings = records
         .get(
-            ReadTarget::Commit(0),
+            ReadTarget::Commit(golemdb_branch::CommitId::new(0)),
             RecordKey(system::RECORD_KEYS.key),
             Some(&projection),
         )
@@ -305,10 +320,6 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
     assert!(matches!(
         records.create(b, KEY, values("duplicate")),
         Err(RecordError::AlreadyExists)
-    ));
-    assert!(matches!(
-        records.create(b, OTHER, Default::default()),
-        Err(RecordError::InvalidArgument(_))
     ));
     for invalid in [
         b"#key".as_slice(),
@@ -341,10 +352,6 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
         ));
     }
     assert!(matches!(
-        records.patch(b, KEY, [(name(b"name"), CellPatch::Remove)].into()),
-        Err(RecordError::InvalidArgument(_))
-    ));
-    assert!(matches!(
         records.patch(b, OTHER, Default::default()),
         Err(RecordError::NotFound)
     ));
@@ -357,7 +364,7 @@ fn invalid_operations_leave_cells_allocator_and_version_unchanged() {
 }
 
 #[test]
-fn patches_check_final_shape_and_no_ops_add_no_journal_entries() {
+fn patches_update_cells_and_no_ops_add_no_journal_entries() {
     let (_, branches, records) = setup();
     let b = branches.begin().unwrap();
     records.create(b, KEY, values("Alice")).unwrap();
@@ -533,7 +540,10 @@ fn committed_cell_reader_keeps_one_snapshot_when_head_advances() {
         )
         .unwrap();
     let tx = db.begin_read().unwrap();
-    assert_eq!(golemdb_branch::read_head(&tx).unwrap(), 1);
+    assert_eq!(
+        golemdb_branch::read_head(&tx).unwrap(),
+        golemdb_branch::CommitId::new(1)
+    );
     let cell_reader = golemdb_cells::CellReader::new(&tx);
     branches.commit(b).unwrap();
     assert_eq!(
@@ -548,7 +558,14 @@ fn committed_cell_reader_keeps_one_snapshot_when_head_advances() {
     assert_eq!(stored.len(), 2);
     assert_eq!(stored[1].1, text("before", true));
     assert_eq!(
-        records.get(ReadTarget::Commit(2), KEY, None).unwrap().cells[b"name".as_slice()],
+        records
+            .get(
+                ReadTarget::Commit(golemdb_branch::CommitId::new(2)),
+                KEY,
+                None
+            )
+            .unwrap()
+            .cells[b"name".as_slice()],
         text("after", true)
     );
 }

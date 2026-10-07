@@ -37,13 +37,12 @@ fn public_errors_preserve_meaning_without_nested_matching() {
     ));
     assert!(matches!(
         ApiError::from(RecordError::CommitUnavailable {
-            requested: 0,
-            head: 2
+            requested: golemdb_branch::CommitId::new(0),
+            head: golemdb_branch::CommitId::new(2)
         }),
         ApiError::CommitUnavailable {
-            requested: 0,
-            head: 2
-        }
+            requested, head
+        } if requested.get() == 0 && head.get() == 2
     ));
 }
 
@@ -58,24 +57,22 @@ fn invalid_input_and_internal_failures_keep_diagnostic_sources() {
             .downcast_ref::<CellValueParseError>(),
         Some(&CellValueParseError::NotIndexable)
     );
+    assert_eq!(invalid.to_string(), "invalid argument: invalid cell value");
     let invalid = ApiError::from(CellNameError::Empty);
+    assert_eq!(invalid.to_string(), "invalid argument: invalid cell name");
     assert_eq!(
         invalid.source().unwrap().downcast_ref::<CellNameError>(),
         Some(&CellNameError::Empty)
     );
     let invalid = ApiError::from(RecordError::InvalidArgument("deployment limit".into()));
-    assert!(
-        invalid
-            .source()
-            .unwrap()
-            .downcast_ref::<RecordError>()
-            .is_some()
-    );
+    assert_eq!(invalid.to_string(), "invalid argument: deployment limit");
+    assert!(invalid.source().is_none());
     let error = ApiError::from(BranchError::Storage(
         golemdb_storage::StorageError::Backend("disk error".into()),
     ));
     assert!(matches!(&error, ApiError::Internal { .. }));
-    assert!(error.to_string().contains("disk error"));
+    assert_eq!(error.to_string(), "internal database error");
+    assert!(error.source().unwrap().to_string().contains("disk error"));
     assert!(
         error
             .source()
@@ -94,4 +91,24 @@ fn invalid_input_and_internal_failures_keep_diagnostic_sources() {
     // Public errors can be shared by the same thread-safe consumers as dyn Api.
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ApiError>();
+}
+
+#[test]
+fn capacity_errors_remain_public_through_internal_wrappers() {
+    use golemdb_cells::CellError;
+    use golemdb_index::IndexError;
+    use golemdb_merkle::MerkleError;
+    use golemdb_storage::StorageError;
+    for error in [
+        RecordError::Storage(StorageError::Full),
+        RecordError::Cells(CellError::Storage(StorageError::Full)),
+        RecordError::Cells(CellError::Merkle(MerkleError::Storage(StorageError::Full))),
+        RecordError::Branch(BranchError::Storage(StorageError::Full)),
+        RecordError::Branch(BranchError::Index(IndexError::Storage(StorageError::Full))),
+        RecordError::Branch(BranchError::Index(IndexError::Merkle(
+            MerkleError::Storage(StorageError::Full),
+        ))),
+    ] {
+        assert!(matches!(ApiError::from(error), ApiError::StoreFull));
+    }
 }

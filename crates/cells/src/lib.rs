@@ -100,18 +100,18 @@
 //! ```
 //! use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells};
 //! use golemdb_merkle::{Keccak256Hasher, RootRef};
-//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//! use golemdb_storage::{Store, MemoryStore, WriteTransaction};
 //!
-//! let db = MemoryDatabase::new();
+//! let store = MemoryStore::new();
 //! let hasher = Keccak256Hasher;
 //! let cells = Cells::new(&hasher);
 //! let key = CellKey::new(42, CellNameRef::parse_user(b"status", 64)?);
-//! let mut tx = db.begin_write()?;
+//! let mut tx = store.begin_write()?;
 //! let update = cells.apply(&mut tx, RootRef::Empty, [CellChange::Put {
 //!     key: key.clone(), value: CellValue::parse(b"\x02ready".to_vec())?,
 //! }])?;
 //! tx.commit()?;
-//! let read = db.begin_read()?;
+//! let read = store.begin_read()?;
 //! assert_eq!(cells.get(&read, &key)?.unwrap().as_str(), Some("ready"));
 //! assert_eq!(cells.reopen(&read, update.root.hash(&hasher))?, update.root);
 //! # Ok::<(), Box<dyn std::error::Error>>(())

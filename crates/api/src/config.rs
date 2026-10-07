@@ -6,16 +6,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::{OpenError, OpenResult};
 
-/// Immutable deployment settings. Every YAML field is required; no admission
+/// Immutable startup values written at commit zero and validated on reopening.
+/// Every YAML field is required; no admission
 /// limit or hash algorithm is silently selected by the opener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GenesisConfig {
+#[non_exhaustive]
+pub struct Genesis {
     pub hash_function: HashAlgorithm,
     pub cell_limits: CellLimits,
 }
 
-impl GenesisConfig {
+impl Genesis {
+    pub const fn new(hash_function: HashAlgorithm, cell_limits: CellLimits) -> Self {
+        Self {
+            hash_function,
+            cell_limits,
+        }
+    }
+
     pub fn from_yaml(yaml: &str) -> OpenResult<Self> {
         serde_saphyr::from_str(yaml).map_err(OpenError::Yaml)
     }
@@ -67,16 +76,22 @@ pub enum OpenMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OpenConfig {
-    pub genesis: GenesisConfig,
+    pub genesis: Genesis,
     pub mode: OpenMode,
 }
 
 impl OpenConfig {
-    pub fn new(genesis: GenesisConfig) -> Self {
+    pub const fn new(genesis: Genesis) -> Self {
         Self {
             genesis,
             mode: OpenMode::CreateIfMissing,
         }
+    }
+
+    pub const fn with_mode(mut self, mode: OpenMode) -> Self {
+        self.mode = mode;
+        self
     }
 }

@@ -1,15 +1,15 @@
+use crate::open::OpenedStore;
 use std::sync::Arc;
 
 use golemdb_branch::Branches;
 use golemdb_merkle::{Blake3Hasher, HashProvider, Keccak256Hasher};
 use golemdb_record::Records;
-use golemdb_storage::Database;
+use golemdb_storage::Store;
 
 use crate::{
-    Api, ApiError, BranchId, BranchInfo, CommitId, GenesisConfig, HashAlgorithm,
-    ImmutableDataAddress, ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenConfig,
-    OpenInfo, OpenResult, OpenedDatabase, PatchInput, Projection, ReadTarget, Record, RecordInput,
-    RecordKey, Result, SealInfo,
+    Api, ApiError, BranchId, BranchInfo, CommitId, Genesis, HashAlgorithm, ImmutableDataAddress,
+    ImmutableDataKey, ImmutableDataOrdinal, ImmutableDataRow, OpenConfig, OpenInfo, OpenResult,
+    ReadTarget, Record, RecordKey, RecordOp, Result, SealInfo, op,
 };
 
 /// Cloneable public database handle. Clones share one engine and branch registry;
@@ -20,55 +20,48 @@ use crate::{
 /// per API operation; hashing within an operation uses a concrete provider.
 /// No storage writer or unrestricted cell access is exposed by this handle.
 #[derive(Clone)]
-pub struct GolemDb {
-    engine: Arc<dyn Api + Send + Sync>,
-    genesis: GenesisConfig,
+pub struct Database {
+    inner: Arc<dyn Api + Send + Sync>,
+    genesis: Genesis,
     info: OpenInfo,
 }
 
-impl GolemDb {
-    /// Initialize a fresh memory backend. For a shared existing backend use
-    /// from_backend; for another handle to the same engine use clone.
-    pub fn open_memory(config: &OpenConfig) -> OpenResult<Self> {
-        crate::open_memory(config)?.into_golem_db()
+impl Database {
+    /// Initialize a fresh memory store. Clone the handle to share its branches.
+    pub fn open_memory(genesis: &Genesis) -> OpenResult<Self> {
+        Self::from_store(
+            golemdb_storage::MemoryStore::new(),
+            &OpenConfig::new(*genesis),
+        )
     }
 
-    /// Initialize or validate a caller-supplied backend and construct one engine.
-    /// Separate calls create separate branch registries, even over shared storage.
-    pub fn from_backend<D: Database + Send + Sync + 'static>(
-        database: D,
+    /// Initialize or validate a caller-supplied store. Separate calls create
+    /// separate branch registries, even over shared storage.
+    pub fn from_store<S: Store + Send + Sync + 'static>(
+        store: S,
         config: &OpenConfig,
     ) -> OpenResult<Self> {
-        crate::open_backend(database, config)?.into_golem_db()
+        crate::open::open_store(store, config)?.into_database()
     }
 
-    /// Open durable storage. Close all handles before independently reopening the
-    /// same MDBX directory within one process; use clone to share a live engine.
-    #[cfg(feature = "mdbx")]
-    pub fn open_database(
-        path: impl AsRef<std::path::Path>,
-        config: &OpenConfig,
-    ) -> OpenResult<Self> {
-        crate::open_database(path, config)?.into_golem_db()
-    }
-
-    /// Alias for open_database.
-    #[cfg(feature = "mdbx")]
+    /// Open MDBX storage with default capacity settings. Clone a live handle to
+    /// share its environment; close all handles before independently reopening
+    /// the same path.
     pub fn open(path: impl AsRef<std::path::Path>, config: &OpenConfig) -> OpenResult<Self> {
-        Self::open_database(path, config)
+        Self::open_with_options(path, config, crate::MdbxOptions::default())
     }
 
-    #[cfg(feature = "mdbx")]
+    /// Open MDBX with local capacity settings, which do not affect genesis identity.
     pub fn open_with_options(
         path: impl AsRef<std::path::Path>,
         config: &OpenConfig,
         options: crate::MdbxOptions,
     ) -> OpenResult<Self> {
-        crate::open_with_options(path, config, options)?.into_golem_db()
+        crate::open::open_mdbx(path, config, options)?.into_database()
     }
 
     /// Immutable deployment configuration validated at opening.
-    pub fn genesis(&self) -> &GenesisConfig {
+    pub fn genesis(&self) -> &Genesis {
         &self.genesis
     }
 
@@ -78,60 +71,60 @@ impl GolemDb {
         &self.info
     }
 
-    pub(crate) fn from_opened<D: Database + Send + Sync + 'static>(
-        opened: OpenedDatabase<D>,
+    pub(crate) fn from_opened<S: Store + Send + Sync + 'static>(
+        opened: OpenedStore<S>,
     ) -> OpenResult<Self> {
         let genesis = *opened.genesis();
         let info = *opened.info();
-        let database = opened.into_database();
-        let engine: Arc<dyn Api + Send + Sync> = match genesis.hash_function {
-            HashAlgorithm::Keccak256 => Arc::new(Engine::new(database, Keccak256Hasher)?),
-            HashAlgorithm::Blake3 => Arc::new(Engine::new(database, Blake3Hasher)?),
+        let store = opened.into_store();
+        let inner: Arc<dyn Api + Send + Sync> = match genesis.hash_function {
+            HashAlgorithm::Keccak256 => Arc::new(Inner::new(store, Keccak256Hasher)?),
+            HashAlgorithm::Blake3 => Arc::new(Inner::new(store, Blake3Hasher)?),
         };
         Ok(Self {
-            engine,
+            inner,
             genesis,
             info,
         })
     }
 }
 
-impl Api for GolemDb {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
-        self.engine.create(branch, key, cells)
+impl Api for Database {
+    fn create(&self, branch: BranchId, operation: RecordOp<op::Create>) -> Result<RecordKey> {
+        self.inner.create(branch, operation)
     }
-    fn get(&self, target: ReadTarget, key: RecordKey, projection: Projection) -> Result<Record> {
-        self.engine.get(target, key, projection)
+    fn get(&self, target: ReadTarget, operation: RecordOp<op::Get>) -> Result<Record> {
+        self.inner.get(target, operation)
     }
-    fn patch(&self, branch: BranchId, key: RecordKey, patch: PatchInput) -> Result<()> {
-        self.engine.patch(branch, key, patch)
+    fn patch(&self, branch: BranchId, operation: RecordOp<op::Patch>) -> Result<()> {
+        self.inner.patch(branch, operation)
     }
-    fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()> {
-        self.engine.delete(branch, key)
+    fn delete(&self, branch: BranchId, operation: RecordOp<op::Delete>) -> Result<()> {
+        self.inner.delete(branch, operation)
     }
     fn head(&self) -> Result<CommitId> {
-        self.engine.head()
+        self.inner.head()
     }
     fn begin(&self) -> Result<BranchId> {
-        self.engine.begin()
+        self.inner.begin()
     }
     fn branch_info(&self, branch: BranchId) -> Result<BranchInfo> {
-        self.engine.branch_info(branch)
+        self.inner.branch_info(branch)
     }
     fn checkpoint(&self, branch: BranchId) -> Result<()> {
-        self.engine.checkpoint(branch)
+        self.inner.checkpoint(branch)
     }
     fn rollback(&self, branch: BranchId) -> Result<()> {
-        self.engine.rollback(branch)
+        self.inner.rollback(branch)
     }
     fn seal(&self, branch: BranchId) -> Result<SealInfo> {
-        self.engine.seal(branch)
+        self.inner.seal(branch)
     }
     fn commit(&self, branch: BranchId) -> Result<CommitId> {
-        self.engine.commit(branch)
+        self.inner.commit(branch)
     }
     fn discard(&self, branch: BranchId) -> Result<()> {
-        self.engine.discard(branch)
+        self.inner.discard(branch)
     }
 
     fn immutable_data_append(
@@ -141,64 +134,64 @@ impl Api for GolemDb {
         key: Option<ImmutableDataKey>,
         row: ImmutableDataRow,
     ) -> Result<ImmutableDataOrdinal> {
-        self.engine.immutable_data_append(branch, segment, key, row)
+        self.inner.immutable_data_append(branch, segment, key, row)
     }
     fn immutable_data_get(
         &self,
         segment: &str,
         address: ImmutableDataAddress,
     ) -> Result<ImmutableDataRow> {
-        self.engine.immutable_data_get(segment, address)
+        self.inner.immutable_data_get(segment, address)
     }
     fn immutable_data_range_of(
         &self,
         segment: &str,
         commit: CommitId,
     ) -> Result<std::ops::Range<ImmutableDataOrdinal>> {
-        self.engine.immutable_data_range_of(segment, commit)
+        self.inner.immutable_data_range_of(segment, commit)
     }
     fn immutable_data_rows_of(
         &self,
         segment: &str,
         commit: CommitId,
     ) -> Result<Vec<ImmutableDataRow>> {
-        self.engine.immutable_data_rows_of(segment, commit)
+        self.inner.immutable_data_rows_of(segment, commit)
     }
 }
 
 /// Both layers reference the same branch registry. Business rules, locking, and
 /// transaction boundaries remain in record and branch, not in this adapter.
-struct Engine<D, H> {
-    branches: Branches<D, H>,
-    records: Records<D, H>,
+struct Inner<S, H> {
+    branches: Branches<S, H>,
+    records: Records<S, H>,
 }
 
-impl<D: Database, H: HashProvider> Engine<D, H> {
-    fn new(database: D, hasher: H) -> OpenResult<Self> {
-        let branches = Branches::new(database, hasher)?;
+impl<S: Store, H: HashProvider> Inner<S, H> {
+    fn new(store: S, hasher: H) -> OpenResult<Self> {
+        let branches = Branches::new(store, hasher)?;
         let records = Records::new(branches.clone());
         Ok(Self { branches, records })
     }
 }
 
-impl<D: Database, H: HashProvider> Api for Engine<D, H> {
-    fn create(&self, branch: BranchId, key: RecordKey, cells: RecordInput) -> Result<RecordKey> {
+impl<S: Store, H: HashProvider> Api for Inner<S, H> {
+    fn create(&self, branch: BranchId, operation: RecordOp<op::Create>) -> Result<RecordKey> {
+        let (key, cells) = operation.into_create();
+        self.records.create(branch, key, cells).map_err(Into::into)
+    }
+    fn get(&self, target: ReadTarget, operation: RecordOp<op::Get>) -> Result<Record> {
         self.records
-            .create(branch, key, cells.into_cells())
+            .get(target, operation.record_key(), operation.names())
             .map_err(Into::into)
     }
-    fn get(&self, target: ReadTarget, key: RecordKey, projection: Projection) -> Result<Record> {
-        self.records
-            .get(target, key, projection.as_names())
-            .map_err(Into::into)
+    fn patch(&self, branch: BranchId, operation: RecordOp<op::Patch>) -> Result<()> {
+        let (key, patch) = operation.into_patch();
+        self.records.patch(branch, key, patch).map_err(Into::into)
     }
-    fn patch(&self, branch: BranchId, key: RecordKey, patch: PatchInput) -> Result<()> {
+    fn delete(&self, branch: BranchId, operation: RecordOp<op::Delete>) -> Result<()> {
         self.records
-            .patch(branch, key, patch.into_patch())
+            .delete(branch, operation.record_key())
             .map_err(Into::into)
-    }
-    fn delete(&self, branch: BranchId, key: RecordKey) -> Result<()> {
-        self.records.delete(branch, key).map_err(Into::into)
     }
     fn head(&self) -> Result<CommitId> {
         self.branches.head().map_err(Into::into)
