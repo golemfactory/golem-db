@@ -2023,11 +2023,6 @@ be changed without forking the state.
 
 ### The Canonical Trie and the Physical Trie
 
-**Current implementation:** branch publication reclaims obsolete physical rows
-using `NodeRefs` reference counts in the same transaction as head. `#roots` keeps
-commitments, not historical trees or values; historical reads from §7 are not
-implemented. GC applies to newly created databases only; there is no migration.
-
 **Canonically, a Merkle Patricia Trie is addressed by path.** A node's identity is the accumulated
 sequence of nibbles consumed from the root to reach it, and its value is the hash of its payload. Node
 hashes are defined recursively — an interior node hashes its own structure together with its children's hashes

@@ -3,10 +3,6 @@
 The interface Golem DB presents to the layer above it: **what a caller can say and what comes back.**
 No rationale, no mechanics, no storage layout — every such question is answered by reference:
 
-**Implementation scope:** this is the target API. The current engine supports
-only head state, without historical reads or proofs. New databases use mandatory
-GC; legacy formats are rejected without migration.
-
 - **[golem-db-design.md](golem-db-design.md)** — data model, schema, reserved records, history,
   commitment, branches, commit immutable data, sorting and paging (chapters 1–13). Cited as
   _design §n_.

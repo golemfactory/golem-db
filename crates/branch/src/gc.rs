@@ -1,4 +1,11 @@
 //! Persistent reference counting for head-only physical state.
+//!
+//! The head owns cell/index trie roots; current index terms own bitmap roots.
+//! `NodeRefs` counts these root references and edges from live physical parents.
+//! Each parent's edges count once, regardless of how many owners that parent has.
+//! Acquire new roots before releasing old ones; a zero count releases children
+//! and deletes the node. Counts, deletions and head publication share one writer.
+//! Genesis seeds counts in empty tables; existing databases are never migrated.
 use std::collections::{BTreeMap, BTreeSet};
 
 use golemdb_cells::tables as cells;
