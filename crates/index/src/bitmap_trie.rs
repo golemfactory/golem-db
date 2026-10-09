@@ -2,7 +2,9 @@ use crate::{BITMAP_BRANCH_DOMAIN, BITMAP_LEAF_DOMAIN};
 use golemdb_merkle::{Hash, HashProvider, LeafRef, RootRef, Trie};
 use golemdb_storage::{ReadTransaction, StorageError, WriteTransaction};
 
-use crate::{BITMAP_TRIE_PATH_BYTES, Bitmap, BitmapContainer, IndexError, Result, path, tables};
+use crate::{
+    BITMAP_TRIE_PATH_BYTES, Bitmap, BitmapContainer, BitmapError, IndexError, Result, path, tables,
+};
 
 pub(crate) struct BitmapTrie<'h, H: HashProvider> {
     trie: Trie<'h, H, BITMAP_TRIE_PATH_BYTES>,
@@ -81,19 +83,28 @@ impl<'h, H: HashProvider> BitmapTrie<'h, H> {
 
     /// Changes must be sorted by (container path, offset), with one final desired
     /// membership per posting. The index writer sorts and deduplicates the batch.
-    /// Consecutive changes share one container load and finalization.
+    /// Consecutive changes share one container load and finalization, and the
+    /// changed containers update the trie in one batch.
     pub(crate) fn apply(
         &self,
         tx: &mut impl WriteTransaction,
         before: Option<Hash>,
         changes: impl IntoIterator<Item = (u64, u16, bool)>,
     ) -> Result<Option<Hash>> {
-        let (mut root, mut cached) = match before {
+        let (root, mut cached) = match before {
             Some(hash) => self.reopen(tx, hash)?,
             None => (RootRef::Empty, None),
         };
         let mut changes = changes.into_iter().peekable();
+        let mut edits = Vec::new();
+        let mut previous = None;
         while let Some(&(hi, _, _)) = changes.peek() {
+            // Each container is visited once, so the original root answers as
+            // the evolving root would.
+            if let Some(previous) = previous.filter(|&previous| previous >= hi) {
+                return Err(BitmapError::UnsortedPaths { previous, path: hi }.into());
+            }
+            previous = Some(hi);
             let path = path::path_bytes(hi)?;
             let old = self.trie.get(tx, root, &path)?;
             let mut container = match old {
@@ -115,7 +126,7 @@ impl<'h, H: HashProvider> BitmapTrie<'h, H> {
                 continue;
             }
             if container.is_empty() {
-                root = self.trie.remove(tx, root, &path)?;
+                edits.push((path, None));
             } else {
                 let bytes = container.canonical_bytes()?;
                 let hash = self.hasher.hash_parts(&[&[BITMAP_LEAF_DOMAIN], &bytes]);
@@ -130,9 +141,10 @@ impl<'h, H: HashProvider> BitmapTrie<'h, H> {
                     }
                     Err(error) => return Err(error.into()),
                 }
-                root = self.trie.insert(tx, root, LeafRef { path, hash })?;
+                edits.push((path, Some(hash)));
             }
         }
+        let root = self.trie.apply(tx, root, edits)?;
         Ok((root != RootRef::Empty).then(|| root.hash(self.hasher)))
     }
 }

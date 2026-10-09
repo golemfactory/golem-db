@@ -50,22 +50,22 @@ impl<'h, H: HashProvider> CellTrie<'h, H> {
         Ok(())
     }
 
-    /// Insert or replace the leaf at `H(key)`, or remove it when `value` is `None`.
-    /// Returns the updated root and retains old branches for copy-on-write
-    /// history. The caller updates the `Cell` table in the same transaction
-    /// and must abort that transaction if a mutation fails.
-    pub(crate) fn set(
+    /// For each key, insert or replace the leaf at `H(key)`, or remove it when
+    /// the value is `None`, in one batched trie update. Returns the updated root
+    /// and retains old branches for copy-on-write history. The caller updates
+    /// the `Cell` table in the same transaction and must abort that transaction
+    /// if a mutation fails.
+    pub(crate) fn set<'a>(
         &self,
         tx: &mut impl WriteTransaction,
         root: RootRef<CELL_TRIE_PATH_BYTES>,
-        key: &[u8],
-        value: Option<&CellValue>,
+        changes: impl IntoIterator<Item = (&'a [u8], Option<&'a CellValue>)>,
     ) -> Result<RootRef<CELL_TRIE_PATH_BYTES>> {
-        let path = self.hasher.hash(key);
-        Ok(match value {
-            Some(value) => self.trie.insert(tx, root, self.leaf(path, value))?,
-            None => self.trie.remove(tx, root, &path)?,
-        })
+        let edits = changes.into_iter().map(|(key, value)| {
+            let path = self.hasher.hash(key);
+            (path, value.map(|value| self.leaf(path, value).hash))
+        });
+        Ok(self.trie.apply(tx, root, edits)?)
     }
 
     /// Recover root metadata from a digest and the transaction's snapshot.

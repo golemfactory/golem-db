@@ -1,7 +1,14 @@
-use std::{cell::Cell, collections::BTreeMap};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+};
 
-use crate::{Hash, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef, Trie};
-use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction};
+use crate::{
+    BranchNodeCompact, Hash, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef, Trie,
+};
+use golemdb_storage::{
+    Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
+};
 use proptest::prelude::*;
 
 const TABLE: Table = Table("TestBranches");
@@ -128,6 +135,184 @@ proptest! {
         exercise::<6>(&ops);
         exercise::<32>(&ops);
     }
+}
+
+/// Branch rows reachable from `root`.
+fn branches<const N: usize>(tx: &impl ReadTransaction, root: RootRef<N>) -> BTreeSet<Vec<u8>> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(root) = stack.pop() {
+        if let RootRef::Branch(hash) = root {
+            let node =
+                BranchNodeCompact::<N>::decode(&tx.get(TABLE, &hash).unwrap().unwrap()).unwrap();
+            stack.extend((0..16).filter_map(|slot| node.child(slot)));
+            seen.insert(hash.to_vec());
+        }
+    }
+    seen
+}
+
+/// Every row of the test branch table.
+fn rows(tx: &impl ReadTransaction) -> BTreeSet<Vec<u8>> {
+    scan_prefix(tx, TABLE, vec![])
+        .unwrap()
+        .map(|row| row.unwrap().0)
+        .collect()
+}
+
+/// `batch` over the paths `key` gives each id.
+fn batch_ids<const N: usize>(base: &[(u8, u32)], edits: &[(u8, u32, bool)]) {
+    let base: Vec<_> = base.iter().map(|&(id, value)| (key(id), value)).collect();
+    let edits: Vec<_> = (edits.iter())
+        .map(|&(id, value, present)| (key(id), value, present))
+        .collect();
+    batch::<N>(&base, &edits);
+}
+
+/// Commit `base` one leaf at a time, then apply `edits` as one batch. The batch
+/// must match the oracle and the same edits made one at a time, keep the old
+/// root readable, and write only branches the new root reaches.
+fn batch<const N: usize>(base: &[([u8; N], u32)], edits: &[([u8; N], u32, bool)]) {
+    let db = MemoryDatabase::new();
+    let trie = Trie::<_, N>::new(TABLE, TEST_BRANCH_DOMAIN, &HASH);
+    let mut tx = db.begin_write().unwrap();
+    let mut expected = BTreeMap::new();
+    let mut old = RootRef::Empty;
+    for &(path, value) in base {
+        old = trie.insert(&mut tx, old, leaf(path, value)).unwrap();
+        expected.insert(path, leaf(path, value));
+    }
+    tx.commit().unwrap();
+    let old_leaves: Vec<_> = expected.values().copied().collect();
+    let before = rows(&db.begin_read().unwrap());
+    let mut changes = Vec::new();
+    for &(path, value, present) in edits {
+        let new = leaf(path, value);
+        changes.push((new.path, present.then_some(new.hash)));
+        if present {
+            expected.insert(new.path, new);
+        } else {
+            expected.remove(&new.path);
+        }
+    }
+    let mut tx = db.begin_write().unwrap();
+    let root = trie.apply(&mut tx, old, changes).unwrap();
+    tx.commit().unwrap();
+    let read = db.begin_read().unwrap();
+    let sorted: Vec<_> = expected.values().copied().collect();
+    assert_eq!(root.hash(&HASH), bulk(&sorted, 0));
+    assert_eq!(
+        trie.walk(&read, root)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        sorted
+    );
+    // History is kept, and the batch wrote no branch the new root misses.
+    assert_eq!(
+        trie.walk(&read, old)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        old_leaves
+    );
+    let written: BTreeSet<_> = rows(&read).difference(&before).cloned().collect();
+    assert!(written.is_subset(&branches(&read, root)));
+    let mut tx = db.begin_write().unwrap();
+    let mut one_at_a_time = old;
+    for &(path, value, present) in edits {
+        one_at_a_time = if present {
+            trie.insert(&mut tx, one_at_a_time, leaf(path, value))
+        } else {
+            trie.remove(&mut tx, one_at_a_time, &path)
+        }
+        .unwrap();
+    }
+    tx.abort();
+    assert_eq!(root, one_at_a_time);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+    #[test]
+    fn batched_edits_match_bulk_and_write_only_reachable_branches(
+        base in prop::collection::vec((0u8..64, any::<u32>()), 0..40),
+        edits in prop::collection::vec((0u8..64, any::<u32>(), any::<bool>()), 0..60),
+    ) {
+        batch_ids::<6>(&base, &edits);
+        batch_ids::<32>(&base, &edits);
+    }
+}
+
+/// Path bytes whose nibbles are mostly 0 and 1, so random paths share long
+/// prefixes and part at every depth, including inside a branch's prefix.
+const DENSE_BYTES: [u8; 5] = [0x00, 0x01, 0x10, 0x11, 0xa0];
+/// Trailing path bytes drawn from `DENSE_BYTES`; wider paths are padded like `key`.
+const DENSE_TAIL_BYTES: usize = 3;
+
+/// A random path tail of `DENSE_TAIL_BYTES` bytes from `DENSE_BYTES`.
+fn dense_tail() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(prop::sample::select(&DENSE_BYTES[..]), DENSE_TAIL_BYTES)
+}
+
+/// `batch` over paths ending in each tail, or in its last `N` bytes if shorter.
+fn dense_batch<const N: usize>(base: &[(Vec<u8>, u32)], edits: &[(Vec<u8>, u32, bool)]) {
+    let path = |tail: &[u8]| {
+        let mut path = [0xaa; N];
+        let width = tail.len().min(N);
+        path[N - width..].copy_from_slice(&tail[tail.len() - width..]);
+        path
+    };
+    let base: Vec<_> = base
+        .iter()
+        .map(|(tail, value)| (path(tail), *value))
+        .collect();
+    let edits: Vec<_> = (edits.iter())
+        .map(|(tail, value, present)| (path(tail), *value, *present))
+        .collect();
+    batch::<N>(&base, &edits);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(300))]
+    // Few values, so some insertions repeat the stored leaf.
+    #[test]
+    fn batched_edits_on_dense_paths_match_edits_made_one_at_a_time(
+        base in prop::collection::vec((dense_tail(), 0u32..4), 0..24),
+        edits in prop::collection::vec((dense_tail(), 0u32..4, any::<bool>()), 0..24),
+    ) {
+        dense_batch::<1>(&base, &edits);
+        dense_batch::<2>(&base, &edits);
+        dense_batch::<6>(&base, &edits);
+        dense_batch::<32>(&base, &edits);
+    }
+}
+
+#[test]
+fn batch_removing_every_leaf_empties_the_trie() {
+    let all: Vec<_> = (0..64).map(|id| (id, 0, false)).collect();
+    batch_ids::<6>(&(0..64).map(|id| (id, 7)).collect::<Vec<_>>(), &all);
+    batch_ids::<32>(&[(3, 1), (40, 2)], &all);
+}
+
+/// Under `key`, ids 0, 1, 2 and 16 differ only in the last two nibbles, so
+/// {0, 1, 2} form a branch beside leaf 16. Ids 8 and 9 sit in another root slot.
+fn lone_children<const N: usize>() {
+    // At the root, a stored branch takes over its emptied parent's prefix.
+    batch_ids::<N>(&[(0, 1), (1, 2), (16, 3)], &[(16, 0, false)]);
+    // So does a branch the same batch rewrites.
+    batch_ids::<N>(
+        &[(0, 1), (1, 2), (2, 3), (16, 4)],
+        &[(2, 0, false), (16, 0, false)],
+    );
+    // Below the root, beside the untouched branch {8, 9}.
+    let below = [(0, 1), (1, 2), (16, 3), (8, 4), (9, 5)];
+    batch_ids::<N>(&below, &[(16, 0, false)]);
+    batch_ids::<N>(&below, &[(16, 0, false), (1, 7, true)]);
+}
+
+#[test]
+fn lone_child_absorbs_the_prefix_of_its_emptied_parent() {
+    lone_children::<6>();
+    lone_children::<32>();
 }
 
 #[test]
@@ -341,6 +526,45 @@ fn updates_touch_only_affected_branches_and_walk_is_lazy() {
     assert_eq!(tx.reads.get(), 0);
     assert_eq!(walk.next().unwrap().unwrap(), leaf([0; 6], 1));
     assert_eq!(tx.reads.get(), 2);
+}
+
+/// Leaves below the long prefix in `edits_off_a_prefix_cost_the_same_at_any_subtrie_size`.
+const PREFIXED_LEAVES: u16 = 1024;
+
+#[test]
+fn edits_off_a_prefix_cost_the_same_at_any_subtrie_size() {
+    let db = MemoryDatabase::new();
+    let trie = Trie::<_, 32>::new(TABLE, TEST_BRANCH_DOMAIN, &HASH);
+    // The leaves differ only in their last two bytes, so the root branch's
+    // prefix covers everything before them.
+    let leaves = (0..PREFIXED_LEAVES).map(|i| {
+        let mut path = [0xaa; 32];
+        let tail = i.to_be_bytes();
+        path[32 - tail.len()..].copy_from_slice(&tail);
+        (path, Some(leaf(path, 0).hash))
+    });
+    let mut tx = db.begin_write().unwrap();
+    let root = trie.apply(&mut tx, RootRef::Empty, leaves).unwrap();
+    tx.commit().unwrap();
+    let mut tx = Counted {
+        tx: db.begin_write().unwrap(),
+        reads: Cell::new(0),
+        writes: 0,
+        fail_reads: false,
+        fail_write: None,
+    };
+    let off = leaf([0; 32], 1);
+    // A removal off the prefix has nothing to remove.
+    let unchanged = trie.apply(&mut tx, root, [(off.path, None)]).unwrap();
+    assert_eq!((unchanged, tx.reads.get(), tx.writes), (root, 1, 0));
+    // An insertion there reads only the root, then writes the root moved one
+    // level down with a shorter prefix, and its new parent.
+    tx.reads.set(0);
+    let split = trie
+        .apply(&mut tx, root, [(off.path, Some(off.hash))])
+        .unwrap();
+    assert_eq!((tx.reads.get(), tx.writes), (1, 2));
+    assert_eq!(split, trie.insert(&mut tx, root, off).unwrap());
 }
 
 fn injected_error() -> golemdb_storage::StorageError {

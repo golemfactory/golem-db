@@ -38,7 +38,7 @@ impl<H: HashProvider> Index<'_, H> {
     pub fn apply(
         &self,
         tx: &mut impl WriteTransaction,
-        mut root: RootRef<INDEX_TRIE_PATH_BYTES>,
+        root: RootRef<INDEX_TRIE_PATH_BYTES>,
         changes: impl IntoIterator<Item = PostingChange>,
     ) -> Result<IndexUpdate> {
         let mut changes: Vec<_> = changes
@@ -77,18 +77,28 @@ impl<H: HashProvider> Index<'_, H> {
             if before == after {
                 continue;
             }
-            root = self.trie.set(tx, root, term, after)?;
-            match after {
-                Some(hash) => tx.put(tables::INDEX, term.as_bytes(), &hash)?,
-                None => {
-                    tx.delete(tables::INDEX, term.as_bytes())?;
-                }
-            }
             changed_terms.push(TermRootChange {
                 term: term.clone(),
                 before,
                 after,
             });
+        }
+        // Terms are unique, so each check above saw the original root; one trie
+        // update for the whole batch writes each touched branch once.
+        let root = self.trie.set(
+            tx,
+            root,
+            changed_terms
+                .iter()
+                .map(|change| (&change.term, change.after)),
+        )?;
+        for change in &changed_terms {
+            match change.after {
+                Some(hash) => tx.put(tables::INDEX, change.term.as_bytes(), &hash)?,
+                None => {
+                    tx.delete(tables::INDEX, change.term.as_bytes())?;
+                }
+            }
         }
         Ok(IndexUpdate {
             root,
