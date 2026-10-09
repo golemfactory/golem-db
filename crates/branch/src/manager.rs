@@ -150,8 +150,18 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// publishing through this manager does so automatically.
     pub fn initialize_gc(&self) -> Result<crate::GarbageCollectionStats> {
         let mut tx = self.inner.database.begin_write()?;
-        let head = crate::head::read_head_state(&tx)?;
-        let stats = crate::gc::initialize(&mut tx, &head, &self.inner.hasher)?;
+        // As in commit::persist, drop the writer outside unwinding so a panicking
+        // hasher or decoder does not poison backend mutexes.
+        let stats = match catch_unwind(AssertUnwindSafe(|| {
+            let head = crate::head::read_head_state(&tx)?;
+            crate::gc::initialize(&mut tx, &head, &self.inner.hasher)
+        })) {
+            Ok(result) => result?,
+            Err(panic) => {
+                drop(tx);
+                resume_unwind(panic);
+            }
+        };
         tx.commit()?;
         Ok(stats)
     }

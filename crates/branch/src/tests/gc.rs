@@ -329,3 +329,25 @@ fn corrupt_reference_count_aborts_publication_and_keeps_the_seal_for_retry() {
     assert_eq!(branches.commit(branch).unwrap(), sealed.commit_id);
     assert_bounded(&db);
 }
+
+struct PanicHash;
+impl HashProvider for PanicHash {
+    fn hash_parts(&self, _: &[&[u8]]) -> golemdb_merkle::Hash {
+        panic!("hasher failed during bootstrap");
+    }
+}
+
+#[test]
+fn panicking_hasher_during_bootstrap_does_not_poison_the_writer() {
+    let db = database();
+    old_format(&db, 20);
+    let branches = Branches::new(db.clone(), PanicHash).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        branches.initialize_gc()
+    }));
+    assert!(panic.is_err());
+    assert!(!gc::initialized(&db.begin_read().unwrap()).unwrap());
+    db.begin_write().unwrap();
+    Branches::new(db.clone(), HASH).unwrap().initialize_gc().unwrap();
+    assert_bounded(&db);
+}
