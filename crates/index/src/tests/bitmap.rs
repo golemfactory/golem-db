@@ -223,8 +223,8 @@ proptest! {
 
 #[test]
 fn bitmap_trie_rejects_containers_out_of_order() {
-    let db = golemdb_storage::MemoryDatabase::new();
-    let mut tx = golemdb_storage::Database::begin_write(&db).unwrap();
+    let db = golemdb_storage::MemoryStore::new();
+    let mut tx = golemdb_storage::Store::begin_write(&db).unwrap();
     let trie = crate::bitmap_trie::BitmapTrie::new(&golemdb_merkle::Keccak256Hasher);
     // Batching reads every container from the original root, so a container
     // visited twice would lose its first changes.

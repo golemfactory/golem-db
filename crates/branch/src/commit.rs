@@ -29,7 +29,7 @@ pub(crate) fn persist(
 
 fn stage(tx: &mut impl WriteTransaction, origin: CommitId, sealed: &SealedCommit) -> Result<()> {
     if read_head(tx)? != origin {
-        return Err(BranchError::HandleInvalid);
+        return Err(BranchError::Conflict);
     }
     for (table, rows) in &sealed.writes {
         for (key, value) in rows {
