@@ -21,7 +21,7 @@ The unpublished integration-test package is a workspace member only.
 - `crates/branch` (package `golemdb-branch`) — head-validated branch IDs and guarded cell
   read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
   seal buffers cell/index updates and roots; commit atomically persists them and
-  advances head, with history deferred
+  advances head and collects obsolete trie/bitmap nodes, with history deferred
 - `crates/record` (package `golemdb-record`) — caller-keyed record CRUD, allocation,
   identity and bindings; branch work-in-progress and committed-head reads
 - `crates/integration-tests` (package `golemdb-integration-tests`) — backend and
@@ -32,19 +32,6 @@ The unpublished integration-test package is a workspace member only.
 - [Technical design](docs/golem-db-design.md): storage architecture, data model,
   commitments, history, and query design.
 - [API](docs/golem-db-api.md): the caller-facing interface and operation semantics.
-
-## Head-only garbage collection
-
-Branch commits use `NodeRefs` reference counts to reclaim obsolete `CellTrie`,
-`IndexTrie`, `BitmapTrie` and `BitmapContainer` rows in the publication transaction.
-Create new databases with `golemdb_branch::create_genesis(database, hasher, cells)`;
-it atomically creates commit zero and the GC metadata. Only format version 1 is
-supported; legacy databases are rejected without modification. No migration is
-provided. Direct writers must maintain the same reference counts.
-
-The engine retains current state. `#roots` stores historical commitments, not
-historical trees or values. Existing snapshots remain valid; freed MDBX pages
-can be reused after readers release them, but the file need not shrink.
 
 ## Adding a crate
 

@@ -2024,8 +2024,9 @@ be changed without forking the state.
 ### The Canonical Trie and the Physical Trie
 
 **Current implementation:** branch publication reclaims obsolete physical rows
-using reference counts. Historical reads from §7 are not implemented; see
-[head-only collection](../README.md#head-only-garbage-collection).
+using `NodeRefs` reference counts in the same transaction as head. `#roots` keeps
+commitments, not historical trees or values; historical reads from §7 are not
+implemented. GC applies to newly created databases only; there is no migration.
 
 **Canonically, a Merkle Patricia Trie is addressed by path.** A node's identity is the accumulated
 sequence of nibbles consumed from the root to reach it, and its value is the hash of its payload. Node
