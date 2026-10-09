@@ -4,7 +4,7 @@ use golemdb_storage::WriteTransaction;
 
 use crate::{
     BranchError, CommitId, Result, SealedCommit,
-    head::{Head, read_head, write_head},
+    metadata::{Head, read_head_state, write_head},
 };
 
 /// The writer has serialized with other publishers before this guard runs.
@@ -28,9 +28,11 @@ pub(crate) fn persist(
 }
 
 fn stage(tx: &mut impl WriteTransaction, origin: CommitId, sealed: &SealedCommit) -> Result<()> {
-    if read_head(tx)? != origin {
+    let head = read_head_state(tx)?;
+    if head.commit_id != origin {
         return Err(BranchError::HandleInvalid);
     }
+    crate::metadata::require_format(tx)?;
     for (table, rows) in &sealed.writes {
         for (key, value) in rows {
             match value {
@@ -41,6 +43,7 @@ fn stage(tx: &mut impl WriteTransaction, origin: CommitId, sealed: &SealedCommit
             }
         }
     }
+    crate::gc::update(tx, sealed)?;
     // History and change-set tables remain deferred. Allocator/binding changes
     // already staged as cells participate in the same sealed write set.
     write_head(

@@ -1,11 +1,11 @@
 use crate::{CellPatch, ReadTarget, RecordCells, RecordError, RecordKey, Records};
 use golemdb_branch::Branches;
 use golemdb_cells::{
-    CellChange, CellKey, CellName, CellNameRef, CellType, CellValue, CellValueRef, Cells, Width,
-    reserved, system,
+    CellChange, CellKey, CellName, CellNameRef, CellType, CellValue, CellValueRef, Width, reserved,
+    system,
 };
-use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
-use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+use golemdb_merkle::Keccak256Hasher;
+use golemdb_storage::{Database, MemoryDatabase};
 
 const KEY: RecordKey = RecordKey([0x42; 32]);
 const OTHER: RecordKey = RecordKey([0x43; 32]);
@@ -65,23 +65,7 @@ fn initialize(db: &impl Database) {
         );
     }
     put(system::ALLOC.id, reserved::NEXT_RECORD_ID, u64_value(64));
-    let hash = Keccak256Hasher;
-    let mut tx = db.begin_write().unwrap();
-    let update = Cells::new(&hash)
-        .apply(&mut tx, RootRef::Empty, changes)
-        .unwrap();
-    tx.put(
-        Table("Superblock"),
-        b"head",
-        &[
-            0u64.to_be_bytes().as_slice(),
-            &update.root.hash(&hash),
-            &hash.hash(&[]),
-        ]
-        .concat(),
-    )
-    .unwrap();
-    tx.commit().unwrap();
+    golemdb_branch::create_genesis(db, &Keccak256Hasher, changes).unwrap();
 }
 
 fn setup() -> (

@@ -12,7 +12,7 @@ use golemdb_storage::{Database, ReadTransaction};
 
 use crate::{
     BranchError, BranchId, BranchInfo, CellRead, CellWrite, CommitId, OperationError, Result,
-    SealedCommit, head::read_head, overlay::CellOverlay,
+    SealedCommit, metadata::read_head, overlay::CellOverlay,
 };
 
 // A process-wide counter prevents handle aliasing between independent managers,
@@ -71,11 +71,14 @@ struct Inner<DB, H> {
 /// the current branch lock is already held and nested calls can deadlock. They
 /// can return owned results, but cannot retain views or borrowed scans.
 ///
-/// This increment does not initialize genesis, validate format/hash settings,
-/// authenticate entire tries, maintain history, or rewind the database. The supplied hash
-/// provider must match the deployment and is shared by all branch seals. External writers
+/// Use [`crate::create_genesis`] to create a new database before opening this
+/// manager. Opening checks the head and format version without writing, hashing
+/// or scanning state. History, migrations and rewind are not implemented. Normal
+/// operations are not a whole-state audit. The supplied hash provider must match
+/// the deployment and is shared by all branch seals. External writers
 /// must publish cells and a strictly increasing head atomically; changing cells
 /// under an unchanged head or rewinding it violates this manager's contract.
+/// External writers must also maintain the persistent reference counts.
 ///
 /// # Callback panics
 ///
@@ -107,11 +110,13 @@ impl<DB, H> Clone for Branches<DB, H> {
 
 impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// Open a manager over an initialized head. Performs no writes and fails
-    /// if the head is missing, malformed, or unreadable.
+    /// if the head is missing, malformed, unreadable or the format is unsupported.
+    /// Legacy databases are rejected without migration or deletion.
     pub fn new(database: DB, hasher: H) -> Result<Self> {
         {
             let tx = database.begin_read()?;
             read_head(&tx)?;
+            crate::metadata::require_format(&tx)?;
         }
         Ok(Self {
             inner: Arc::new(Inner {
@@ -245,6 +250,9 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// Success consumes the branch; competitors over the old head become stale.
     /// A failed seal leaves the branch open. A storage failure after sealing
     /// retains the sealed result for retry or discard, subject to head validation.
+    /// Obsolete immutable rows are collected in this transaction by default.
+    /// GC metadata already exists from genesis. Publication replays the seal
+    /// without hashing, initializing metadata or scanning entire tables.
     ///
     /// # Panics
     ///

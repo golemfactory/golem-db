@@ -2,7 +2,7 @@ use crate::{BranchError, Branches};
 use golemdb_cells::{
     CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, tables,
 };
-use golemdb_index::{Index, IndexTerm, PostingChange};
+use golemdb_index::{Index, IndexTerm};
 use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher, RootRef};
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan_prefix};
 use std::{
@@ -40,35 +40,28 @@ fn head(tx: &mut impl WriteTransaction, id: u64, state: Hash, index: Hash) {
     .unwrap();
 }
 fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
+    crate::create_genesis(
+        db,
+        hash,
+        rows.iter().map(|(key, value)| CellChange::Put {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+    )
+    .unwrap();
     let mut tx = db.begin_write().unwrap();
-    let cells = Cells::new(hash)
-        .apply(
-            &mut tx,
-            RootRef::Empty,
-            rows.iter().map(|(key, value)| CellChange::Put {
-                key: key.clone(),
-                value: value.clone(),
-            }),
-        )
+    let raw = golemdb_storage::ReadTransaction::get(&tx, SUPERBLOCK, b"head")
+        .unwrap()
         .unwrap();
-    let postings = rows
-        .iter()
-        .filter(|(_, value)| value.is_indexable())
-        .map(|(key, value)| PostingChange::Add {
-            term: IndexTerm::from_cell(
-                std::str::from_utf8(key.name().as_bytes()).unwrap(),
-                value.as_view(),
-            )
-            .unwrap()
-            .unwrap(),
-            record_id: key.record_id(),
-        });
-    let index = Index::new(hash)
-        .apply(&mut tx, RootRef::Empty, postings)
-        .unwrap();
-    head(&mut tx, id, cells.root.hash(hash), index.root.hash(hash));
+    head(
+        &mut tx,
+        id,
+        raw[8..40].try_into().unwrap(),
+        raw[40..72].try_into().unwrap(),
+    );
     tx.commit().unwrap();
 }
+
 fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
@@ -244,10 +237,13 @@ fn explicit_seal_is_not_recomputed_by_commit() {
     seed(&db, &Keccak256Hasher, 0, &[]);
     let fail = Arc::new(AtomicBool::new(false));
     let branches = Branches::new(db, SwitchHash(fail.clone())).unwrap();
-    let branch = stage(&branches, "Alice");
-    branches.seal(branch).unwrap();
-    fail.store(true, Ordering::Relaxed);
-    assert_eq!(branches.commit(branch).unwrap(), 1);
+    for (round, text) in ["Alice", "Bob", "Alice"].into_iter().enumerate() {
+        fail.store(false, Ordering::Relaxed);
+        let branch = stage(&branches, text);
+        branches.seal(branch).unwrap();
+        fail.store(true, Ordering::Relaxed);
+        assert_eq!(branches.commit(branch).unwrap(), round as u64 + 1);
+    }
 }
 
 #[test]
@@ -306,13 +302,10 @@ fn bitmap_roots(db: &impl Database) -> Vec<Hash> {
 }
 
 #[test]
-fn commits_store_only_trie_rows_reachable_from_committed_roots() {
+fn commits_store_only_trie_rows_reachable_from_head() {
     let db = MemoryDatabase::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
-    let genesis = crate::head::read_head_state(&branches.database().begin_read().unwrap()).unwrap();
-    let (mut states, mut indexes) = (vec![genesis.state_root], vec![genesis.index_root]);
-    let mut bitmaps = bitmap_roots(branches.database());
     // Commit 1 creates 40 records; commit 2 rewrites most of them and removes some cells.
     for round in 0..2u64 {
         let branch = branches.begin().unwrap();
@@ -336,20 +329,21 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
                 Ok::<_, ()>(())
             })
             .unwrap();
-        let sealed = branches.seal(branch).unwrap();
-        states.push(sealed.state_root);
-        indexes.push(sealed.index_root);
+        branches.seal(branch).unwrap();
         branches.commit(branch).unwrap();
-        bitmaps.extend(bitmap_roots(branches.database()));
     }
     let tx = branches.database().begin_read().unwrap();
+    let head = crate::metadata::read_head_state(&tx).unwrap();
+    let states = [head.state_root];
+    let indexes = [head.index_root];
+    let bitmaps = bitmap_roots(branches.database());
     let rows = |table| {
         scan_prefix(&tx, table, vec![])
             .unwrap()
             .map(|row| row.unwrap().0)
             .collect::<std::collections::BTreeSet<_>>()
     };
-    // No intermediate versions: every stored trie row belongs to a committed root.
+    // No intermediate or historical versions: every stored trie row belongs to head.
     assert_eq!(
         rows(tables::CELL_TRIE),
         reachable_rows::<{ golemdb_cells::CELL_TRIE_PATH_BYTES }>(&tx, tables::CELL_TRIE, &states)
@@ -372,7 +366,7 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
     );
     // Nothing needed was dropped: the head trie reaches every current cell, and
     // every current term's posting list loads.
-    let head = crate::head::read_head_state(&tx).unwrap();
+    let head = crate::metadata::read_head_state(&tx).unwrap();
     let hasher = Keccak256Hasher;
     let root = Cells::new(&hasher).reopen(&tx, head.state_root).unwrap();
     let trie = golemdb_merkle::Trie::<_, { golemdb_cells::CELL_TRIE_PATH_BYTES }>::new(

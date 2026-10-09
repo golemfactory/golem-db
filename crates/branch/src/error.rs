@@ -9,6 +9,16 @@ pub enum BranchError {
     CommitNumberExhausted,
     #[error("the previous commit's #roots cell already exists")]
     RootsCellExists,
+    #[error("head-only garbage collection: {0}")]
+    GarbageCollection(&'static str),
+    #[error(
+        "head-only database format version 1 is required; legacy databases are unsupported and no migration is performed"
+    )]
+    UnsupportedDatabaseFormat,
+    #[error("genesis creation requires empty engine tables; {0:?} already contains data")]
+    DatabaseNotEmpty(golemdb_storage::Table),
+    #[error(transparent)]
+    Merkle(#[from] golemdb_merkle::MerkleError),
     #[error(transparent)]
     Cells(#[from] golemdb_cells::CellError),
     #[error(transparent)]
