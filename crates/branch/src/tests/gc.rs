@@ -1,16 +1,11 @@
-use golemdb_cells::{
-    CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, tables as cells,
-};
-use golemdb_index::{Index, PostingChange, tables as index};
-use golemdb_merkle::{HashProvider, Keccak256Hasher, RootRef};
+use golemdb_cells::{CellKey, CellNameRef, CellType, CellValue, CellValueRef, tables as cells};
+use golemdb_index::tables as index;
+use golemdb_merkle::Keccak256Hasher;
 use golemdb_storage::{
     Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
 };
 
-use crate::{
-    BranchError, Branches, gc,
-    head::{Head, read_head_state, write_head},
-};
+use crate::{BranchError, Branches, metadata::read_head_state};
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
 const REFS: Table = Table("NodeRefs");
@@ -27,18 +22,7 @@ fn value(text: &str) -> CellValue {
 
 fn database() -> MemoryDatabase {
     let db = MemoryDatabase::new();
-    let mut tx = db.begin_write().unwrap();
-    let empty = HASH.hash(&[]);
-    write_head(
-        &mut tx,
-        &Head {
-            commit_id: 0,
-            state_root: empty,
-            index_root: empty,
-        },
-    )
-    .unwrap();
-    tx.commit().unwrap();
+    crate::create_genesis(&db, &HASH, []).unwrap();
     db
 }
 
@@ -99,7 +83,7 @@ fn commits_collect_by_default_and_remain_bounded_under_churn() {
         );
         assert_bounded(&db);
     }
-    assert!(gc::initialized(&db.begin_read().unwrap()).unwrap());
+    crate::metadata::require_format(&db.begin_read().unwrap()).unwrap();
     let reopened = Branches::new(db.clone(), HASH).unwrap();
     mutate(&reopened, &[(64, "a", "final")]);
     assert_bounded(&db);
@@ -146,145 +130,6 @@ fn shared_bitmap_roots_and_children_survive_until_last_owner_leaves() {
     assert_bounded(&db);
 }
 
-// Build an old-format database using the lower layers, which deliberately retain
-// immutable history. Engine collection must bootstrap and sweep this backlog.
-fn old_format(db: &MemoryDatabase, rounds: usize) {
-    let mut tx = db.begin_write().unwrap();
-    let mut cell_root = RootRef::Empty;
-    let mut index_root = RootRef::Empty;
-    let mut previous = None;
-    for round in 0..rounds {
-        let value = value(&format!("v{round}"));
-        let field = CellValueRef::new(CellType::Str, value.value(), false)
-            .unwrap()
-            .into();
-        let cells = Cells::new(&HASH)
-            .apply(
-                &mut tx,
-                cell_root,
-                [
-                    CellChange::Put {
-                        key: key(64, "a"),
-                        value: value.clone(),
-                    },
-                    CellChange::Put {
-                        key: key(65, "b"),
-                        value: field,
-                    },
-                ],
-            )
-            .unwrap();
-        cell_root = cells.root;
-        let term = golemdb_index::IndexTerm::from_cell("a", value.as_view())
-            .unwrap()
-            .unwrap();
-        let mut changes = vec![PostingChange::Add {
-            term: term.clone(),
-            record_id: 64,
-        }];
-        if let Some(term) = previous.take() {
-            changes.push(PostingChange::Remove {
-                term,
-                record_id: 64,
-            });
-        }
-        index_root = Index::new(&HASH)
-            .apply(&mut tx, index_root, changes)
-            .unwrap()
-            .root;
-        previous = Some(term);
-    }
-    write_head(
-        &mut tx,
-        &Head {
-            commit_id: rounds as u64,
-            state_root: cell_root.hash(&HASH),
-            index_root: index_root.hash(&HASH),
-        },
-    )
-    .unwrap();
-    tx.commit().unwrap();
-}
-
-#[test]
-fn bootstrap_sweeps_multiple_batches_without_changing_head_or_flat_data() {
-    let db = database();
-    old_format(&db, 600);
-    let snapshot = db.begin_read().unwrap();
-    let before = rows(&snapshot, cells::CELL_TRIE);
-    assert!(before.len() > 512);
-    let head = read_head_state(&snapshot).unwrap();
-    let branches = Branches::new(db.clone(), HASH).unwrap();
-    let stats = branches.initialize_gc().unwrap();
-    assert!(stats.removed_rows > 512);
-    assert!(stats.removed_bytes > 0);
-    assert_eq!(branches.head().unwrap(), head.commit_id);
-    let tx = db.begin_read().unwrap();
-    assert_eq!(rows(&tx, cells::CELL), rows(&snapshot, cells::CELL));
-    assert_eq!(rows(&tx, index::INDEX), rows(&snapshot, index::INDEX));
-    assert_eq!(read_head_state(&tx).unwrap().state_root, head.state_root);
-    assert_eq!(read_head_state(&tx).unwrap().index_root, head.index_root);
-    assert_eq!(rows(&snapshot, cells::CELL_TRIE), before);
-    assert_eq!(branches.initialize_gc().unwrap(), Default::default());
-    assert_bounded(&db);
-}
-
-#[test]
-fn a_seal_made_before_bootstrap_is_refreshed_under_the_publication_writer() {
-    for maintenance in [false, true] {
-        let db = database();
-        old_format(&db, 20);
-        let branches = Branches::new(db.clone(), HASH).unwrap();
-        let branch = branches.begin().unwrap();
-        branches
-            .write(branch, |cells| {
-                // Reuse a historical bitmap singleton (and possibly interior hashes).
-                cells.put(key(64, "a"), value("v0"));
-                Ok::<_, ()>(())
-            })
-            .unwrap();
-        let sealed = branches.seal(branch).unwrap();
-        if maintenance {
-            let other = Branches::new(db.clone(), HASH).unwrap();
-            other.initialize_gc().unwrap();
-        }
-        assert_eq!(branches.commit(branch).unwrap(), sealed.commit_id);
-        let head = read_head_state(&db.begin_read().unwrap()).unwrap();
-        assert_eq!(head.state_root, sealed.state_root);
-        assert_eq!(head.index_root, sealed.index_root);
-        assert_bounded(&db);
-    }
-}
-
-#[test]
-fn invalid_legacy_graph_aborts_bootstrap_before_publishing_metadata_or_deletions() {
-    let db = database();
-    old_format(&db, 20);
-    let mut tx = db.begin_write().unwrap();
-    let live_hash = rows(&tx, index::INDEX)[0].1.clone();
-    tx.put(index::BITMAP_CONTAINER, &live_hash, b"invalid")
-        .unwrap();
-    tx.commit().unwrap();
-    let before = db.begin_read().unwrap();
-    let branches = Branches::new(db.clone(), HASH).unwrap();
-    assert!(matches!(
-        branches.initialize_gc(),
-        Err(BranchError::GarbageCollection(_))
-    ));
-    let after = db.begin_read().unwrap();
-    for table in [
-        cells::CELL_TRIE,
-        index::INDEX_TRIE,
-        index::BITMAP_TRIE,
-        index::BITMAP_CONTAINER,
-        REFS,
-        Table("Superblock"),
-    ] {
-        assert_eq!(rows(&before, table), rows(&after, table));
-    }
-    assert!(!gc::initialized(&after).unwrap());
-}
-
 #[test]
 fn corrupt_reference_count_aborts_publication_and_keeps_the_seal_for_retry() {
     let db = database();
@@ -300,54 +145,35 @@ fn corrupt_reference_count_aborts_publication_and_keeps_the_seal_for_retry() {
     let sealed = branches.seal(branch).unwrap();
     let head = read_head_state(&db.begin_read().unwrap()).unwrap();
     let ref_key = [vec![0], head.state_root.to_vec()].concat();
-    let mut tx = db.begin_write().unwrap();
-    let original = tx.get(REFS, &ref_key).unwrap().unwrap();
-    tx.put(REFS, &ref_key, &[0; 8]).unwrap();
-    tx.commit().unwrap();
-    let before = db.begin_read().unwrap();
-    assert!(matches!(
-        branches.commit(branch),
-        Err(BranchError::GarbageCollection(_))
-    ));
-    let after = db.begin_read().unwrap();
-    for table in [
-        cells::CELL,
-        cells::CELL_TRIE,
-        index::INDEX,
-        index::INDEX_TRIE,
-        index::BITMAP_TRIE,
-        index::BITMAP_CONTAINER,
-        REFS,
-        Table("Superblock"),
-    ] {
-        assert_eq!(rows(&before, table), rows(&after, table));
+    let original = db
+        .begin_read()
+        .unwrap()
+        .get(REFS, &ref_key)
+        .unwrap()
+        .unwrap();
+    for corrupt in [Some(vec![0; 8]), Some(vec![1]), None] {
+        let mut tx = db.begin_write().unwrap();
+        match corrupt {
+            Some(bytes) => tx.put(REFS, &ref_key, &bytes).unwrap(),
+            None => {
+                tx.delete(REFS, &ref_key).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+        let before = db.begin_read().unwrap();
+        assert!(matches!(
+            branches.commit(branch),
+            Err(BranchError::GarbageCollection(_))
+        ));
+        let after = db.begin_read().unwrap();
+        for table in crate::metadata::ENGINE_TABLES {
+            assert_eq!(rows(&before, table), rows(&after, table));
+        }
+        assert!(branches.branch_info(branch).unwrap().sealed);
+        let mut tx = db.begin_write().unwrap();
+        tx.put(REFS, &ref_key, &original).unwrap();
+        tx.commit().unwrap();
     }
-    assert!(branches.branch_info(branch).unwrap().sealed);
-    let mut tx = db.begin_write().unwrap();
-    tx.put(REFS, &ref_key, &original).unwrap();
-    tx.commit().unwrap();
     assert_eq!(branches.commit(branch).unwrap(), sealed.commit_id);
-    assert_bounded(&db);
-}
-
-struct PanicHash;
-impl HashProvider for PanicHash {
-    fn hash_parts(&self, _: &[&[u8]]) -> golemdb_merkle::Hash {
-        panic!("hasher failed during bootstrap");
-    }
-}
-
-#[test]
-fn panicking_hasher_during_bootstrap_does_not_poison_the_writer() {
-    let db = database();
-    old_format(&db, 20);
-    let branches = Branches::new(db.clone(), PanicHash).unwrap();
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        branches.initialize_gc()
-    }));
-    assert!(panic.is_err());
-    assert!(!gc::initialized(&db.begin_read().unwrap()).unwrap());
-    db.begin_write().unwrap();
-    Branches::new(db.clone(), HASH).unwrap().initialize_gc().unwrap();
     assert_bounded(&db);
 }

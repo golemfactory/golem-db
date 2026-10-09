@@ -30,7 +30,7 @@ fn publish_empty_head(db: &MemoryDatabase, commit: u64) {
 
 fn database() -> MemoryDatabase {
     let db = MemoryDatabase::new();
-    publish_empty_head(&db, 0);
+    crate::create_genesis(&db, &Keccak256Hasher, []).unwrap();
     db
 }
 

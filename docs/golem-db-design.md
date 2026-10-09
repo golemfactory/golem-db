@@ -2023,14 +2023,9 @@ be changed without forking the state.
 
 ### The Canonical Trie and the Physical Trie
 
-**Current implementation:** the head-only branch engine collects superseded
-physical rows on commit using persistent reference counts. It retains the
-current state/index trees and the bitmaps of current terms, while existing
-storage snapshots retain their own view. The historical read surface described
-in §7 is not implemented by this collector. See the
-[implementation and migration notes](../README.md#head-only-garbage-collection).
-The low-level trie mutations described below still retain old rows; reclamation
-belongs to branch publication, outside the canonical commitment.
+**Current implementation:** branch publication reclaims obsolete physical rows
+using reference counts. Historical reads from §7 are not implemented; see
+[head-only collection](../README.md#head-only-garbage-collection).
 
 **Canonically, a Merkle Patricia Trie is addressed by path.** A node's identity is the accumulated
 sequence of nibbles consumed from the root to reach it, and its value is the hash of its payload. Node

@@ -65,6 +65,8 @@ fn late_storage_failure_restores_earlier_patch_writes_and_checkpoint_state() {
     // Minimal read-only origin fixture; this test never seals or commits it.
     let mut tx = db.begin_write().unwrap();
     tx.put(Table("Superblock"), b"head", &[0; 72]).unwrap();
+    tx.put(Table("Superblock"), b"format-version", &[1])
+        .unwrap();
     for name in [
         reserved::MAX_STR_LEN,
         reserved::MAX_BYTES_LEN,

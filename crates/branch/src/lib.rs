@@ -12,14 +12,16 @@
 //! Seal applies the final cell diff and derived index postings to buffered
 //! storage, computes both roots, and freezes the branch without durable writes.
 //!
-//! Genesis initialization, history, and database rewind are not implemented yet.
+//! [`create_genesis`] creates new cell/index state and GC metadata atomically.
+//! Historical reads, migration and database rewind are not implemented.
 //! Record validation, bindings, and allocation belong to record operations;
 //! their cell writes participate in the same undo journal as ordinary cells.
 //!
 //! # Guarded branch access
 //!
-//! The database must already have an initialized `Superblock/head`. This layer
-//! never fabricates genesis. Reads return owned values or collect scans inside
+//! Create a new database with [`create_genesis`] before opening [`Branches`].
+//! Opening an existing database only checks its head and format. Legacy formats
+//! are rejected without modification. Reads return owned values or collect scans inside
 //! the callback so they cannot outlive the head check's snapshot.
 //!
 //! ```
@@ -50,12 +52,9 @@
 //!     branches.discard(branch)?;
 //!     Ok(())
 //! }
-//! # use golemdb_storage::{MemoryDatabase, Table, WriteTransaction};
+//! # use golemdb_storage::MemoryDatabase;
 //! # let db = MemoryDatabase::new();
-//! # let mut tx = db.begin_write()?;
-//! # // Minimal head fixture, not a production genesis initializer.
-//! # tx.put(Table("Superblock"), b"head", &[0; 72])?;
-//! # tx.commit()?;
+//! # golemdb_branch::create_genesis(&db, &Keccak256Hasher, [])?;
 //! # edit(db)?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -70,17 +69,13 @@
 //! The result retains both updates and physical rows for commit.
 //!
 //! ```
-//! use golemdb_branch::Branches;
-//! use golemdb_merkle::{HashProvider, Keccak256Hasher};
-//! use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
+//! use golemdb_branch::{Branches, create_genesis};
+//! use golemdb_merkle::Keccak256Hasher;
+//! use golemdb_storage::MemoryDatabase;
 //!
 //! let db = MemoryDatabase::new();
 //! let hash = Keccak256Hasher;
-//! // Minimal empty-head fixture, not a production genesis initializer.
-//! let mut tx = db.begin_write()?;
-//! let empty = hash.hash(&[]);
-//! tx.put(Table("Superblock"), b"head", &[0u64.to_be_bytes().as_slice(), &empty, &empty].concat())?;
-//! tx.commit()?;
+//! create_genesis(&db, &hash, [])?; // The caller supplies deployment cells here.
 //! let branches = Branches::new(db, hash)?;
 //! let branch = branches.begin()?;
 //! let sealed = branches.seal(branch)?;
@@ -108,15 +103,10 @@
 //!
 //! A seal error leaves the branch open. A storage error after sealing preserves
 //! the sealed result for retry or discard; every retry validates head again.
-//! Commits collect obsolete immutable nodes by default, maintaining persistent
-//! reference counts in the same transaction as head. One-time initialization
-//! authenticates the current graph and sweeps legacy orphan rows; call
-//! [`Branches::initialize_gc`] before accepting writes to do this as maintenance.
-//! A seal predating initialization can have its physical write set refreshed
-//! under the writer if collection removed rows it reused. Subsequent commits
-//! replay seals without hashing. Old root commitments remain in `#roots`, but
-//! their old trees are not retained for fresh readers. Existing snapshots remain
-//! valid. History and change-set tables remain deferred; record-layer allocator/binding writes
+//! The manager does not recompute roots for a sealed branch. Commits reclaim
+//! obsolete trie/bitmap rows using reference counts atomically with head.
+//! `#roots` retains commitments; old physical trees are not retained for fresh readers.
+//! History and change-set tables remain deferred; record-layer allocator/binding writes
 //! already staged as cells are persisted with all other sealed rows.
 //!
 //! # Callback errors and panics
@@ -136,18 +126,20 @@ mod buffer;
 mod commit;
 mod error;
 mod gc;
-mod head;
+mod genesis;
 mod journal;
 mod manager;
+mod metadata;
 mod overlay;
 mod scan;
 mod seal;
+mod state;
 mod types;
 
 pub use error::{BranchError, OperationError, Result};
-pub use gc::GarbageCollectionStats;
-pub use head::read_head;
+pub use genesis::create_genesis;
 pub use manager::Branches;
+pub use metadata::read_head;
 pub use overlay::{CellRead, CellWrite};
 pub use scan::CellScan;
 pub use seal::SealedCommit;
@@ -170,6 +162,9 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "tests/gc.rs"]
 mod gc_tests;
+#[cfg(test)]
+#[path = "tests/genesis.rs"]
+mod genesis_tests;
 #[cfg(test)]
 #[path = "tests/publication.rs"]
 mod publication_tests;

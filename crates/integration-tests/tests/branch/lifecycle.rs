@@ -21,6 +21,7 @@ fn publish(db: &impl Database, commit: u64, text: &str) {
     row.extend_from_slice(&[0x22; 32]);
     let mut tx = db.begin_write().unwrap();
     tx.put(SUPERBLOCK, b"head", &row).unwrap();
+    tx.put(SUPERBLOCK, b"format-version", &[1]).unwrap();
     tx.put(tables::CELL, &key().encode(), value(text).encoded_bytes())
         .unwrap();
     tx.commit().unwrap();

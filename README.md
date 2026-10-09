@@ -35,41 +35,16 @@ The unpublished integration-test package is a workspace member only.
 
 ## Head-only garbage collection
 
-Branch commits collect obsolete rows in `CellTrie`, `IndexTrie`, `BitmapTrie`
-and `BitmapContainer` by default. The current engine serves committed-head
-reads; it does not implement historical values or queries. The low-level trie,
-cells and index libraries still retain immutable rows when used directly.
+Branch commits use `NodeRefs` reference counts to reclaim obsolete `CellTrie`,
+`IndexTrie`, `BitmapTrie` and `BitmapContainer` rows in the publication transaction.
+Create new databases with `golemdb_branch::create_genesis(database, hasher, cells)`;
+it atomically creates commit zero and the GC metadata. Only format version 1 is
+supported; legacy databases are rejected without modification. No migration is
+provided. Direct writers must maintain the same reference counts.
 
-`NodeRefs` stores a reference count per immutable row, keyed by table kind and
-hash. The head owns the state/index roots, and current flat `Index` terms own
-their bitmap roots. Each live physical parent owns its children once, even when
-the parent has multiple owners. Publication acquires new roots before releasing
-old ones, then deletes rows whose last reference disappears. All row changes,
-counts and head publication use one transaction. Unchanged subtrees need no
-traversal; shared bitmap containers survive until their last owner leaves.
-
-The first successful commit initializes counts from the current graph and sweeps
-legacy orphan rows. For an existing database, call `Branches::initialize_gc()`
-as maintenance before accepting writes to move this scan out of publication.
-It returns retained/removed row counts and removed encoded bytes, and leaves
-head, flat values and commitments unchanged. It holds the writer, uses memory
-proportional to the live graph, and sweeps dead rows in bounded batches.
-Initialization is atomic and repeated calls are a no-op. A seal predating the
-scan may have its write set refreshed under the writer to recreate historical
-rows it reused. Normal commits replay seals without hashing or a full scan.
-
-Existing storage snapshots keep their old view. Fresh snapshots may no longer
-traverse old roots: `#roots` preserves commitments, not the old physical trees.
-Those per-commit cells still accumulate, so GC does not make total storage
-constant. MDBX reuses freed pages after readers release them; deleting rows
-does not necessarily shrink the database file.
-
-The marker `Superblock/head-gc-version = 1` and `NodeRefs` are local metadata
-outside the state commitment. Once initialized, every writer must maintain
-them. Do not write this database with an older engine or direct low-level
-mutations that bypass the branch publication path; they would leave stale
-counts. Historical retention will require retaining additional roots together
-with historical values; this collector implements the current head-only engine.
+The engine retains current state. `#roots` stores historical commitments, not
+historical trees or values. Existing snapshots remain valid; freed MDBX pages
+can be reused after readers release them, but the file need not shrink.
 
 ## Adding a crate
 

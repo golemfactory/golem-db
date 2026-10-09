@@ -33,16 +33,9 @@ fn value(text: &str) -> CellValue {
         .into()
 }
 fn genesis(db: &impl Database, hash: &impl HashProvider) {
-    let empty = hash.hash(&[]);
-    let mut tx = db.begin_write().unwrap();
-    tx.put(
-        SUPERBLOCK,
-        b"head",
-        &[0u64.to_be_bytes().as_slice(), &empty, &empty].concat(),
-    )
-    .unwrap();
-    tx.commit().unwrap();
+    golemdb_branch::create_genesis(db, hash, []).unwrap();
 }
+
 fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
@@ -378,6 +371,7 @@ fn race(db: impl Database + Clone + Send + Sync + 'static) {
     controlled.barrier = Some(Arc::new(Barrier::new(2)));
     let a = Branches::new(controlled.clone(), Keccak256Hasher).unwrap();
     let b = Branches::new(controlled.clone(), Keccak256Hasher).unwrap();
+    let initial_rows = snapshot(&db).iter().map(Vec::len).sum::<usize>();
     let id_a = stage(&a, "Alice");
     let id_b = stage(&b, "Bob");
     let seal_a = a.seal(id_a).unwrap();
@@ -393,11 +387,11 @@ fn race(db: impl Database + Clone + Send + Sync + 'static) {
         _ => panic!("unexpected race results: {result_a:?}, {result_b:?}"),
     };
     assert_eq!(a.head().unwrap(), 1);
-    // The baseline contains only head; every winning replay mutation produces
-    // one final row (including the head replacement). The loser writes nothing.
+    // Every winning replay mutation produces one final row, including the
+    // head replacement. The pre-existing format marker is not rewritten.
     assert_eq!(
         controlled.mutations.load(Ordering::Relaxed),
-        snapshot(&db).iter().map(Vec::len).sum::<usize>()
+        snapshot(&db).iter().map(Vec::len).sum::<usize>() - initial_rows + 1
     );
     let tx = db.begin_read().unwrap();
     assert_eq!(

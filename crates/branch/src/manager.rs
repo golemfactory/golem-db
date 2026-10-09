@@ -8,11 +8,11 @@ use std::{
 };
 
 use golemdb_merkle::HashProvider;
-use golemdb_storage::{Database, ReadTransaction, WriteTransaction};
+use golemdb_storage::{Database, ReadTransaction};
 
 use crate::{
     BranchError, BranchId, BranchInfo, CellRead, CellWrite, CommitId, OperationError, Result,
-    SealedCommit, head::read_head, overlay::CellOverlay,
+    SealedCommit, metadata::read_head, overlay::CellOverlay,
 };
 
 // A process-wide counter prevents handle aliasing between independent managers,
@@ -71,13 +71,14 @@ struct Inner<DB, H> {
 /// the current branch lock is already held and nested calls can deadlock. They
 /// can return owned results, but cannot retain views or borrowed scans.
 ///
-/// This increment does not initialize genesis, validate format/hash settings,
-/// maintain history, or rewind the database. GC bootstrap authenticates the
-/// physical head graph; normal operations are not a whole-state audit. The supplied hash
-/// provider must match the deployment and is shared by all branch seals. External writers
+/// Use [`crate::create_genesis`] to create a new database before opening this
+/// manager. Opening checks the head and format version without writing, hashing
+/// or scanning state. History, migrations and rewind are not implemented. Normal
+/// operations are not a whole-state audit. The supplied hash provider must match
+/// the deployment and is shared by all branch seals. External writers
 /// must publish cells and a strictly increasing head atomically; changing cells
 /// under an unchanged head or rewinding it violates this manager's contract.
-/// Once GC is initialized, external writers must also maintain its reference counts.
+/// External writers must also maintain the persistent reference counts.
 ///
 /// # Callback panics
 ///
@@ -109,11 +110,13 @@ impl<DB, H> Clone for Branches<DB, H> {
 
 impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// Open a manager over an initialized head. Performs no writes and fails
-    /// if the head is missing, malformed, or unreadable.
+    /// if the head is missing, malformed, unreadable or the format is unsupported.
+    /// Legacy databases are rejected without migration or deletion.
     pub fn new(database: DB, hasher: H) -> Result<Self> {
         {
             let tx = database.begin_read()?;
             read_head(&tx)?;
+            crate::metadata::require_format(&tx)?;
         }
         Ok(Self {
             inner: Arc::new(Inner {
@@ -126,44 +129,6 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
 
     pub fn head(&self) -> Result<CommitId> {
         read_head(&self.inner.database.begin_read()?)
-    }
-
-    /// Initialize incremental collection for head-only physical state.
-    ///
-    /// The initial writer builds reference counts from the current state/index
-    /// roots and current term bitmaps, then deletes unreachable immutable rows.
-    /// Commits initialize this automatically if necessary, then maintain counts
-    /// atomically with publication, including through other managers or after
-    /// reopening the database. Repeated initialization is a no-op.
-    ///
-    /// This explicitly gives up structural history in fresh snapshots: old
-    /// roots in `#roots` remain as commitments, but their old trees and posting
-    /// lists may no longer be traversable. Existing storage snapshots stay valid.
-    ///
-    /// Initialization scans the immutable tables and holds the storage writer;
-    /// call this as maintenance to avoid that work on the first commit of an
-    /// existing database. It does not advance head or change any cells,
-    /// flat index terms, hash roots, or live branch handles. Freed MDBX pages can
-    /// be reused but the database file need not shrink.
-    ///
-    /// Direct storage writers must maintain the GC metadata once initialized;
-    /// publishing through this manager does so automatically.
-    pub fn initialize_gc(&self) -> Result<crate::GarbageCollectionStats> {
-        let mut tx = self.inner.database.begin_write()?;
-        // As in commit::persist, drop the writer outside unwinding so a panicking
-        // hasher or decoder does not poison backend mutexes.
-        let stats = match catch_unwind(AssertUnwindSafe(|| {
-            let head = crate::head::read_head_state(&tx)?;
-            crate::gc::initialize(&mut tx, &head, &self.inner.hasher)
-        })) {
-            Ok(result) => result?,
-            Err(panic) => {
-                drop(tx);
-                resume_unwind(panic);
-            }
-        };
-        tx.commit()?;
-        Ok(stats)
     }
 
     /// The database shared by this manager. Committed readers can open a
@@ -286,10 +251,8 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// A failed seal leaves the branch open. A storage failure after sealing
     /// retains the sealed result for retry or discard, subject to head validation.
     /// Obsolete immutable rows are collected in this transaction by default.
-    /// The first commit also initializes GC if necessary; a seal predating that
-    /// initialization may be refreshed after legacy rows are swept. Call
-    /// [`initialize_gc`](Self::initialize_gc) before sealing to avoid this work
-    /// in publication. Normal commits replay the seal without hashing.
+    /// GC metadata already exists from genesis. Publication replays the seal
+    /// without hashing, initializing metadata or scanning entire tables.
     ///
     /// # Panics
     ///
@@ -305,13 +268,7 @@ impl<DB: Database, H: HashProvider> Branches<DB, H> {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
             let sealed = state.seal(origin, &self.inner.hasher)?;
             let tx = self.inner.database.begin_write()?;
-            match crate::commit::persist(
-                tx,
-                state.commit_id,
-                &sealed,
-                &self.inner.hasher,
-                &state.overlay,
-            ) {
+            match crate::commit::persist(tx, state.commit_id, &sealed) {
                 Ok(commit_id) => {
                     *slot = None;
                     // Publication has succeeded. Registry housekeeping must not

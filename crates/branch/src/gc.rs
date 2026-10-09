@@ -1,32 +1,12 @@
 //! Persistent reference counting for head-only physical state.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ops::Bound,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use golemdb_cells::{CELL_BRANCH_DOMAIN, Cells, tables as cells};
-use golemdb_index::{
-    BITMAP_BRANCH_DOMAIN, BITMAP_LEAF_DOMAIN, BitmapContainer, INDEX_BRANCH_DOMAIN, Index,
-    IndexError, tables as index,
-};
-use golemdb_merkle::{BranchNodeCompact, Hash, HashProvider, RootRef};
-use golemdb_storage::{ReadCursor, ReadTransaction, Table, WriteTransaction, scan};
+use golemdb_cells::tables as cells;
+use golemdb_index::tables as index;
+use golemdb_merkle::{BranchNodeCompact, Hash, RootRef};
+use golemdb_storage::{ReadTransaction, Table, WriteTransaction};
 
-use crate::{BranchError, Result, SealedCommit, head::Head};
-
-const REFS: Table = Table("NodeRefs");
-const SUPERBLOCK: Table = Table("Superblock");
-const MODE_KEY: &[u8] = b"head-gc-version";
-const VERSION: &[u8] = &[1];
-
-/// Results of the initial head-only collection across the four immutable tables.
-/// Byte counts include row keys and values, not MDBX pages or file allocation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GarbageCollectionStats {
-    pub retained_rows: u64,
-    pub removed_rows: u64,
-    pub removed_bytes: u64,
-}
+use crate::{BranchError, Result, SealedCommit, metadata::NODE_REFS as REFS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -62,67 +42,25 @@ impl Node {
         key
     }
 
-    fn children(
-        self,
-        tx: &impl ReadTransaction,
-        hasher: &impl HashProvider,
-        authenticate: bool,
-    ) -> Result<Vec<Node>> {
+    fn children(self, tx: &impl ReadTransaction) -> Result<Vec<Node>> {
+        // Containers have no outgoing edges. Their immutable payload was
+        // authenticated/created during seal; publication need not read it.
+        if self.kind == Kind::Container {
+            return Ok(Vec::new());
+        }
         let bytes = tx
             .get(self.kind.table(), &self.hash)?
             .ok_or(BranchError::GarbageCollection("referenced node is missing"))?;
         match self.kind {
-            Kind::Cell => branches::<32>(self, &bytes, CELL_BRANCH_DOMAIN, hasher, authenticate),
-            Kind::Index => branches::<32>(self, &bytes, INDEX_BRANCH_DOMAIN, hasher, authenticate),
-            Kind::Bitmap => {
-                let children =
-                    branches::<6>(self, &bytes, BITMAP_BRANCH_DOMAIN, hasher, authenticate)?;
-                if authenticate {
-                    // Leaf paths are stored-only metadata; authenticate them
-                    // against their containers when adopting the legacy graph.
-                    let node = BranchNodeCompact::<6>::decode(&bytes)?;
-                    for slot in 0..16 {
-                        if let Some(RootRef::Leaf(leaf)) = node.child(slot) {
-                            let payload = tx.get(index::BITMAP_CONTAINER, &leaf.hash)?.ok_or(
-                                BranchError::GarbageCollection("referenced container is missing"),
-                            )?;
-                            let container =
-                                BitmapContainer::decode(&payload).map_err(IndexError::from)?;
-                            if container.path().to_be_bytes()[2..] != leaf.path {
-                                return Err(BranchError::GarbageCollection(
-                                    "container path mismatch",
-                                ));
-                            }
-                        }
-                    }
-                }
-                Ok(children)
-            }
-            Kind::Container => {
-                if authenticate && hasher.hash_parts(&[&[BITMAP_LEAF_DOMAIN], &bytes]) != self.hash
-                {
-                    return Err(BranchError::GarbageCollection("container hash mismatch"));
-                }
-                if authenticate {
-                    BitmapContainer::decode(&bytes).map_err(IndexError::from)?;
-                }
-                Ok(Vec::new())
-            }
+            Kind::Cell | Kind::Index => branches::<32>(self, &bytes),
+            Kind::Bitmap => branches::<6>(self, &bytes),
+            Kind::Container => unreachable!(),
         }
     }
 }
 
-fn branches<const N: usize>(
-    parent: Node,
-    bytes: &[u8],
-    domain: u8,
-    hasher: &impl HashProvider,
-    authenticate: bool,
-) -> Result<Vec<Node>> {
+fn branches<const N: usize>(parent: Node, bytes: &[u8]) -> Result<Vec<Node>> {
     let node = BranchNodeCompact::<N>::decode(bytes)?;
-    if authenticate && node.hash(domain, hasher) != parent.hash {
-        return Err(BranchError::GarbageCollection("branch hash mismatch"));
-    }
     let mut children = Vec::new();
     for slot in 0..16 {
         match node.child(slot) {
@@ -136,18 +74,10 @@ fn branches<const N: usize>(
                     hash: leaf.hash,
                 });
             }
-            _ => {} // Cell/index leaves are virtual, with no physical leaf row.
+            _ => {} // Cell/index leaves have no physical row.
         }
     }
     Ok(children)
-}
-
-pub(crate) fn initialized(tx: &impl ReadTransaction) -> Result<bool> {
-    match tx.get(SUPERBLOCK, MODE_KEY)? {
-        None => Ok(false),
-        Some(version) if version == VERSION => Ok(true),
-        Some(_) => Err(BranchError::GarbageCollection("unsupported GC version")),
-    }
 }
 
 fn root<const N: usize>(kind: Kind, root: RootRef<N>) -> Option<Node> {
@@ -168,7 +98,7 @@ fn bitmap_root(tx: &impl ReadTransaction, hash: Hash) -> Result<Node> {
 }
 
 #[derive(Default)]
-pub(crate) struct RootChanges(BTreeMap<Node, (u64, u64)>);
+struct RootChanges(BTreeMap<Node, (u64, u64)>);
 
 impl RootChanges {
     fn add(&mut self, node: Option<Node>) {
@@ -184,40 +114,23 @@ impl RootChanges {
     }
 }
 
-/// Capture old root kinds before publication overwrites the flat tables.
-pub(crate) fn changes(tx: &impl ReadTransaction, sealed: &SealedCommit) -> Result<RootChanges> {
-    let mut changes = RootChanges::default();
-    changes.remove(root(Kind::Cell, sealed.origin_cells));
-    changes.remove(root(Kind::Index, sealed.origin_index));
-    changes.add(root(Kind::Cell, sealed.cells.root));
-    changes.add(root(Kind::Index, sealed.index.root));
-    for term in &sealed.index.changed_terms {
-        if let Some(hash) = term.before {
-            changes.remove(Some(bitmap_root(tx, hash)?));
-        }
-        // Newly sealed rows are not in this transaction yet; resolve them in update().
-    }
-    Ok(changes)
-}
-
 struct Counter {
     before: u64,
     after: u64,
 }
 
-struct Session<'tx, T, H> {
+struct Session<'tx, T> {
     tx: &'tx mut T,
-    hasher: &'tx H,
     counts: BTreeMap<Node, Counter>,
-    initializing: bool,
+    creating: bool,
     created: BTreeSet<Node>,
 }
 
-impl<T: WriteTransaction, H: HashProvider> Session<'_, T, H> {
+impl<T: WriteTransaction> Session<'_, T> {
     fn counter(&mut self, node: Node) -> Result<&mut Counter> {
         if let std::collections::btree_map::Entry::Vacant(entry) = self.counts.entry(node) {
             let before = match self.tx.get(REFS, &node.key())? {
-                None if self.initializing || self.created.contains(&node) => 0,
+                None if self.creating || self.created.contains(&node) => 0,
                 None => {
                     return Err(BranchError::GarbageCollection(
                         "live node has no reference count",
@@ -253,11 +166,7 @@ impl<T: WriteTransaction, H: HashProvider> Session<'_, T, H> {
                 .checked_add(count)
                 .ok_or(BranchError::GarbageCollection("reference count overflow"))?;
             if activate {
-                pending.extend(
-                    node.children(self.tx, self.hasher, self.initializing)?
-                        .into_iter()
-                        .map(|child| (child, 1)),
-                );
+                pending.extend(node.children(self.tx)?.into_iter().map(|child| (child, 1)));
             }
         }
         Ok(())
@@ -272,11 +181,7 @@ impl<T: WriteTransaction, H: HashProvider> Session<'_, T, H> {
                 .checked_sub(count)
                 .ok_or(BranchError::GarbageCollection("reference count underflow"))?;
             if counter.after == 0 {
-                pending.extend(
-                    node.children(self.tx, self.hasher, self.initializing)?
-                        .into_iter()
-                        .map(|child| (child, 1)),
-                );
+                pending.extend(node.children(self.tx)?.into_iter().map(|child| (child, 1)));
             }
         }
         Ok(())
@@ -299,14 +204,18 @@ impl<T: WriteTransaction, H: HashProvider> Session<'_, T, H> {
     }
 }
 
-/// Apply net root changes, activating every new graph before releasing any old graph.
-pub(crate) fn update(
-    tx: &mut impl WriteTransaction,
-    hasher: &impl HashProvider,
-    mut changes: RootChanges,
-    sealed: &SealedCommit,
-) -> Result<()> {
+/// Publish root ownership after replay; old and new bitmap roots can both
+/// be resolved here because rows are not reclaimed until the final flush.
+pub(crate) fn update(tx: &mut impl WriteTransaction, sealed: &SealedCommit) -> Result<()> {
+    let mut changes = RootChanges::default();
+    changes.remove(root(Kind::Cell, sealed.origin_cells));
+    changes.remove(root(Kind::Index, sealed.origin_index));
+    changes.add(root(Kind::Cell, sealed.cells.root));
+    changes.add(root(Kind::Index, sealed.index.root));
     for term in &sealed.index.changed_terms {
+        if let Some(hash) = term.before {
+            changes.remove(Some(bitmap_root(tx, hash)?));
+        }
         if let Some(hash) = term.after {
             changes.add(Some(bitmap_root(tx, hash)?));
         }
@@ -326,12 +235,8 @@ pub(crate) fn update(
     }
     let mut session = Session {
         tx,
-        hasher,
         counts: BTreeMap::new(),
-        // Bootstrap authenticated existing rows; seal authenticates changed
-        // paths and creates the new rows. Publication only decodes graph edges,
-        // preserving the seal/commit split without hashing or bitmap expansion.
-        initializing: false,
+        creating: false,
         created,
     };
     for (&node, &(added, removed)) in &changes.0 {
@@ -347,68 +252,29 @@ pub(crate) fn update(
     session.flush()
 }
 
-pub(crate) fn initialize(
+/// Seed counters only for freshly created genesis rows. The creation path
+/// requires every engine table to be empty before building these commitments;
+/// this never imports, validates, sweeps or migrates an existing database.
+pub(crate) fn seed_counts(
     tx: &mut impl WriteTransaction,
-    head: &Head,
-    hasher: &impl HashProvider,
-) -> Result<GarbageCollectionStats> {
-    if initialized(tx)? {
-        return Ok(GarbageCollectionStats::default());
-    }
-    if tx.cursor(REFS, b"")?.next()?.is_some() {
-        return Err(BranchError::GarbageCollection(
-            "reference counts exist without GC initialization",
-        ));
-    }
+    cells: RootRef<32>,
+    index: RootRef<32>,
+    bitmaps: impl IntoIterator<Item = Hash>,
+) -> Result<()> {
     let mut roots = RootChanges::default();
-    roots.add(root(
-        Kind::Cell,
-        Cells::new(hasher).reopen(tx, head.state_root)?,
-    ));
-    let index = Index::new(hasher);
-    let index_root = index.reopen(tx, head.index_root)?;
-    roots.add(root(Kind::Index, index_root));
-    for row in index.terms_with_prefix(tx, Vec::new())? {
-        let (_, hash) = row?;
+    roots.add(root(Kind::Cell, cells));
+    roots.add(root(Kind::Index, index));
+    for hash in bitmaps {
         roots.add(Some(bitmap_root(tx, hash)?));
     }
     let mut session = Session {
         tx,
-        hasher,
         counts: BTreeMap::new(),
-        initializing: true,
+        creating: true,
         created: BTreeSet::new(),
     };
     for (node, (count, _)) in roots.0 {
         session.retain(node, count)?;
     }
-    let live = &session.counts;
-    let mut stats = GarbageCollectionStats {
-        retained_rows: live.len() as u64,
-        ..Default::default()
-    };
-    for kind in [Kind::Cell, Kind::Index, Kind::Bitmap, Kind::Container] {
-        // Bounded sweep batches: no second allocation proportional to all dead rows.
-        let mut lower = Bound::Unbounded;
-        loop {
-            let rows = scan(session.tx, kind.table(), lower.clone(), Bound::Unbounded)?
-                .take(256)
-                .collect::<golemdb_storage::Result<Vec<_>>>()?;
-            let Some((last, _)) = rows.last() else { break };
-            lower = Bound::Excluded(last.clone());
-            for (key, value) in rows {
-                let hash = key.as_slice().try_into().map_err(|_| {
-                    BranchError::GarbageCollection("immutable row key must be 32 bytes")
-                })?;
-                if !live.contains_key(&Node { kind, hash }) {
-                    session.tx.delete(kind.table(), &key)?;
-                    stats.removed_rows += 1;
-                    stats.removed_bytes += (key.len() + value.len()) as u64;
-                }
-            }
-        }
-    }
-    session.flush()?;
-    tx.put(SUPERBLOCK, MODE_KEY, VERSION)?;
-    Ok(stats)
+    session.flush()
 }

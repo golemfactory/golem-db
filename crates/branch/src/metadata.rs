@@ -1,11 +1,37 @@
+//! Durable engine header, format version and physical table identifiers.
 use golemdb_merkle::Hash;
 use golemdb_storage::{ReadTransaction, Table, WriteTransaction};
 
 use crate::{BranchError, CommitId, Result};
 
-const SUPERBLOCK: Table = Table("Superblock");
+pub(crate) const SUPERBLOCK: Table = Table("Superblock");
+pub(crate) const NODE_REFS: Table = Table("NodeRefs");
+pub(crate) const ENGINE_TABLES: [Table; 8] = [
+    SUPERBLOCK,
+    NODE_REFS,
+    golemdb_cells::tables::CELL,
+    golemdb_cells::tables::CELL_TRIE,
+    golemdb_index::tables::INDEX,
+    golemdb_index::tables::INDEX_TRIE,
+    golemdb_index::tables::BITMAP_TRIE,
+    golemdb_index::tables::BITMAP_CONTAINER,
+];
+const FORMAT_KEY: &[u8] = b"format-version";
+const FORMAT_VERSION: &[u8] = &[1];
 const HEAD_KEY: &[u8] = b"head";
 const HEAD_BYTES: usize = 8 + 32 + 32;
+
+pub(crate) fn require_format(tx: &impl ReadTransaction) -> Result<()> {
+    match tx.get(SUPERBLOCK, FORMAT_KEY)? {
+        Some(version) if version == FORMAT_VERSION => Ok(()),
+        _ => Err(BranchError::UnsupportedDatabaseFormat),
+    }
+}
+
+pub(crate) fn write_format(tx: &mut impl WriteTransaction) -> Result<()> {
+    tx.put(SUPERBLOCK, FORMAT_KEY, FORMAT_VERSION)?;
+    Ok(())
+}
 
 pub(crate) struct Head {
     pub commit_id: CommitId,

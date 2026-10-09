@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use golemdb_branch::{Branches, SealedCommit};
 use golemdb_cells::{
-    CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, tables as cells,
+    CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, tables as cells,
 };
-use golemdb_index::{Index, IndexTerm, PostingChange, tables as index};
+use golemdb_index::{Index, IndexTerm, tables as index};
 use golemdb_merkle::{BranchNodeCompact, Hash, Keccak256Hasher, RootRef};
 use golemdb_storage::{
     Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
@@ -161,7 +161,15 @@ fn mdbx_readers_keep_old_graph_and_counts_survive_reopen() {
     let dir = tempfile::tempdir().unwrap();
     {
         let db = MdbxDatabase::open(dir.path()).unwrap();
-        super::seal::seed(&db, &HASH, 0, &[]);
+        let initial = [64, 65536, 131072]
+            .into_iter()
+            .flat_map(|id| {
+                [b"a", b"b"]
+                    .into_iter()
+                    .map(move |name| (key(id, name), value("old", true)))
+            })
+            .collect::<Vec<_>>();
+        super::seal::seed(&db, &HASH, 0, &initial);
         let branches = Branches::new(db.clone(), HASH).unwrap();
         let first = shared(&branches, "old");
         let snapshot = db.begin_read().unwrap();
@@ -209,7 +217,6 @@ fn mdbx_readers_keep_old_graph_and_counts_survive_reopen() {
     }
     let db = MdbxDatabase::open(dir.path()).unwrap();
     let branches = Branches::new(db.clone(), HASH).unwrap();
-    assert_eq!(branches.initialize_gc().unwrap(), Default::default());
     shared(&branches, "after-restart");
     let branch = branches.begin().unwrap();
     branches
@@ -237,85 +244,48 @@ fn mdbx_readers_keep_old_graph_and_counts_survive_reopen() {
 }
 
 #[test]
-fn mdbx_first_commit_sweeps_legacy_history_and_restores_reused_nodes() {
+fn mdbx_rejects_legacy_without_reclaiming_any_rows_and_retries_failed_creation() {
     let dir = tempfile::tempdir().unwrap();
     let db = MdbxDatabase::open(dir.path()).unwrap();
-    super::seal::seed(&db, &HASH, 0, &[]);
     let mut tx = db.begin_write().unwrap();
-    let (mut state, mut index_root) = (RootRef::Empty, RootRef::Empty);
-    for round in 0..75 {
-        let text = format!("v{round}");
-        let before = format!("v{}", round - 1);
-        let mut changes = Vec::new();
-        let mut postings = Vec::new();
-        for id in [64, 65536] {
-            for name in ["a", "b"] {
-                changes.push(CellChange::Put {
-                    key: key(id, name.as_bytes()),
-                    value: value(&text, true),
-                });
-                postings.push(PostingChange::Add {
-                    term: IndexTerm::new(name, CellType::Str, text.as_bytes()).unwrap(),
-                    record_id: id,
-                });
-                if round > 0 {
-                    postings.push(PostingChange::Remove {
-                        term: IndexTerm::new(name, CellType::Str, before.as_bytes()).unwrap(),
-                        record_id: id,
-                    });
-                }
-            }
-        }
-        state = Cells::new(&HASH)
-            .apply(&mut tx, state, changes)
-            .unwrap()
-            .root;
-        index_root = Index::new(&HASH)
-            .apply(&mut tx, index_root, postings)
-            .unwrap()
-            .root;
-    }
+    let empty = golemdb_merkle::HashProvider::hash(&HASH, &[]);
     tx.put(
         Table("Superblock"),
         b"head",
-        &[
-            75u64.to_be_bytes().as_slice(),
-            &state.hash(&HASH),
-            &index_root.hash(&HASH),
-        ]
-        .concat(),
+        &[42u64.to_be_bytes().as_slice(), &empty, &empty].concat(),
     )
     .unwrap();
+    tx.put(cells::CELL_TRIE, b"legacy-key", b"historical-node")
+        .unwrap();
     tx.commit().unwrap();
-    let snapshot = db.begin_read().unwrap();
-    let before = TABLES.map(|t| rows(&snapshot, t));
-    assert!(before[0].len() > 50);
-    assert!(before[1].len() > 50);
-    let branches = Branches::new(db.clone(), HASH).unwrap();
-    // Seal can deduplicate v0's physical rows against old history. The first
-    // commit must collect that history, then recreate any rows the seal reused.
-    shared(&branches, "v0");
+    let old = db.begin_read().unwrap();
+    assert!(matches!(
+        Branches::new(db.clone(), HASH),
+        Err(golemdb_branch::BranchError::UnsupportedDatabaseFormat)
+    ));
+    assert!(matches!(
+        golemdb_branch::create_genesis(&db, &HASH, []),
+        Err(golemdb_branch::BranchError::DatabaseNotEmpty(_))
+    ));
     let latest = db.begin_read().unwrap();
-    assert!(
-        TABLES
-            .iter()
-            .map(|t| rows(&latest, *t).len())
-            .sum::<usize>()
-            < 20
-    );
-    assert_eq!(TABLES.map(|t| rows(&snapshot, t)), before);
-    let term = IndexTerm::new("a", CellType::Str, b"v74").unwrap();
-    assert_eq!(
-        Index::new(&HASH)
-            .bitmap(&snapshot, &term)
-            .unwrap()
-            .unwrap()
-            .treemap()
-            .iter()
-            .collect::<Vec<_>>(),
-        vec![64, 65536]
-    );
-    assert_eq!(branches.initialize_gc().unwrap(), Default::default());
+    for table in [Table("Superblock"), cells::CELL_TRIE, REFS] {
+        assert_eq!(rows(&old, table), rows(&latest, table));
+    }
+    let fresh_dir = tempfile::tempdir().unwrap();
+    let fresh = MdbxDatabase::open(fresh_dir.path()).unwrap();
+    let bad = golemdb_cells::CellChange::Put {
+        key: key(64, b"\xff"),
+        value: value("invalid-attribute", true),
+    };
+    assert!(golemdb_branch::create_genesis(&fresh, &HASH, [bad]).is_err());
+    let tx = fresh.begin_read().unwrap();
+    for table in [Table("Superblock"), cells::CELL, cells::CELL_TRIE, REFS] {
+        assert!(rows(&tx, table).is_empty());
+    }
+    drop(tx);
+    golemdb_branch::create_genesis(&fresh, &HASH, []).unwrap();
+    let branches = Branches::new(fresh.clone(), HASH).unwrap();
+    shared(&branches, "first-commit");
 }
 
 proptest! {

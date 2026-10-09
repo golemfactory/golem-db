@@ -2,8 +2,8 @@ use golemdb_branch::{BranchError, Branches, OperationError, SealedCommit};
 use golemdb_cells::{
     CellChange, CellKey, CellNameRef, CellType, CellValue, CellValueRef, Cells, tables,
 };
-use golemdb_index::{Index, IndexTerm, PostingChange};
-use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher, RootRef};
+use golemdb_index::{Index, IndexTerm};
+use golemdb_merkle::{Blake3Hasher, Hash, HashProvider, Keccak256Hasher};
 use golemdb_storage::{
     Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
 };
@@ -48,35 +48,28 @@ pub(super) fn seed(
     id: u64,
     rows: &[(CellKey, CellValue)],
 ) {
+    golemdb_branch::create_genesis(
+        db,
+        hash,
+        rows.iter().map(|(key, value)| CellChange::Put {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+    )
+    .unwrap();
     let mut tx = db.begin_write().unwrap();
-    let cells = Cells::new(hash)
-        .apply(
-            &mut tx,
-            RootRef::Empty,
-            rows.iter().map(|(key, value)| CellChange::Put {
-                key: key.clone(),
-                value: value.clone(),
-            }),
-        )
+    let raw = golemdb_storage::ReadTransaction::get(&tx, SUPERBLOCK, b"head")
+        .unwrap()
         .unwrap();
-    let postings = rows
-        .iter()
-        .filter(|(_, value)| value.is_indexable())
-        .map(|(key, value)| PostingChange::Add {
-            term: IndexTerm::from_cell(
-                std::str::from_utf8(key.name().as_bytes()).unwrap(),
-                value.as_view(),
-            )
-            .unwrap()
-            .unwrap(),
-            record_id: key.record_id(),
-        });
-    let index = Index::new(hash)
-        .apply(&mut tx, RootRef::Empty, postings)
-        .unwrap();
-    head(&mut tx, id, cells.root.hash(hash), index.root.hash(hash));
+    head(
+        &mut tx,
+        id,
+        raw[8..40].try_into().unwrap(),
+        raw[40..72].try_into().unwrap(),
+    );
     tx.commit().unwrap();
 }
+
 fn snapshot(db: &impl Database) -> Vec<Vec<golemdb_storage::Entry>> {
     let tx = db.begin_read().unwrap();
     TABLES
