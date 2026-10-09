@@ -14,7 +14,7 @@ use std::{
 };
 
 const SUPERBLOCK: Table = Table("Superblock");
-const TABLES: [Table; 7] = [
+const TABLES: [Table; 8] = [
     tables::CELL,
     tables::CELL_TRIE,
     golemdb_index::tables::INDEX,
@@ -22,6 +22,7 @@ const TABLES: [Table; 7] = [
     golemdb_index::tables::BITMAP_TRIE,
     golemdb_index::tables::BITMAP_CONTAINER,
     SUPERBLOCK,
+    Table("NodeRefs"),
 ];
 fn key(name: &[u8]) -> CellKey {
     CellKey::new(64, CellNameRef::raw(name))
@@ -192,6 +193,8 @@ enum Fault {
     Write(usize),
     HeadRead,
     HeadWrite,
+    GcWrite,
+    GcDelete,
     Commit,
     Panic(usize),
 }
@@ -282,6 +285,9 @@ impl<W> ControlledWrite<W> {
 }
 impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> golemdb_storage::Result<()> {
+        if matches!(self.fault, Fault::GcWrite) && table == Table("NodeRefs") {
+            return Err(injected());
+        }
         self.mutation(table)?;
         self.inner.put(table, key, value)
     }
@@ -290,6 +296,9 @@ impl<W: WriteTransaction> WriteTransaction for ControlledWrite<W> {
         self.inner.insert(table, key, value)
     }
     fn delete(&mut self, table: Table, key: &[u8]) -> golemdb_storage::Result<bool> {
+        if matches!(self.fault, Fault::GcDelete) && table == Table("NodeRefs") {
+            return Err(injected());
+        }
         self.mutation(table)?;
         self.inner.delete(table, key)
     }
@@ -322,6 +331,8 @@ fn failure_recovery(db: impl Database + Clone + 'static) {
         Fault::Write(1),
         Fault::Write(3),
         Fault::HeadWrite,
+        Fault::GcWrite,
+        Fault::GcDelete,
         Fault::Commit,
         Fault::Panic(3),
     ] {

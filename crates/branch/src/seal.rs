@@ -3,7 +3,7 @@ use golemdb_cells::{
     system, tables,
 };
 use golemdb_index::{Index, IndexTerm, IndexUpdate, PostingChange, TermError};
-use golemdb_merkle::{Hash, HashProvider};
+use golemdb_merkle::{Hash, HashProvider, RootRef};
 use golemdb_storage::ReadTransaction;
 
 use crate::{
@@ -25,6 +25,9 @@ pub struct SealedCommit {
     pub index: IndexUpdate,
     // Replayed by commit inside the head-checked writer.
     pub(crate) writes: Writes,
+    pub(crate) gc_initialized: bool,
+    pub(crate) origin_cells: RootRef<32>,
+    pub(crate) origin_index: RootRef<32>,
 }
 
 pub(crate) fn compute(
@@ -33,6 +36,7 @@ pub(crate) fn compute(
     hasher: &impl HashProvider,
 ) -> Result<SealedCommit> {
     let head = read_head_state(origin)?;
+    let gc_initialized = crate::gc::initialized(origin)?;
     let commit_id = head
         .commit_id
         .checked_add(1)
@@ -86,6 +90,9 @@ pub(crate) fn compute(
         cells: cells_update,
         index: index_update,
         writes: tx.into_writes(),
+        gc_initialized,
+        origin_cells: cell_root,
+        origin_index: index_root,
     })
 }
 

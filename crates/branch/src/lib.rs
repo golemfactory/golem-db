@@ -108,8 +108,15 @@
 //!
 //! A seal error leaves the branch open. A storage error after sealing preserves
 //! the sealed result for retry or discard; every retry validates head again.
-//! The manager does not recompute roots for a sealed branch. History and
-//! change-set tables remain deferred; record-layer allocator/binding writes
+//! Commits collect obsolete immutable nodes by default, maintaining persistent
+//! reference counts in the same transaction as head. One-time initialization
+//! authenticates the current graph and sweeps legacy orphan rows; call
+//! [`Branches::initialize_gc`] before accepting writes to do this as maintenance.
+//! A seal predating initialization can have its physical write set refreshed
+//! under the writer if collection removed rows it reused. Subsequent commits
+//! replay seals without hashing. Old root commitments remain in `#roots`, but
+//! their old trees are not retained for fresh readers. Existing snapshots remain
+//! valid. History and change-set tables remain deferred; record-layer allocator/binding writes
 //! already staged as cells are persisted with all other sealed rows.
 //!
 //! # Callback errors and panics
@@ -128,6 +135,7 @@
 mod buffer;
 mod commit;
 mod error;
+mod gc;
 mod head;
 mod journal;
 mod manager;
@@ -137,6 +145,7 @@ mod seal;
 mod types;
 
 pub use error::{BranchError, OperationError, Result};
+pub use gc::GarbageCollectionStats;
 pub use head::read_head;
 pub use manager::Branches;
 pub use overlay::{CellRead, CellWrite};
@@ -158,6 +167,9 @@ mod overlay_tests;
 #[path = "tests/lifecycle.rs"]
 mod lifecycle_tests;
 
+#[cfg(test)]
+#[path = "tests/gc.rs"]
+mod gc_tests;
 #[cfg(test)]
 #[path = "tests/publication.rs"]
 mod publication_tests;

@@ -244,10 +244,16 @@ fn explicit_seal_is_not_recomputed_by_commit() {
     seed(&db, &Keccak256Hasher, 0, &[]);
     let fail = Arc::new(AtomicBool::new(false));
     let branches = Branches::new(db, SwitchHash(fail.clone())).unwrap();
-    let branch = stage(&branches, "Alice");
-    branches.seal(branch).unwrap();
-    fail.store(true, Ordering::Relaxed);
-    assert_eq!(branches.commit(branch).unwrap(), 1);
+    // One-time GC bootstrap authenticates legacy state. Normal publication
+    // must continue to replay a seal without hashing it again.
+    branches.initialize_gc().unwrap();
+    for (round, text) in ["Alice", "Bob", "Alice"].into_iter().enumerate() {
+        fail.store(false, Ordering::Relaxed);
+        let branch = stage(&branches, text);
+        branches.seal(branch).unwrap();
+        fail.store(true, Ordering::Relaxed);
+        assert_eq!(branches.commit(branch).unwrap(), round as u64 + 1);
+    }
 }
 
 #[test]
@@ -306,13 +312,10 @@ fn bitmap_roots(db: &impl Database) -> Vec<Hash> {
 }
 
 #[test]
-fn commits_store_only_trie_rows_reachable_from_committed_roots() {
+fn commits_store_only_trie_rows_reachable_from_head() {
     let db = MemoryDatabase::new();
     seed(&db, &Keccak256Hasher, 0, &[]);
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
-    let genesis = crate::head::read_head_state(&branches.database().begin_read().unwrap()).unwrap();
-    let (mut states, mut indexes) = (vec![genesis.state_root], vec![genesis.index_root]);
-    let mut bitmaps = bitmap_roots(branches.database());
     // Commit 1 creates 40 records; commit 2 rewrites most of them and removes some cells.
     for round in 0..2u64 {
         let branch = branches.begin().unwrap();
@@ -336,20 +339,21 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
                 Ok::<_, ()>(())
             })
             .unwrap();
-        let sealed = branches.seal(branch).unwrap();
-        states.push(sealed.state_root);
-        indexes.push(sealed.index_root);
+        branches.seal(branch).unwrap();
         branches.commit(branch).unwrap();
-        bitmaps.extend(bitmap_roots(branches.database()));
     }
     let tx = branches.database().begin_read().unwrap();
+    let head = crate::head::read_head_state(&tx).unwrap();
+    let states = [head.state_root];
+    let indexes = [head.index_root];
+    let bitmaps = bitmap_roots(branches.database());
     let rows = |table| {
         scan_prefix(&tx, table, vec![])
             .unwrap()
             .map(|row| row.unwrap().0)
             .collect::<std::collections::BTreeSet<_>>()
     };
-    // No intermediate versions: every stored trie row belongs to a committed root.
+    // No intermediate or historical versions: every stored trie row belongs to head.
     assert_eq!(
         rows(tables::CELL_TRIE),
         reachable_rows::<{ golemdb_cells::CELL_TRIE_PATH_BYTES }>(&tx, tables::CELL_TRIE, &states)

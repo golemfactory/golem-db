@@ -9,6 +9,10 @@ pub enum BranchError {
     CommitNumberExhausted,
     #[error("the previous commit's #roots cell already exists")]
     RootsCellExists,
+    #[error("head-only garbage collection: {0}")]
+    GarbageCollection(&'static str),
+    #[error(transparent)]
+    Merkle(#[from] golemdb_merkle::MerkleError),
     #[error(transparent)]
     Cells(#[from] golemdb_cells::CellError),
     #[error(transparent)]

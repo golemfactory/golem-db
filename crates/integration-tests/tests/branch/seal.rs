@@ -16,7 +16,7 @@ use std::{
 };
 
 const SUPERBLOCK: Table = Table("Superblock");
-const TABLES: [Table; 7] = [
+const TABLES: [Table; 8] = [
     tables::CELL,
     tables::CELL_TRIE,
     golemdb_index::tables::INDEX,
@@ -24,6 +24,7 @@ const TABLES: [Table; 7] = [
     golemdb_index::tables::BITMAP_TRIE,
     golemdb_index::tables::BITMAP_CONTAINER,
     SUPERBLOCK,
+    Table("NodeRefs"),
 ];
 fn key(id: u64, name: &[u8]) -> CellKey {
     CellKey::new(id, CellNameRef::raw(name))
@@ -41,7 +42,12 @@ fn head(tx: &mut impl WriteTransaction, id: u64, state: Hash, index: Hash) {
     )
     .unwrap();
 }
-fn seed(db: &impl Database, hash: &impl HashProvider, id: u64, rows: &[(CellKey, CellValue)]) {
+pub(super) fn seed(
+    db: &impl Database,
+    hash: &impl HashProvider,
+    id: u64,
+    rows: &[(CellKey, CellValue)],
+) {
     let mut tx = db.begin_write().unwrap();
     let cells = Cells::new(hash)
         .apply(
